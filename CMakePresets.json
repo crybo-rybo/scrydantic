@@ -1,0 +1,37 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 30,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Developer build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "g++-16",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Address and undefined behavior sanitizers",
+      "inherits": "dev",
+      "cacheVariables": {
+        "SCRYDANTIC_SANITIZER": "address-undefined"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Thread sanitizer",
+      "inherits": "dev",
+      "cacheVariables": {
+        "SCRYDANTIC_SANITIZER": "thread"
+      }
+    }
+  ]
+}
