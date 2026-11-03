@@ -4,12 +4,13 @@ Scrydantic uses C++26 static reflection to generate JSON Schema, strictly
 encode and decode C++ values, and bind annotated C++ functions as tools. It
 builds independently of Scry and needs no libcurl, model, or network service.
 
-The library is maintained in the Scry repository under `scrydantic/`.
+Scrydantic was extracted from [Scry](https://github.com/crybo-rybo/scry),
+which consumes it, and is developed in this repository.
 
 ## Build and test
 
 Use GCC 16 or newer with reflection support, CMake 3.30 or newer, and Ninja.
-From this directory:
+From the repository root:
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=g++-16
@@ -21,6 +22,17 @@ cmake --install build --prefix "$PWD/stage"
 
 Set `CMAKE_CXX_COMPILER` to your compiler's name or path if it differs.
 Tests fetch Catch2; the library itself has no third-party library dependencies.
+
+The presets and scripts that CI runs are the same ones to use locally:
+
+```sh
+PRESET=dev ./scripts/test.sh    # also asan and tsan; CXX overrides g++-16
+./scripts/format.sh --check     # or --fix; CLANG_FORMAT overrides clang-format
+./scripts/lint.sh               # CLANG_TIDY overrides clang-tidy
+```
+
+CI uses clang-format and clang-tidy 22. clang-tidy checks only the C++23 JSON
+core under `src/json/`, because it cannot parse the reflection code.
 
 ## Use the installed package
 
@@ -58,8 +70,7 @@ a tool can refuse a call with `scrydantic::tool_error()`.
 
 See [the standalone example](examples/standalone_tools.cpp) for an MCP-style
 tool listing and calls, and [NOTES.md](NOTES.md) for the extraction design and
-remaining work before moving to a separate repository. The example is not a
-complete MCP server.
+its open questions. The example is not a complete MCP server.
 
 ## License
 

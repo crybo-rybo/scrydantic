@@ -1,6 +1,6 @@
 include(FetchContent)
-# Under Scry this is the first declaration of Catch2, so Scry's tests reuse it;
-# both must name the same revision.
+# When Scry adds Scrydantic as a subdirectory, this is the first declaration of
+# Catch2, so Scry's tests reuse it; both must name the same revision.
 FetchContent_Declare(
   Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git

@@ -1,6 +1,6 @@
-# Scrydantic builds on its own (cmake -S scrydantic) or as a subdirectory of
-# Scry. Nothing here may reach outside this directory: scripts/lint.sh rejects
-# an include of a Scry header, and no target links libcurl or Threads.
+# Scrydantic builds on its own or as a subdirectory of a consumer such as Scry.
+# It depends on no other project: scripts/lint.sh rejects an include of a Scry
+# header, and no target links libcurl or Threads.
 cmake_minimum_required(VERSION 3.30)
 
 project(
@@ -10,8 +10,7 @@ project(
   LANGUAGES CXX
 )
 
-# Scrydantic uses no C++ modules; see the root CMakeLists.txt of Scry for why
-# scanning stays off.
+# Scrydantic uses no C++ modules, so dependency scanning stays off.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 include(CMakePackageConfigHelpers)
@@ -84,7 +83,7 @@ endif()
 
 # The JSON core: the strict parser, the canonical writer, and JsonView. It is
 # compiled as C++23 without -freflection, so plain clang-tidy can analyze it
-# (scripts/lint.sh in Scry) and a C++23 consumer, such as Scry's kernel, can link
+# (scripts/lint.sh) and a C++23 consumer, such as Scry's kernel, can link
 # it. src/json/core.hpp states its include boundary.
 add_library(
   scrydantic_json
@@ -169,8 +168,8 @@ target_sources(
     FILES ${SCRYDANTIC_PUBLIC_HEADERS}
 )
 
-# CTest is enabled here when Scrydantic is the top-level project; under Scry,
-# the root CMakeLists.txt enables it before adding this directory.
+# CTest is enabled here when Scrydantic is the top-level project; a parent
+# project that adds it as a subdirectory (Scry does) enables it before that.
 if(SCRYDANTIC_BUILD_TESTS)
   if(PROJECT_IS_TOP_LEVEL)
     include(CTest)

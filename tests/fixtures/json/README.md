@@ -1,8 +1,8 @@
 # JSON golden fixtures
 
 These files hold the expected results for the JSON core of Scrydantic
-(`scrydantic/src/json/document.hpp`).
-`scrydantic/tests/json/json_fixture_tests.cpp` checks them. They pin which
+(`src/json/document.hpp`).
+`tests/json/json_fixture_tests.cpp` checks them. They pin which
 inputs the parser accepts. They also pin the exact bytes that the canonical
 writer writes.
 
@@ -37,7 +37,7 @@ directory.
 
 | File in the archive | Cases |
 |---|---|
-| `corpus.txt` | Every file under `scrydantic/tests/fuzz/corpus/`, whole |
+| `corpus.txt` | Every file under `tests/fuzz/corpus/`, whole |
 | `corpus_prefixes.list` | Which prefix lengths of each of those files parse |
 | `adversarial.txt` | Inputs aimed at each rule: bytes, escapes, UTF-8, numbers, keys, nesting |
 | `fuzz_findings.txt` | The differential fuzzer's minimized corpus: inputs that reached new code in either implementation |
@@ -65,7 +65,7 @@ Thus, each case is one line, and the files are plain ASCII.
 
 A line of `corpus_prefixes.list` has three parts:
 
-1. A corpus path, relative to `scrydantic/tests/fuzz/corpus/`.
+1. A corpus path, relative to `tests/fuzz/corpus/`.
 2. A space.
 3. The accepted prefix lengths, or `none`. The list separates lengths and
    inclusive `low-high` ranges with commas.
@@ -75,7 +75,7 @@ The parser must reject each other length from zero to the size of the file.
 ## Adding a case or a corpus file
 
 The old codec is removed, so a new expectation comes from the layer itself. The
-rules in `scrydantic/src/json/document.hpp` must justify each new expectation. Do
+rules in `src/json/document.hpp` must justify each new expectation. Do
 not only record the output of the layer.
 
 The corpus holds the JSON fuzz seeds under `json/` and, under the other
@@ -83,7 +83,7 @@ directories, copies of Scry's provider, conversation, SSE, and response-policy
 seeds as they were when the JSON layer moved into Scrydantic. Those copies are
 frozen JSON inputs here; Scry's own fuzz targets replay the originals.
 
-For a new file under `scrydantic/tests/fuzz/corpus/`, do these steps:
+For a new file under `tests/fuzz/corpus/`, do these steps:
 
 1. Add its line to `corpus_prefixes.list`. The prefix tests fail until this
    line is present.
@@ -93,7 +93,7 @@ To edit the files, unpack the archive here and change the files. Then repack the
 archive reproducibly, and delete the unpacked copies:
 
 ```sh
-cd scrydantic/tests/fixtures/json
+cd tests/fixtures/json
 tar -xJf goldens.tar.xz
 # edit, then:
 tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 --format=gnu \

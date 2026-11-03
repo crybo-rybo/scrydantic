@@ -1,5 +1,15 @@
 # Scrydantic split: findings log
 
+> **2026-11-02: Scrydantic now lives in its own repository.** This repository
+> was seeded from Scry branch `refactor/scrydantic-split` @ `21c2bd6` plus the
+> PR #141 review fixes (bound-tool result validation and its tests, and a
+> range-checked `round_number` in the standalone example). It adds its own
+> `CMakePresets.json`, `.clang-tidy`, `.clangd`, `scripts/` (test, format,
+> lint), and CI, which close the "CI" and "Missing project files" items below.
+> The log that follows was written inside Scry, so a path such as
+> `scrydantic/src/json/` there is `src/json/` here, and `scripts/lint.sh` means
+> Scry's script at the time.
+
 This log records how Scrydantic was carved out of Scry's reflection layer: the
 couplings met, the decisions taken, and what a move to a repository of its own
 still needs. The summary comes first; the phase log after it is the record as
