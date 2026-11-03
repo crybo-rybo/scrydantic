@@ -1,0 +1,8 @@
+/build/
+/stage/
+/.cache/
+CMakeUserPresets.json
+.DS_Store
+.claude/**
+CLAUDE.md
+AGENTS.md
