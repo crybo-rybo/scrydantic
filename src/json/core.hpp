@@ -20,5 +20,5 @@
 
 #if defined(__cpp_impl_reflection)
 #error                                                                                 \
-    "scrydantic/src/json/ is C++23 without reflection; compile it without -freflection"
+    "Scrydantic's src/json/ is C++23 without reflection; compile it without -freflection"
 #endif
