@@ -14,7 +14,7 @@ From the repository root:
 
 ```sh
 CXX=g++-16 cmake --workflow --preset dev    # configure, build, and run every test
-build/dev/examples/scrydantic_standalone_tools_example
+build/dev/examples/scrydantic_mcp_tools_example
 cmake --install build/dev --prefix "$PWD/stage"
 ```
 
@@ -69,7 +69,7 @@ handler. `describe()` supplies compile-time contracts without handlers.
 of tool binding. Fallible operations use `scrydantic::Result<T>` or `Status`;
 a tool can refuse a call with `scrydantic::tool_error()`.
 
-See [the standalone example](examples/standalone_tools.cpp) for an MCP-style
+See [the MCP tools example](examples/mcp_tools.cpp) for an MCP-style
 tool listing and calls; the example is not a complete MCP server.
 [docs/architecture.md](docs/architecture.md) describes the design and its open
 questions.

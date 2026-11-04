@@ -1,7 +1,6 @@
 // Annotate a few functions and a toolbox, publish them as an MCP-style
 // `tools/list` result, and serve `tools/call` requests. The program needs no
-// HTTP client, runtime, or model, and exits 0 only when what it printed is what
-// it expects.
+// network or model, and exits 0 only when what it printed is what it expects.
 
 #include <cmath>
 #include <cstdint>

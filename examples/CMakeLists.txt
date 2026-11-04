@@ -1,18 +1,18 @@
-# A consumer of Scrydantic alone: it publishes reflected tools as an MCP-style
-# listing and serves one call, and reports through its exit code, so it runs
+# Publishes reflected tools as an MCP-style listing and serves calls, using only
+# the installed package's headers. It reports through its exit code, so it runs
 # under ctest when the tests are built.
-add_executable(scrydantic_standalone_tools_example standalone_tools.cpp)
+add_executable(scrydantic_mcp_tools_example mcp_tools.cpp)
 target_link_libraries(
-  scrydantic_standalone_tools_example
+  scrydantic_mcp_tools_example
   PRIVATE scrydantic::scrydantic scrydantic_project_options
 )
 if(SCRYDANTIC_BUILD_TESTS)
   add_test(
-    NAME scrydantic.example.standalone-tools
-    COMMAND scrydantic_standalone_tools_example
+    NAME scrydantic.example.mcp-tools
+    COMMAND scrydantic_mcp_tools_example
   )
   set_tests_properties(
-    scrydantic.example.standalone-tools
+    scrydantic.example.mcp-tools
     PROPERTIES LABELS example
   )
 endif()

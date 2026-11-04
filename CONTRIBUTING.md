@@ -87,7 +87,7 @@ The tests are under `tests/`. Each test has a CTest label, so
 | `fuzz` | The fuzz corpus replayed through the property target (`tests/fuzz/`) |
 | `multi-tu` | Call-site keying across translation units (`tests/multi_tu/`) |
 | `compile-fail` | Programs that must not compile, each with the diagnostic that it must print (`tests/compile_fail/`) |
-| `example` | `examples/standalone_tools.cpp`, which exits 0 only when its output is the expected output |
+| `example` | `examples/mcp_tools.cpp`, which exits 0 only when its output is the expected output |
 
 Every bug fix needs a regression test. Some changes need more than a Catch2
 case:
