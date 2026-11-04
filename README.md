@@ -66,12 +66,14 @@ int main() {
 `bind()` supplies each tool's name, description, input schema, and callable
 handler. `describe()` supplies compile-time contracts without handlers.
 `encode()`, `decode<T>()`, and `input_schema_v<T>` also work independently
-of tool binding. Fallible operations use `scrydantic::Result<T>` or `Status`;
-a tool can refuse a call with `scrydantic::tool_error()`. A decode failure
-lists each issue that it found in `Error::issues`, with an `IssueKind` and a
-path, and its messages hold one line for each, such as
-`$.shapes[0].radius must be a number`. A bound tool returns those lines to the
-model in `model_message`.
+of tool binding. A model can be recursive, through `std::vector<T>` or
+`std::optional<std::indirect<T>>`. Its schema refers to the recursive types
+with `$ref`, and every other schema is written in place. Fallible operations
+use `scrydantic::Result<T>` or `Status`; a tool can refuse a call with
+`scrydantic::tool_error()`. A decode failure lists each issue that it found in
+`Error::issues`, with an `IssueKind` and a path, and its messages hold one line
+for each, such as `$.shapes[0].radius must be a number`. A bound tool returns
+those lines to the model in `model_message`.
 
 See [the MCP tools example](examples/mcp_tools.cpp) for an MCP-style
 tool listing and calls; the example is not a complete MCP server.

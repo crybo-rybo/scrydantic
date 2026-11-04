@@ -39,7 +39,7 @@ operations in `detail/json_text.hpp`. The document type remains private in
 | `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown` (plain C++23 types) |
 | `codec.hpp` | `encode()` and `decode()`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
 | `tools.hpp` | `bind()`, `bind_handler()`, `describe()`, `tools_of()`, `toolbox_tools_of()`, `Toolbox` |
-| `detail/model.hpp` | The reflected type model: `kind_of`, annotations, field layouts, and static text |
+| `detail/model.hpp` | The reflected type model: `kind_of`, annotations, field layouts, static text, and which aggregates a schema defines once because they contain themselves |
 | `detail/meta.hpp` | The value families, their diagnostics, and the handler rules |
 | `detail/schema.hpp` | The consteval schema generator |
 | `detail/decode.hpp`, `detail/encode.hpp`, `detail/failure.hpp` | The codec and its failure paths |
@@ -61,8 +61,108 @@ family. Each entry point puts that text in a `static_assert`, and then uses
 diagnostic that names the member path and the reason, not a cascade of errors.
 The concepts are the SFINAE-friendly form of the same checks.
 
+The checker visits each aggregate once, at the path where it first reaches the
+aggregate. Thus, an aggregate that contains itself ends its own walk, and an
+aggregate that many members share is not walked again.
+
+**Recursive models.** An aggregate can contain itself through `std::vector<T>`,
+which allows an incomplete element type, or through `std::indirect<T>`. An
+indirect is the value it owns: it encodes, decodes, and has the schema of that
+value. `std::optional<std::indirect<T>>` is its nullable form, so `skip_null`
+and `emit_null` apply to it, and `std::indirect<std::optional<T>>` is rejected.
+Its allocator is treated as `std::vector`'s is: any allocator encodes, and
+decoding needs only the default construction that `is_storable` checks.
+
+A cycle is admitted when it can end. After the shape check passes, a second walk
+follows only the links that default construction fills: every member, the value
+of a `std::indirect`, every element of a non-empty `std::array`, and the first
+alternative of a variant. It leaves out `std::optional`, `std::vector`, an empty
+`std::array`, and later alternatives. Decoding starts from a default-constructed
+value, so a cycle of filled links alone never ends, and the checker rejects it
+with the path of the cycle. A value to encode can hold any alternative of a
+variant, so for `Encodable` the walk does not enter variants at all. A cycle
+without a variant then means that every value is infinite or, through a
+reference member, cyclic. Reflection cannot see what a default member
+initializer holds, so the walk assumes that each member starts as its type's
+default. A non-empty `std::array<T, N>` cannot hold its own aggregate `T`, which
+is incomplete inside its own definition, but `std::array<std::indirect<T>, N>`
+and `std::array<std::vector<T>, N>` can form a cycle. The walk visits each
+aggregate once, as the shape check does.
+
 **Schemas** are consteval strings in `define_static_string` storage.
 `schema_v<T>` and `input_schema_v<T>` are constant expressions.
+
+A schema is one tree, written in place, except where a type contains itself.
+Many model APIs handle `$ref` poorly, so the schema of a type without recursion
+has no `$ref` and no `$defs`. The unit of recursion is an aggregate in one of
+its two forms: a plain value, or a variant alternative, whose object also
+carries the tag. Each form has its own schema. Every reachable form that can
+contain itself is written once, under the root's `$defs`, and every other use
+of it is `{"$ref":"#/$defs/<name>"}`. The root is never moved into `$defs`. A
+recursive root refers to itself as `{"$ref":"#"}`, so it keeps its own keywords,
+such as the `"type":"object"` that tool APIs require of an input schema, and a
+type whose only recursion is the root needs no `$defs` at all. `$defs` sorts
+before every other key, so it opens the root object.
+
+A definition's name is spelled from reflection, not from a display string, so
+it does not change when the compiler prints a type differently, and it does not
+show a model the standard library's internal names. `detail/model.hpp` states
+the grammar where it defines `definition_name()`:
+
+```text
+definition = class [ "-untagged" ]
+class      = { scope "." } identifier { "-" argument }
+scope      = namespace-identifier | "anonymous" | class
+argument   = type | constant
+type       = "bool" | "char" | "wchar_t" | "char8_t" | "char16_t" | "char32_t"
+           | ( "int" | "uint" ) width | "float" | "double" | "string"
+           | ( "optional" | "vector" | "indirect" ) "-" type
+           | "array" "-" type "-" constant | "variant" "-" type { "-" type }
+           | class
+constant   = [ "minus" ] decimal | "true" | "false" | enumerator-identifier
+```
+
+A class argument is an aggregate or an enum. An integer type is named by its
+width in bits, so a name is the same on every platform, and a vector or an
+indirect must use `std::allocator`. For example:
+
+| Type | Definition name |
+|---|---|
+| `recursive::Node<std::string>` | `recursive.Node-string` |
+| `recursive::Node<int>` | `recursive.Node-int32` |
+| `Outline` in an anonymous namespace | `anonymous.Outline` |
+| `recursive::Spin<-1>` | `recursive.Spin-minus1` |
+| `recursive::Outer<float>::Inner` | `recursive.Outer-float.Inner` |
+| the plain form of a tagged `recursive::Folder` | `recursive.Folder-untagged` |
+
+Every character of a name is in `[A-Za-z0-9_.-]`. These characters are
+unreserved in a URI fragment, have no meaning in a JSON Pointer (RFC 3986, RFC
+6901), and are the characters that OpenAPI accepts in a component name. A
+reference therefore never needs escaping. An identifier with any other
+character, which GCC accepts in UTF-8, is rejected rather than percent-encoded,
+because the `$defs` key itself would then leave that set. A class local to a
+function is rejected too, because its only stable identity is the signature of
+its function, and a lambda has none. So is a template argument outside the
+grammar, such as a pointer or a floating-point constant. These rejections apply
+only to recursive types, since every other type is written in place and needs
+no name.
+
+Collisions remain possible. A name does not mark where an argument list ends,
+`long` and `long long` have one width, a namespace can be named `anonymous`,
+and a class at global scope can be named `string`. `SupportedValue` therefore
+rejects a type whose schema would define two types under one name, and names
+both. A tool's synthesized argument object holds every parameter's definitions
+in one `$defs`, so binding checks the parameters' names together and names the
+function.
+
+A described member whose schema is a reference is
+`{"$ref":"...","description":"..."}`. JSON Schema 2019-09 and 2020-12 apply a
+keyword next to `$ref`. Draft-07 ignores it, which loses only the annotation,
+since the reference has no other keyword next to it. Draft-07 does not know
+`$defs` either, but it still resolves a JSON Pointer into it, so draft-07 and
+2020-12 validators accept the same documents. Wrapping a described reference in
+`allOf` would keep the description under draft-07, at the cost of a keyword
+that model APIs support less widely than `$ref`.
 
 **Decoding** reads a `JsonView`, and a failure does not stop it. Each read
 function takes a `decode_cursor`, which holds the path to its value as a chain
@@ -73,6 +173,19 @@ decoder goes on to the siblings of the value that failed. Thus, a successful
 decode builds no path and allocates nothing for one. The report keeps
 `max_issues` issues, and the first issue past them stops the decode, so the work
 that hostile input causes ends at its 65th issue.
+
+An aggregate is read in place. Its reader fills a value that `read_in_place()`
+value-initializes (`Type()`), as `is_storable` checks, and does not
+list-initialize. `Type{}` would copy-initialize a member that has no
+initializer from `{}`, which the explicit default constructor of `std::indirect`
+does not allow. `read_in_place()` is the one place that builds an aggregate's
+result; the GCC 16 notes say why that matters. A variant is built from the
+alternative that its tag selects, which is read in place, and is not itself read
+in place: that would default-construct its first alternative only to replace
+it, which cost 1.5% of a decode. The parser accepts at most
+256 levels of nesting, and every cycle passes through an aggregate, which reads
+one JSON object. Thus, the decoder's recursion is bounded by the input's
+nesting times a constant of the type.
 
 **Encoding** writes keys in canonical order and escapes strings in the
 canonical way. Only two parts of the output have a choice of spelling: numbers
@@ -90,11 +203,17 @@ and spliced `Json` payloads. The `spelling` template argument makes this choice:
   spellings produce the same bytes. The tests use boundary doubles and floats,
   random bit patterns, and payloads.
 
+The writer counts the arrays and objects that are open around each value. A
+recursive value can nest without bound, so the writer refuses, at its path, the
+array or object that the parser would refuse. It stops before its own recursion
+can exhaust the stack. A `std::indirect` that a move has left without a value
+fails at its path, as a variant that an exception has left valueless does.
+
 The writer copies string bytes without checking them, and it checks each
 spliced payload alone. The final validating pass, which every encoding does,
-catches what is left: a string that is not UTF-8, and payloads that are each
-valid but together nest deeper than the parser accepts. That pass reports
-which of the two it found.
+catches what is left: a string that is not UTF-8, and a payload that is valid
+but nests deeper than the parser accepts inside what encloses it. That pass
+reports which of the two it found.
 
 ## Tools
 
@@ -212,6 +331,17 @@ workaround is also commented where it is applied.
   first.
 - **`annotations_of` throws** for templates and namespace aliases.
   `annotations_or_none()` catches the exception.
+- **`std::expected` asks too much of a recursive aggregate.** The converting
+  constructor of libstdc++'s `std::expected` asks whether `T` is constructible
+  from its argument before it rules out a `std::unexpected`. For an aggregate
+  whose first member is `std::optional<std::indirect<Self>>`, that question asks
+  itself through the constraints of the forwarding constructors of
+  `std::optional` and `std::indirect`, which is a hard error. A variant with
+  such an alternative asks it too. Aggregates are therefore read in place, and
+  `read_in_place()` builds their failed result with `std::unexpect`, through
+  `decode_failed()`, as the variant reader builds its own. The decode entry
+  points compose `transform_error()` and `and_then()`, which build failures the
+  same way.
 - **`return` and `break` work inside `template for`.** The codec uses them to
   stop at the first match, at an encode failure, or when a decode stops.
 - **`-Wshadow` and `template for`.** In a function that is not a template, GCC
@@ -263,8 +393,9 @@ remains the only way to read a document.
   `std::move_only_function`, which libc++ on macOS does not provide. This does
   not matter while the reflection layer requires GCC and libstdc++.
 - **Schema dialects.** The schemas are one portable subset of JSON Schema:
-  closed objects, `anyOf` for variants and optionals, and numeric bounds. Some
-  consumers need another shape; OpenAI's strict structured outputs, for
-  example, require every property to be in `required`. A
-  `schema_v<T, Dialect>` parameter is the natural extension point.
+  closed objects, `anyOf` for variants and optionals, numeric bounds, and
+  `$defs` and `$ref` for recursive types only. Some consumers need another
+  shape; OpenAI's strict structured outputs, for example, require every
+  property to be in `required`. A `schema_v<T, Dialect>` parameter is the
+  natural extension point.
 - **Package name.** Check `scrydantic` for name collisions before publishing.
