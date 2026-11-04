@@ -398,3 +398,8 @@ scrydantic_add_compile_fail_test(
   checked_tool.cpp
   "scrydantic::bind<^^order_tools>(): order_tools::order carries scrydantic::check, which applies to data members and classes"
 )
+scrydantic_add_compile_fail_test(
+  annotated-parameter
+  annotated_parameter.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level` carrying a Scrydantic annotation, which a parameter cannot hold; take an argument aggregate and annotate its member"
+)

@@ -171,6 +171,16 @@ inline scrydantic::Status has_room(const Booking& booking) {
 
 } // namespace booking_tools
 
+namespace described_tools {
+
+// A description on a parameter would be lost as surely as a constraint.
+[[= scrydantic::tool{"Move one tile west"}]] inline Position
+    step_west([[= scrydantic::description{"Where to start"}]] Position from) {
+  return Position{.x = from.x - 1, .y = from.y};
+}
+
+} // namespace described_tools
+
 namespace {
 
 class Counter {
@@ -220,6 +230,12 @@ static_assert(
     "parameters, the recursive types tally_tools::Tally<long long int> and "
     "tally_tools::Tally<long int>, which both map to the schema definition name "
     "\"tally_tools.Tally-int64\"");
+
+static_assert(scrydantic::detail::entity_tools_diagnostic<^^described_tools, void>(
+                  "scrydantic::bind") ==
+              "scrydantic::bind<^^described_tools>(): described_tools::step_west has "
+              "parameter `from` carrying a Scrydantic annotation, which a parameter "
+              "cannot hold; take an argument aggregate and annotate its member");
 
 TEST_CASE("a namespace binds its tools in declaration order") {
   auto tools = scrydantic::bind<^^grid_tools>();

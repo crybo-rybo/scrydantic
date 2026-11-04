@@ -405,6 +405,29 @@ consteval std::string passing_problem(const std::meta::info function,
   return {};
 }
 
+// Rejects a Scrydantic annotation on a parameter the model supplies, which no
+// binding reads: an argument object is synthesized from the parameters' types
+// and names alone, the facts that bound_tool keys, and annotations, which
+// accumulate across redeclarations, would be one more fact that two translation
+// units can see differently. Unread, a constraint or a check there would be
+// silently lost, so a constrained argument is a member of an argument aggregate.
+consteval std::string parameter_annotation_problem(const std::meta::info function,
+                                                   const std::meta::info context) {
+  const auto parameters = std::meta::parameters_of(function);
+  for (std::size_t index = first_value_index(function, context);
+       index < parameters.size(); ++index) {
+    for (const auto annotation : std::meta::annotations_of(parameters[index])) {
+      if (std::meta::parent_of(plain_type(std::meta::type_of(annotation))) ==
+          (^^::scrydantic)) {
+        return "has " + parameter_label(parameters[index], index) +
+               " carrying a Scrydantic annotation, which a parameter cannot hold; "
+               "take an argument aggregate and annotate its member";
+      }
+    }
+  }
+  return {};
+}
+
 consteval std::string arguments_problem(const std::meta::info function,
                                         const std::meta::info context) {
   const auto values = value_parameters_of(function, context);
@@ -452,6 +475,9 @@ consteval std::string tool_function_problem(const std::meta::info function,
   }
   if (reason.empty()) {
     reason = passing_problem(function, context);
+  }
+  if (reason.empty()) {
+    reason = parameter_annotation_problem(function, context);
   }
   if (reason.empty()) {
     reason = arguments_problem(function, context);
