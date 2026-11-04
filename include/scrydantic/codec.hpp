@@ -4,15 +4,73 @@
 #error "Scrydantic requires a compiler implementing P2996 (GCC 16 or newer)"
 #endif
 
+#include <array>
+#include <cstddef>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
 #include <scrydantic/detail/meta.hpp>
+#include <scrydantic/detail/model.hpp>
 #include <scrydantic/detail/schema.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
+#include <type_traits>
+
+// The wire names of a reflected type, as keys_v and tags_v list them. Each
+// checks the type as encode() does, so a type outside Encodable fails with the
+// same diagnostic, and then reads the names the codec itself writes.
+namespace scrydantic::detail {
+
+template <typename Type> consteval std::string_view keys_diagnostic() {
+  if constexpr (kind_of(^^Type) != value_kind::aggregate) {
+    return static_string(display(^^Type) +
+                         " is not a plain aggregate, so it has no JSON object keys");
+  } else {
+    return encodable_diagnostic<Type>();
+  }
+}
+
+template <typename Type> consteval auto object_keys() {
+  constexpr std::string_view problem = keys_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return std::array<std::string_view, 0>{};
+  } else {
+    constexpr auto fields = fields_v<Type>;
+    std::array<std::string_view, fields.size()> keys{};
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+      keys[index] = fields[index].key_view();
+    }
+    return keys;
+  }
+}
+
+template <typename Type> consteval std::string_view tags_diagnostic() {
+  if constexpr (kind_of(^^Type) != value_kind::variant) {
+    return static_string(display(^^Type) + " is not a std::variant, so it has no tags");
+  } else {
+    return encodable_diagnostic<Type>();
+  }
+}
+
+template <typename Type> consteval auto variant_tags() {
+  constexpr std::string_view problem = tags_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return std::array<std::string_view, 0>{};
+  } else {
+    constexpr auto alternatives = alternatives_v<Type>;
+    std::array<std::string_view, alternatives.size()> tags{};
+    for (std::size_t index = 0; index < alternatives.size(); ++index) {
+      tags[index] = *tag_of(alternatives[index]);
+    }
+    return tags;
+  }
+}
+
+} // namespace scrydantic::detail
 
 /// Scrydantic's reflected codec, built on P2996: strict encoding and decoding of
 /// reflected values, and the JSON Schema generated for them (schema_v and
@@ -108,5 +166,33 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const Json& json) {
   }
   return decode<Type>(*parsed);
 }
+
+/// The JSON keys of a reflected object type, in the order encode() writes them.
+///
+/// Each key is the member's scrydantic::name annotation or else its identifier,
+/// the key that encoding, decoding, schemas, and failure paths use. The keys are
+/// in lexical order, which is also the order JsonView::key_at() visits a parsed
+/// object in. Every declared member is listed, also one that decoding treats as
+/// optional. A tagged alternative also carries its tag under `"type"` when it is
+/// encoded in a variant; that key is not a member, so it is not listed. A type
+/// that is not an Encodable plain aggregate fails to compile with the reason.
+///
+/// Usage: `for (const std::string_view key : scrydantic::keys_v<Request>)`, or
+/// `template for` to visit the keys at compile time.
+/// @tparam Type Plain aggregate from the Encodable family.
+template <typename Type>
+inline constexpr auto keys_v = detail::object_keys<std::remove_cvref_t<Type>>();
+
+/// The tags of a tagged variant's alternatives, in alternative order.
+///
+/// `tags_v<Variant>[index]` is the scrydantic::tag of
+/// `std::variant_alternative_t<index, Variant>`: the value that the encoded
+/// object carries under `"type"`, and that decoding selects the alternative by.
+/// A host that receives the tag apart from the object, such as the event name
+/// of a server-sent event, can match it here before it decodes. A type that is
+/// not an Encodable variant fails to compile with the reason.
+/// @tparam Variant std::variant from the Encodable family.
+template <typename Variant>
+inline constexpr auto tags_v = detail::variant_tags<std::remove_cvref_t<Variant>>();
 
 } // namespace scrydantic

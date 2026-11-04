@@ -378,6 +378,41 @@ static_assert(scrydantic::tool_arguments_diagnostic<Drawing>().empty());
 static_assert(scrydantic::encodable_diagnostic<Bytes>() ==
               scrydantic::detail::encodable_diagnostic<Bytes>());
 
+// ---- Wire names --------------------------------------------------------------
+
+namespace {
+
+template <typename Type>
+constexpr bool keys_are(const std::vector<std::string_view>& expected) {
+  const auto& keys = scrydantic::keys_v<Type>;
+  return std::vector<std::string_view>{keys.begin(), keys.end()} == expected;
+}
+
+template <typename Variant>
+constexpr bool tags_are(const std::vector<std::string_view>& expected) {
+  const auto& tags = scrydantic::tags_v<Variant>;
+  return std::vector<std::string_view>{tags.begin(), tags.end()} == expected;
+}
+
+} // namespace
+
+// Keys are the final JSON keys in encoding order, optional members included.
+static_assert(keys_are<Renamed>({"a_first", "max_tokens"}));
+static_assert(keys_are<Drawing>({"highlight", "shapes"}));
+static_assert(keys_are<Sparse>({"absent", "explicit_null", "initialized", "plain"}));
+// An alternative's tag member is not one of its keys.
+static_assert(keys_are<Rectangle>({"height", "width"}));
+static_assert(scrydantic::keys_v<EmptyAlternative>.empty());
+// Encode-only aggregates have keys too, and the type may be qualified.
+static_assert(keys_are<BorrowedRequest>({"max_tokens", "model", "stream", "system",
+                                         "temperature", "tools", "top_p"}));
+static_assert(keys_are<const Renamed&>({"a_first", "max_tokens"}));
+
+// Tags follow the alternatives.
+static_assert(tags_are<Shape>({"circle", "rectangle"}));
+static_assert(tags_are<Edge>({"empty", "late"}));
+static_assert(tags_are<StreamEvent>({"delta", "stop"}));
+
 // ---- Schemas -----------------------------------------------------------------
 
 static_assert(
@@ -514,6 +549,45 @@ TEST_CASE("name annotations replace keys in encoding decoding and errors") {
   rejected = decode_text<Renamed>(R"({"a_first":1,"max_tokens":"x"})");
   REQUIRE_FALSE(rejected);
   CHECK(rejected.error().model_message == "$.max_tokens must be an integer");
+}
+
+TEST_CASE("keys_v lists what encode() writes and what a document must hold") {
+  const auto encoded = scrydantic::encode(Renamed{.limit = 1, .zed = "z"});
+  REQUIRE(encoded);
+  const auto view = scrydantic::JsonView::parse(*encoded);
+  REQUIRE(view);
+  REQUIRE(view->size() == scrydantic::keys_v<Renamed>.size());
+  for (std::size_t index = 0; index < scrydantic::keys_v<Renamed>.size(); ++index) {
+    CHECK(view->key_at(index) == scrydantic::keys_v<Renamed>[index]);
+  }
+
+  // A member with an initializer is optional to decode; keys_v still lists it,
+  // so a caller can require it.
+  const auto partial =
+      scrydantic::JsonView::parse(scrydantic::Json{.text = R"({"a_first":"v"})"});
+  REQUIRE(partial);
+  REQUIRE(scrydantic::decode<Renamed>(*partial));
+  std::vector<std::string_view> missing{};
+  for (const std::string_view key : scrydantic::keys_v<Renamed>) {
+    if (!partial->find(key)) {
+      missing.push_back(key);
+    }
+  }
+  CHECK(missing == std::vector<std::string_view>{"max_tokens"});
+}
+
+TEST_CASE("tags_v matches a tag received apart from its object") {
+  const auto is_shape = [](const std::string_view tag) {
+    for (const std::string_view known : scrydantic::tags_v<Shape>) {
+      if (known == tag) {
+        return true;
+      }
+    }
+    return false;
+  };
+  CHECK(is_shape("circle"));
+  CHECK(is_shape("rectangle"));
+  CHECK_FALSE(is_shape("triangle"));
 }
 
 TEST_CASE("skip_null omits disengaged members and reads their absence as null") {

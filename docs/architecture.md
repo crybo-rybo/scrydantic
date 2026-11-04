@@ -37,7 +37,7 @@ operations in `detail/json_text.hpp`. The document type remains private in
 | `error.hpp` | `Error { message, model_message }`, `Result<T>`, `Status`, `tool_error()` |
 | `json.hpp` | `Json`, `JsonKind`, `JsonView`, `is_valid_json()`, `escape_json_string()`, `format_json_number()` |
 | `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown` (plain C++23 types) |
-| `codec.hpp` | `encode()`, `encode_verbatim()`, and `decode()`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
+| `codec.hpp` | `encode()`, `encode_verbatim()`, `decode()`, and the wire names of a type: `keys_v` and `tags_v`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
 | `tools.hpp` | `bind()`, `bind_handler()`, `describe()`, `tools_of()`, `toolbox_tools_of()`, `Toolbox` |
 | `diagnostics.hpp` | The reason text behind each check: `supported_value_diagnostic()`, `encodable_diagnostic()`, `decodable_diagnostic()`, `tool_arguments_diagnostic()`, `tool_handler_diagnostic()`, `toolbox_diagnostic()`, and `tools_diagnostic()` |
 | `detail/model.hpp` | The reflected type model: `kind_of`, annotations, field layouts, and static text |
@@ -52,7 +52,9 @@ operations in `detail/json_text.hpp`. The document type remains private in
 Every reflected operation asks the same type model, `detail/model.hpp`,
 questions about a type: its shape (`kind_of`), each member's JSON key, whether
 a member is required, and whether a member omits null. The schema, the encoder,
-and the decoder therefore cannot disagree about a type.
+and the decoder therefore cannot disagree about a type. `keys_v` and `tags_v`
+give a host the same keys and tags, so a check that the codec does not make,
+such as requiring a member that has a default, uses the codec's own names.
 
 **Family checks.** `value_checker` (in `detail/meta.hpp`) walks a type and
 returns why the type is outside a family: `SupportedValue`, `Encodable`,
