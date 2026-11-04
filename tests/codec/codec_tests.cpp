@@ -1,10 +1,21 @@
+#include <array>
+#include <bit>
 #include <catch2/catch_test_macros.hpp>
+#include <charconv>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
+#include <random>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
+#include <scrydantic/detail/encode.hpp>
+#include <scrydantic/detail/json_text.hpp>
+#include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <variant>
 #include <vector>
 
@@ -85,21 +96,21 @@ struct[[= scrydantic::tag{"stop"}]] StrictStop {};
 
 using StreamEvent = std::variant<LenientDelta, StrictStop>;
 
-// ---- Wire-like and document-like shapes --------------------------------------
+// ---- Encode-only and document-like shapes ------------------------------------
 
-struct WireTool {
+struct BorrowedTool {
   std::string_view description{};
   scrydantic::Json input_schema{};
   std::string_view name{};
 };
 
-struct[[= scrydantic::skip_null]] WireBody {
+struct[[= scrydantic::skip_null]] BorrowedRequest {
   std::optional<std::uint32_t> max_tokens{};
   std::string_view model{};
   bool stream{true};
   std::optional<std::string_view> system{};
   double temperature{};
-  std::optional<std::vector<WireTool>> tools{};
+  std::optional<std::vector<BorrowedTool>> tools{};
   std::optional<double> top_p{};
 };
 
@@ -185,6 +196,24 @@ struct Outer {
   Nested nested;
 };
 
+// std::uint8_t is unsigned char, a character type, so the diagnostics that
+// suggest a replacement must not suggest it.
+struct Bytes {
+  std::vector<std::uint8_t> data;
+};
+
+struct Flags {
+  std::vector<bool> flags;
+};
+
+struct FlagsFixed {
+  std::array<bool, 4> flags{};
+};
+
+struct Words {
+  std::vector<std::uint16_t> words;
+};
+
 struct[[= scrydantic::tag{"bad"}]] BadAlternative {
   char letter{};
 };
@@ -211,9 +240,9 @@ static_assert(scrydantic::SupportedValue<Sparse>);
 static_assert(scrydantic::SupportedValue<StreamEvent>);
 static_assert(!scrydantic::ToolArguments<Shape>);
 
-static_assert(scrydantic::Encodable<WireBody>);
-static_assert(!scrydantic::Decodable<WireBody>);
-static_assert(!scrydantic::SupportedValue<WireBody>);
+static_assert(scrydantic::Encodable<BorrowedRequest>);
+static_assert(!scrydantic::Decodable<BorrowedRequest>);
+static_assert(!scrydantic::SupportedValue<BorrowedRequest>);
 
 static_assert(scrydantic::Encodable<Document>);
 static_assert(scrydantic::Decodable<Document>);
@@ -326,6 +355,17 @@ static_assert(mentions(scrydantic::detail::supported_diagnostic<Document>(),
 static_assert(mentions(scrydantic::detail::tool_arguments_diagnostic<Shape>(),
                        "is not a plain aggregate; tool arguments decode from one "
                        "JSON object"));
+static_assert(mentions(scrydantic::detail::supported_diagnostic<Bytes>(),
+                       "Bytes::data[]: unsigned char is a character type, as "
+                       "std::int8_t and std::uint8_t are; use std::int16_t or "
+                       "std::uint16_t for a number"));
+static_assert(mentions(scrydantic::detail::supported_diagnostic<Flags>(),
+                       "Flags::flags: std::vector<bool> is std::vector<bool>, whose "
+                       "elements are not addressable; use std::vector<std::uint16_t>, "
+                       "or std::array<bool, N> for a fixed size"));
+// Each replacement the diagnostics suggest is itself supported.
+static_assert(scrydantic::SupportedValue<Words>);
+static_assert(scrydantic::SupportedValue<FlagsFixed>);
 static_assert(scrydantic::detail::supported_diagnostic<Drawing>().empty());
 
 // ---- Schemas -----------------------------------------------------------------
@@ -412,8 +452,7 @@ TEST_CASE("tagged variant decode failures list the declared tags") {
   const auto failure = [](const std::string_view text) {
     const auto decoded = decode_text<Drawing>(text);
     REQUIRE_FALSE(decoded);
-    CHECK(decoded.error().message ==
-          "reflected JSON at " + decoded.error().model_message);
+    CHECK(decoded.error().message == decoded.error().model_message);
     return decoded.error().model_message;
   };
 
@@ -454,15 +493,14 @@ TEST_CASE("name annotations replace keys in encoding decoding and errors") {
 
   rejected = decode_text<Renamed>(R"({"a_first":"y","max_tokens":-1})");
   REQUIRE_FALSE(rejected);
-  CHECK(rejected.error().message ==
-        "reflected JSON at $.max_tokens is outside the integer range");
+  CHECK(rejected.error().message == "$.max_tokens is outside the integer range");
 
   rejected = decode_text<Renamed>(R"({"max_tokens":1})");
   REQUIRE_FALSE(rejected);
   CHECK(rejected.error().model_message == "$.a_first is a required member");
 
-  // With several bad members, the first in declaration order is reported, as it
-  // was before keys could be renamed, even though its key sorts later.
+  // With several bad members, the first in declaration order is reported, even
+  // though its key sorts later.
   rejected = decode_text<Renamed>(R"({"a_first":1,"max_tokens":"x"})");
   REQUIRE_FALSE(rejected);
   CHECK(rejected.error().model_message == "$.max_tokens must be an integer");
@@ -536,13 +574,13 @@ TEST_CASE("ignore_unknown decodes leniently at its own level only") {
   CHECK(stop.error().model_message == R"($ contains unknown member "index")");
 }
 
-TEST_CASE("wire-like values borrow text and splice JSON verbatim") {
+TEST_CASE("encode-only values borrow text and splice JSON verbatim") {
   const std::string model = "model-name";
-  const WireBody body{
+  const BorrowedRequest body{
       .max_tokens = 1024,
       .model = model,
       .temperature = 0.7,
-      .tools = std::vector<WireTool>{{
+      .tools = std::vector<BorrowedTool>{{
           .description = "Tab\there",
           .input_schema = {.text = R"({"type":"object", "properties":{}})"},
           .name = "lookup",
@@ -563,20 +601,181 @@ TEST_CASE("wire-like values borrow text and splice JSON verbatim") {
         R"("tools":[{"description":"Tab\there","input_schema":{"properties":{},)"
         R"("type":"object"},"name":"lookup"}]})");
 
-  CHECK(scrydantic::encode(WireBody{.model = "m", .system = "s", .top_p = 0.5})->text ==
+  CHECK(scrydantic::encode(BorrowedRequest{.model = "m", .system = "s", .top_p = 0.5})
+            ->text ==
         R"({"model":"m","stream":true,"system":"s","temperature":0,"top_p":0.5})");
+}
+
+// ---- Canonical spelling ------------------------------------------------------
+
+namespace {
+
+// encode() writes canonical text directly. It must write exactly the bytes that
+// canonicalizing the verbatim writer's text writes, so the two spellings agree.
+template <typename Type>
+[[nodiscard]] std::optional<std::string> spelling_mismatch(const Type& value) {
+  const auto direct = scrydantic::encode(value);
+  const auto verbatim = scrydantic::detail::encode_value(value);
+  if (!direct || !verbatim) {
+    return direct ? "the verbatim writer failed" : "encode() failed";
+  }
+  const auto parsed = scrydantic::JsonView::parse(*verbatim);
+  const auto canonical = parsed ? parsed->to_json().text : "nothing";
+  if (canonical != direct->text) {
+    return "verbatim " + verbatim->text + " canonicalizes to " + canonical +
+           " but encode() wrote " + direct->text;
+  }
+  return std::nullopt;
+}
+
+template <typename Float>
+[[nodiscard]] std::vector<std::string>
+float_spelling_mismatches(const std::vector<Float>& values) {
+  std::vector<std::string> mismatches{};
+  for (const Float value : values) {
+    if (const auto mismatch = spelling_mismatch(value)) {
+      mismatches.push_back(*mismatch);
+    }
+  }
+  return mismatches;
+}
+
+// Values at every boundary the spelling depends on: signed zeros, subnormals,
+// every power of two and of ten, the edges of the positional range, and the
+// integers around 2^53, 2^63, and 2^64, where the text of a whole double may or
+// may not read back as an integer; then deterministic random bit patterns and
+// random decimals.
+template <typename Float> [[nodiscard]] std::vector<Float> spelling_cases() {
+  using limits = std::numeric_limits<Float>;
+  using Bits = std::conditional_t<sizeof(Float) == 8, std::uint64_t, std::uint32_t>;
+  std::vector<Float> values{Float{0},      -Float{0},          limits::denorm_min(),
+                            limits::min(), limits::max(),      limits::epsilon(),
+                            Float{1},      Float{1} / Float{3}};
+  for (const double value :
+       {0.1, 123.456, 1e15, 1e16, 9.999999e15, 1e-4, 1e-5, 0.000123}) {
+    values.push_back(static_cast<Float>(value));
+  }
+  for (int exponent = limits::min_exponent - limits::digits;
+       exponent < limits::max_exponent; ++exponent) {
+    values.push_back(std::ldexp(Float{1}, exponent));
+  }
+  for (int exponent = limits::min_exponent10 - limits::digits10;
+       exponent <= limits::max_exponent10; ++exponent) {
+    const auto text = "1e" + std::to_string(exponent);
+    Float value{};
+    if (std::from_chars(text.data(), text.data() + text.size(), value).ec ==
+        std::errc{}) {
+      values.push_back(value);
+    }
+  }
+  for (const int exponent :
+       {limits::digits - 1, limits::digits, limits::digits + 1, 62, 63, 64, 65}) {
+    const auto whole = std::ldexp(Float{1}, exponent);
+    for (int step = -4; step <= 4; ++step) {
+      values.push_back(std::nextafter(whole, step < 0 ? Float{0} : limits::infinity()));
+      values.push_back(whole + static_cast<Float>(step));
+    }
+  }
+  values.push_back(static_cast<Float>(123456789012345680.0));
+  values.push_back(static_cast<Float>(-9223372036854775808.0));
+  values.push_back(static_cast<Float>(18446744073709551616.0));
+
+  std::mt19937_64 generator{20261103};
+  for (int sample = 0; sample < 20000; ++sample) {
+    const auto value = std::bit_cast<Float>(static_cast<Bits>(generator()));
+    if (std::isfinite(value)) {
+      values.push_back(value);
+    }
+  }
+  std::uniform_int_distribution<std::int64_t> mantissa{-99999999, 99999999};
+  std::uniform_int_distribution<int> decimal_exponent{-30, 30};
+  for (int sample = 0; sample < 20000; ++sample) {
+    const auto text = std::to_string(mantissa(generator)) + "e" +
+                      std::to_string(decimal_exponent(generator));
+    Float value{};
+    std::from_chars(text.data(), text.data() + text.size(), value);
+    values.push_back(value);
+  }
+  for (const auto value : std::vector<Float>{values}) {
+    values.push_back(-value);
+  }
+  return values;
+}
+
+} // namespace
+
+TEST_CASE("encode() spells doubles as canonicalizing the verbatim text would") {
+  const auto mismatches = float_spelling_mismatches(spelling_cases<double>());
+  for (std::size_t index = 0; index < mismatches.size() && index < 5; ++index) {
+    UNSCOPED_INFO(mismatches[index]);
+  }
+  CHECK(mismatches.empty());
+}
+
+TEST_CASE("encode() spells floats as canonicalizing the verbatim text would") {
+  const auto mismatches = float_spelling_mismatches(spelling_cases<float>());
+  for (std::size_t index = 0; index < mismatches.size() && index < 5; ++index) {
+    UNSCOPED_INFO(mismatches[index]);
+  }
+  CHECK(mismatches.empty());
+}
+
+TEST_CASE("encode() canonicalizes spliced payloads as a whole-text pass would") {
+  for (const std::string_view payload : {
+           R"( { "b" : [ 1.0 , -0 , 1e2 , 2.50 ] , "a" : null , "b" : true } )",
+           R"({"Aé😀":"\/\u001f\b\t"})",
+           "18446744073709551615",
+           "-9223372036854775808",
+           "1E400",
+           R"("text")",
+       }) {
+    INFO(payload);
+    const Payload value{.body = {.text = std::string{payload}}};
+    if (!scrydantic::detail::validate_json(payload)) {
+      CHECK_FALSE(scrydantic::encode(value));
+      continue;
+    }
+    CHECK(spelling_mismatch(value) == std::nullopt);
+  }
+  CHECK(
+      spelling_mismatch(BorrowedRequest{
+          .max_tokens = 7,
+          .model = "m\x7f\"\\\n",
+          .temperature = 1e-7,
+          .tools =
+              std::vector<BorrowedTool>{{.input_schema = {.text = R"({"z":1,"a":2})"}}},
+          .top_p = 0.1}) == std::nullopt);
+}
+
+TEST_CASE("strings are escaped as the canonical writer escapes them") {
+  // Every byte JSON requires escaping, then DEL and multi-byte UTF-8, which pass
+  // through: the codec's run-time writer and the core's agree byte for byte.
+  const std::string text = "\"\\/\b\f\n\r\t\x01\x1f\x7f\xc3\xa9";
+  const auto expected =
+      std::string{R"("\"\\/\b\f\n\r\t\u0001\u001F)"} + "\x7f\xc3\xa9\"";
+  CHECK(scrydantic::encode(text)->text == expected);
+  CHECK(scrydantic::detail::encode_value(text)->text == expected);
+  CHECK(scrydantic::escape_json_string(text) == expected);
+  CHECK(decode_text<std::string>(expected).value() == text);
+}
+
+TEST_CASE("encode() rejects a string that is not UTF-8") {
+  const auto encoded = scrydantic::encode(DocText{.text = "bad \xff byte"});
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message ==
+        "the value holds a string that is not valid UTF-8, so it cannot be JSON");
+  CHECK(encoded.error().model_message.empty());
 }
 
 TEST_CASE("an invalid spliced JSON payload fails encoding at its path") {
   for (const auto* text : {"", "   ", "{", R"({"a":1} 2)", "nul"}) {
-    const WireBody body{
+    const BorrowedRequest body{
         .model = "m",
-        .tools = std::vector<WireTool>{{.input_schema = {.text = text}}},
+        .tools = std::vector<BorrowedTool>{{.input_schema = {.text = text}}},
     };
     const auto encoded = scrydantic::detail::encode_value(body);
     REQUIRE_FALSE(encoded);
-    CHECK(encoded.error().message ==
-          "reflected JSON at $.tools[0].input_schema is not valid JSON");
+    CHECK(encoded.error().message == "$.tools[0].input_schema is not valid JSON");
     CHECK(encoded.error().model_message.empty());
   }
 }
@@ -634,12 +833,12 @@ TEST_CASE("JsonView serializes the viewed node canonically") {
 TEST_CASE("public decoding reports path-based messages") {
   auto decoded = decode_text<Renamed>("{");
   REQUIRE_FALSE(decoded);
-  CHECK(decoded.error().message == "reflected JSON text is not valid JSON");
+  CHECK(decoded.error().message == "JSON text is not valid JSON");
   CHECK(decoded.error().model_message == "JSON text is not valid JSON");
 
   decoded = decode_text<Renamed>("[]");
   REQUIRE_FALSE(decoded);
-  CHECK(decoded.error().message == "reflected JSON at $ must be an object");
+  CHECK(decoded.error().message == "$ must be an object");
   CHECK(decoded.error().model_message == "$ must be an object");
 
   const auto view =
@@ -672,6 +871,5 @@ TEST_CASE("encoding reports a valueless variant instead of throwing") {
 
   const auto encoded = scrydantic::encode(block);
   REQUIRE_FALSE(encoded);
-  CHECK(encoded.error().message ==
-        "reflected JSON at $ is a variant left valueless by an exception");
+  CHECK(encoded.error().message == "$ is a variant left valueless by an exception");
 }

@@ -1,6 +1,6 @@
-// Tool binding without a host library: free functions, namespaces, toolboxes,
-// and typed handlers become BoundTools whose handlers decode, call, and encode,
-// with or without a call context of the caller's choosing.
+// Tool binding: free functions, namespaces, toolboxes, and typed handlers become
+// BoundTools whose handlers decode, call, and encode, with or without a call
+// context of the caller's choosing.
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
@@ -146,12 +146,12 @@ TEST_CASE("bound handlers report decode and handler failures as Errors") {
 
   const auto missing = tools[1].invoke(json(R"({"left":2})"));
   REQUIRE_FALSE(missing);
-  CHECK(missing.error().message == "reflected JSON at $.right is a required member");
+  CHECK(missing.error().message == "$.right is a required member");
   CHECK(missing.error().model_message == "$.right is a required member");
 
   const auto malformed = tools[1].invoke(json("{"));
   REQUIRE_FALSE(malformed);
-  CHECK(malformed.error().message == "reflected tool arguments are not valid JSON");
+  CHECK(malformed.error().message == "tool arguments are not valid JSON");
   CHECK(malformed.error().model_message == "tool arguments are not valid JSON");
 
   const auto refused = tools[2].invoke(json("{}"));
@@ -161,7 +161,8 @@ TEST_CASE("bound handlers report decode and handler failures as Errors") {
 }
 
 TEST_CASE("bound handlers refuse a result that is not valid JSON") {
-  constexpr std::string_view reason = "reflected value could not be encoded as JSON";
+  constexpr std::string_view reason =
+      "the value holds a string that is not valid UTF-8, so it cannot be JSON";
   const std::string invalid(1, '\xff');
   // Invalid UTF-8 is the one thing a supported value can hold that the writer
   // passes through, so the public encoder is the reference for the verdict.

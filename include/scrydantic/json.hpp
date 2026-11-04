@@ -13,9 +13,9 @@ namespace scrydantic {
 /// Serialized JSON boundary value.
 ///
 /// Constructing this value does not parse or validate its text. Each consuming
-/// operation validates the JSON and reports its own documented error. No
-/// third-party JSON type crosses Scrydantic's public boundary. Use JsonView to read
-/// one, and escape_json_string() to quote strings for hand-built JSON.
+/// operation validates the JSON and reports its own documented error. Use
+/// JsonView to read one, JsonView::to_json() for its canonical form, and
+/// escape_json_string() to quote strings for hand-built JSON.
 struct Json {
   /// UTF-8 JSON text.
   std::string text{};

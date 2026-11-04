@@ -251,15 +251,6 @@ using tool_arguments_t = typename[:tool_arguments_type<Tool>():];
 
 // ---- Diagnostics -------------------------------------------------------------
 
-consteval std::string decimal(std::size_t value) {
-  std::string digits{};
-  do {
-    digits.insert(digits.begin(), static_cast<char>('0' + (value % 10U)));
-    value /= 10U;
-  } while (value != 0U);
-  return digits;
-}
-
 // The name a diagnostic calls an entity by: qualified through named namespaces
 // and classes, without the signature display_string_of adds to a function.
 consteval std::string entity_name(const std::meta::info entity) {
@@ -273,8 +264,8 @@ consteval std::string entity_name(const std::meta::info entity) {
   if (std::meta::is_type(parent)) {
     return display(parent) + "::" + own;
   }
-  if (std::meta::is_namespace(parent) &&
-      parent != ^^::&&std::meta::has_identifier(parent)) {
+  if (std::meta::is_namespace(parent) && parent != (^^::) &&
+      std::meta::has_identifier(parent)) {
     return entity_name(parent) + "::" + own;
   }
   return own;
@@ -348,7 +339,7 @@ consteval std::string binding_problem(const std::meta::info function,
   const bool bound =
       std::meta::is_class_member(function) && !std::meta::is_static_member(function);
   if (toolbox == std::meta::info{}) {
-    return bound ? "is a non-static member function; register an object of " +
+    return bound ? "is a non-static member function; bind an object of " +
                        display(std::meta::parent_of(function)) + " as a toolbox"
                  : std::string{};
   }

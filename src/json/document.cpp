@@ -1,4 +1,4 @@
-#include "json/core.hpp"
+#include "json/core.hpp" // IWYU pragma: keep
 
 #include "json/document.hpp"
 
@@ -13,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -72,7 +73,7 @@ constexpr std::uint64_t byte_highs = 0x8080808080808080U;
 
 [[nodiscard]] constexpr std::uint64_t bytes_below(const std::uint64_t word,
                                                   const std::uint64_t bound) noexcept {
-  return (word - byte_ones * bound) & ~word & byte_highs;
+  return (word - (byte_ones * bound)) & ~word & byte_highs;
 }
 
 [[nodiscard]] constexpr std::uint64_t bytes_equal(const std::uint64_t word,
@@ -214,6 +215,11 @@ public:
 private:
   [[nodiscard]] bool at_end() const noexcept { return cursor_ == end_; }
 
+  // The bytes left between the cursor and the end of the text.
+  [[nodiscard]] std::size_t remaining() const noexcept {
+    return static_cast<std::size_t>(end_ - cursor_);
+  }
+
   [[nodiscard]] bool next_is(const char character) const noexcept {
     return cursor_ != end_ && *cursor_ == character;
   }
@@ -255,7 +261,7 @@ private:
 
   template <class T>
   [[nodiscard]] bool literal(const std::string_view word, Out& out, T data) {
-    if (static_cast<std::size_t>(end_ - cursor_) < word.size() ||
+    if (remaining() < word.size() ||
         std::memcmp(cursor_, word.data(), word.size()) != 0) {
       return false;
     }
@@ -369,8 +375,7 @@ private:
       }
     };
     while (cursor_ != end_) {
-      if (static_cast<std::size_t>(end_ - cursor_) >= word_size &&
-          word_is_plain(load_word(cursor_))) {
+      if (remaining() >= word_size && word_is_plain(load_word(cursor_))) {
         cursor_ += word_size;
         continue;
       }
@@ -403,8 +408,7 @@ private:
 
   [[nodiscard]] bool utf8_sequence(const unsigned char lead) noexcept {
     const auto expected = utf8_lead(lead);
-    if (expected.length == 0 ||
-        static_cast<std::size_t>(end_ - cursor_) < expected.length) {
+    if (expected.length == 0 || remaining() < expected.length) {
       return false;
     }
     const auto second = static_cast<unsigned char>(cursor_[1]);
@@ -442,7 +446,7 @@ private:
 
   // Four hex digits, the cursor on the first; empty when malformed.
   [[nodiscard]] std::optional<std::uint32_t> hex_quad() noexcept {
-    if (end_ - cursor_ < 4) {
+    if (remaining() < 4) {
       return std::nullopt;
     }
     std::uint32_t value = 0;
@@ -462,7 +466,7 @@ private:
       return false;
     }
     if (*code_point >= 0xD800U && *code_point <= 0xDBFFU) {
-      if (end_ - cursor_ < 2 || cursor_[0] != '\\' || cursor_[1] != 'u') {
+      if (remaining() < 2 || cursor_[0] != '\\' || cursor_[1] != 'u') {
         return false;
       }
       cursor_ += 2;
@@ -551,7 +555,7 @@ private:
       if (magnitude > (max - value) / 10U) {
         return false;
       }
-      magnitude = magnitude * 10U + value;
+      magnitude = (magnitude * 10U) + value;
     }
     if (!negative) {
       emit(out, magnitude);
@@ -732,11 +736,7 @@ const Value* Value::find(const std::string_view key) const noexcept {
   if (members == nullptr) {
     return nullptr;
   }
-  const auto found =
-      std::lower_bound(members->begin(), members->end(), key,
-                       [](const Member& member, const std::string_view name) {
-                         return member.first < name;
-                       });
+  const auto found = std::ranges::lower_bound(*members, key, {}, &Member::first);
   if (found == members->end() || found->first != key) {
     return nullptr;
   }
@@ -771,7 +771,7 @@ void append_quoted(std::string& output, const std::string_view text) {
   const auto* run = text.data();
   const auto* const end = text.data() + text.size();
   for (const auto* cursor = run; cursor != end;) {
-    if (static_cast<std::size_t>(end - cursor) >= word_size &&
+    if (std::cmp_greater_equal(end - cursor, word_size) &&
         !word_needs_escape(load_word(cursor))) {
       cursor += word_size;
       continue;

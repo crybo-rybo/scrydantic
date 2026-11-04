@@ -1,6 +1,8 @@
+# Tests are labelled by what they cover, so `ctest -L <label>` runs one group:
+# json (the C++23 core), reflection (codec, schemas, tool binding), fuzz (the
+# corpus replay), multi-tu, compile-fail, and example.
+
 include(FetchContent)
-# When Scry adds Scrydantic as a subdirectory, this is the first declaration of
-# Catch2, so Scry's tests reuse it; both must name the same revision.
 FetchContent_Declare(
   Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
@@ -57,7 +59,7 @@ scrydantic_add_header_checks(
 # the document type behind JsonView through the private src/ headers.
 add_executable(
   scrydantic_json_tests
-  json/json_codec_validation_tests.cpp
+  json/json_entry_point_tests.cpp
   json/json_document_tests.cpp
   json/json_fixture_tests.cpp
   json/json_view_tests.cpp
@@ -92,7 +94,11 @@ target_link_libraries(
   scrydantic_json_tests
   PRIVATE Catch2::Catch2WithMain scrydantic::json scrydantic_project_options
 )
-catch_discover_tests(scrydantic_json_tests TEST_PREFIX "scrydantic.json.")
+catch_discover_tests(
+  scrydantic_json_tests
+  TEST_PREFIX "scrydantic.json."
+  PROPERTIES LABELS json
+)
 
 # The JSON fuzz target is a libFuzzer-style LLVMFuzzerTestOneInput entry point
 # over the checked-in seed corpus under fuzz/corpus/json. fuzz/replay_main.cpp
@@ -116,7 +122,10 @@ add_test(
   NAME scrydantic.json-fuzz-replay
   COMMAND scrydantic_json_fuzz_replay "${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/json"
 )
-set_tests_properties(scrydantic.json-fuzz-replay PROPERTIES TIMEOUT 45)
+set_tests_properties(
+  scrydantic.json-fuzz-replay
+  PROPERTIES TIMEOUT 45 LABELS "json;fuzz"
+)
 
 # The reflected codec, schemas, and tool binding, linked against Scrydantic and
 # Catch2 alone.
@@ -129,7 +138,22 @@ target_link_libraries(
   scrydantic_tests
   PRIVATE Catch2::Catch2WithMain scrydantic::scrydantic scrydantic_project_options
 )
-catch_discover_tests(scrydantic_tests TEST_PREFIX "scrydantic.")
+catch_discover_tests(
+  scrydantic_tests
+  TEST_PREFIX "scrydantic."
+  PROPERTIES LABELS reflection
+)
+
+# Benchmarks of the JSON core, the codec, and bound tool calls. They build with
+# the tests when enabled but are not registered with CTest: their numbers mean
+# something only from an optimized build (benchmarks/benchmarks.cpp says how).
+if(SCRYDANTIC_BUILD_BENCHMARKS)
+  add_executable(scrydantic_benchmarks benchmarks/benchmarks.cpp)
+  target_link_libraries(
+    scrydantic_benchmarks
+    PRIVATE Catch2::Catch2WithMain scrydantic::scrydantic scrydantic_project_options
+  )
+endif()
 
 # A binding must generate code from the declarations its own translation unit
 # sees (a namespace's tools, a function's parameter names and annotations),
@@ -155,6 +179,10 @@ foreach(SCRYDANTIC_LINK_ORDER IN ITEMS a_then_b b_then_a)
     NAME "scrydantic.multi-tu-${SCRYDANTIC_LINK_ORDER}"
     COMMAND scrydantic_multi_tu_${SCRYDANTIC_LINK_ORDER}
   )
+  set_tests_properties(
+    "scrydantic.multi-tu-${SCRYDANTIC_LINK_ORDER}"
+    PROPERTIES LABELS "reflection;multi-tu"
+  )
 endforeach()
 
 # Each rejection names the type, member, function, or namespace at fault and the
@@ -174,6 +202,10 @@ function(
       "-DPROJECT_INCLUDE_DIR=${PROJECT_SOURCE_DIR}/include"
       "-DEXPECTED_SUBSTRING=${EXPECTED_SUBSTRING}"
       -P "${PROJECT_SOURCE_DIR}/cmake/ExpectCompileFailure.cmake"
+  )
+  set_tests_properties(
+    "scrydantic.compile-fail.${TEST_NAME}"
+    PROPERTIES LABELS compile-fail
   )
 endfunction()
 
@@ -201,6 +233,11 @@ scrydantic_add_compile_fail_test(
   bind-misplaced-tool
   bind_misplaced_tool.cpp
   "scrydantic::bind<^^lamp_tools>(): lamp_tools::brightness carries scrydantic::tool, which applies to functions"
+)
+scrydantic_add_compile_fail_test(
+  bind-member-function
+  bind_member_function.cpp
+  "scrydantic::bind<^^Lamp::switch_on>(): Lamp::switch_on is a non-static member function; bind an object of Lamp as a toolbox"
 )
 scrydantic_add_compile_fail_test(
   misplaced-context

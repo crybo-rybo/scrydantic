@@ -3,8 +3,8 @@
 // The JSON core is the part of Scrydantic that parses untrusted bytes: the
 // strict parser, the validator, the canonical writer, and the number spelling.
 // Its sources are compiled as C++23 without reflection in every build, so
-// clang-tidy can analyze them, and so a C++23 library such as Scry's kernel can
-// link them.
+// clang-tidy can analyze them, and so a C++23 consumer that does not enable
+// reflection can link them (scrydantic::json).
 //
 // Every JSON core source file includes this header first. Its headers do not:
 // the reflected codec includes the public ones from C++26 translation units.

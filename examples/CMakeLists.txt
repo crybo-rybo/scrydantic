@@ -11,4 +11,8 @@ if(SCRYDANTIC_BUILD_TESTS)
     NAME scrydantic.example.standalone-tools
     COMMAND scrydantic_standalone_tools_example
   )
+  set_tests_properties(
+    scrydantic.example.standalone-tools
+    PROPERTIES LABELS example
+  )
 endif()

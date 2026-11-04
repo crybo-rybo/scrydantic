@@ -1,10 +1,16 @@
-#include "json/core.hpp"
+#include "json/core.hpp" // IWYU pragma: keep
 
 #include "json/document.hpp"
 
+#include <cstddef>
+#include <cstdint>
+#include <expected>
 #include <memory>
+#include <optional>
+#include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace scrydantic {

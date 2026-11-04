@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -18,18 +17,8 @@ namespace scrydantic::detail {
 
 using schema_text = std::optional<std::string_view>;
 
-consteval void append_unsigned(std::vector<char>& output, std::uint64_t value) {
-  std::array<char, std::numeric_limits<std::uint64_t>::digits10 + 2U> digits{};
-  std::size_t size = 0;
-  do {
-    digits[size] = static_cast<char>('0' + (value % 10U));
-    ++size;
-    value /= 10U;
-  } while (value != 0U);
-  while (size != 0U) {
-    --size;
-    output.push_back(digits[size]);
-  }
+consteval void append_unsigned(std::vector<char>& output, const std::uint64_t value) {
+  append_json_literal(output, decimal(value));
 }
 
 // Schema keys are emitted in sorted order, so "description" comes first in most
@@ -249,7 +238,7 @@ consteval void append_schema(std::vector<char>& output, const std::meta::info re
     return append_object_schema(output, type, description_text, std::nullopt);
   default:
     // Unreachable: the SupportedValue check admits no other kind.
-    throw std::meta::exception(u8"reflected schema generation reached a type "
+    throw std::meta::exception(u8"schema generation reached a type "
                                u8"outside SupportedValue",
                                type);
   }
@@ -286,7 +275,7 @@ template <typename Args> consteval std::string_view checked_input_schema() {
 
 namespace scrydantic {
 
-/// Canonical provider-neutral JSON Schema generated for any supported reflected value.
+/// Canonical JSON Schema generated for any supported reflected value.
 ///
 /// Handler result types are supported roots too. A tool binding never sends a
 /// result schema to a model; it is here so a host can export its own tool
@@ -296,7 +285,7 @@ namespace scrydantic {
 template <typename Value>
 inline constexpr std::string_view schema_v = detail::checked_schema<Value>();
 
-/// Canonical provider-neutral JSON Schema generated for a reflected argument aggregate.
+/// Canonical JSON Schema generated for a reflected argument aggregate.
 /// @tparam Args Type satisfying ToolArguments.
 template <typename Args>
 inline constexpr std::string_view input_schema_v = detail::checked_input_schema<Args>();

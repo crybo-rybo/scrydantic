@@ -1,7 +1,7 @@
-// Scrydantic without Scry: annotate a few functions and a toolbox, publish them
-// as an MCP-style `tools/list` result, and serve one `tools/call` request. The
-// program links Scrydantic alone, with no HTTP client, runtime, or model, and
-// exits 0 only when what it printed is what it expects.
+// Annotate a few functions and a toolbox, publish them as an MCP-style
+// `tools/list` result, and serve `tools/call` requests. The program needs no
+// HTTP client, runtime, or model, and exits 0 only when what it printed is what
+// it expects.
 
 #include <cmath>
 #include <cstdint>
@@ -123,15 +123,9 @@ struct CallResult {
   return {.content = {TextContent{"unknown tool " + request->name}}, .is_error = true};
 }
 
-} // namespace
-
-int main() {
-  auto notebook = std::make_shared<Notebook>();
-  auto tools = scrydantic::bind<^^unit_tools>();
-  for (auto& tool : scrydantic::bind(notebook)) {
-    tools.push_back(std::move(tool));
-  }
-
+// tools/list: each tool's name, description, and input schema.
+[[nodiscard]] scrydantic::Result<scrydantic::Json>
+list(const std::vector<scrydantic::BoundTool<>>& tools) {
   ToolList listing{};
   for (const auto& tool : tools) {
     listing.tools.push_back(ListedTool{
@@ -140,52 +134,71 @@ int main() {
         .input_schema = tool.input_schema,
     });
   }
-  const auto listed = scrydantic::encode(listing);
+  return scrydantic::encode(listing);
+}
+
+// The tool names a tools/list result lists, in order, borrowed from `listing`.
+[[nodiscard]] std::vector<std::string_view>
+listed_names(const scrydantic::JsonView& listing) {
+  std::vector<std::string_view> names{};
+  const auto listed = listing.find("tools");
+  for (std::size_t index = 0; listed && index < listed->size(); ++index) {
+    names.push_back(listed->at(index)->find("name")->string().value_or(""));
+  }
+  return names;
+}
+
+// One tools/call request and the result a client expects for it.
+struct Exchange {
+  std::string_view request{};
+  std::string_view expected{};
+};
+
+// What a client would check, after the four tools in declaration order: a decoded
+// and converted reading, a schema-derived refusal the model can act on, a rounded
+// number, and a value the schema allows but the tool refuses to round.
+constexpr Exchange exchanges[] = {
+    {R"({"name":"convert","arguments":{"degrees":100,"scale":"celsius"}})",
+     R"({"content":[{"text":"{\"degrees\":212,\"scale\":\"fahrenheit\"}",)"
+     R"("type":"text"}],"isError":false})"},
+    {R"({"name":"write_note","arguments":{}})",
+     R"({"content":[{"text":"$.text is a required member","type":"text"}],)"
+     R"("isError":true})"},
+    {R"({"name":"round_number","arguments":{"value":2.5}})",
+     R"({"content":[{"text":"3","type":"text"}],"isError":false})"},
+    {R"({"name":"round_number","arguments":{"value":1e100}})",
+     R"({"content":[{"text":"the rounded value does not fit in 64 bits",)"
+     R"("type":"text"}],"isError":true})"},
+};
+
+} // namespace
+
+int main() {
+  auto tools = scrydantic::bind<^^unit_tools>();
+  for (auto& tool : scrydantic::bind(std::make_shared<Notebook>())) {
+    tools.push_back(std::move(tool));
+  }
+
+  const auto listed = list(tools);
   if (!listed) {
     std::cerr << listed.error().message << '\n';
     return 1;
   }
   std::cout << "tools/list -> " << listed->text << '\n';
+  const auto listing = scrydantic::JsonView::parse(*listed);
+  bool ok = listing && listed_names(*listing) ==
+                           std::vector<std::string_view>{"convert", "round_number",
+                                                         "write_note", "count_notes"};
 
-  const scrydantic::Json request{
-      .text = R"({"name":"convert","arguments":{"degrees":100,"scale":"celsius"}})"};
-  const auto answered = scrydantic::encode(call(tools, request));
-  const auto refused = scrydantic::encode(
-      call(tools, scrydantic::Json{.text = R"({"name":"write_note","arguments":{}})"}));
-  const auto rounded = scrydantic::encode(
-      call(tools, scrydantic::Json{
-                      .text = R"({"name":"round_number","arguments":{"value":2.5}})"}));
-  const auto too_large = scrydantic::encode(call(
-      tools, scrydantic::Json{
-                 .text = R"({"name":"round_number","arguments":{"value":1e100}})"}));
-  if (!answered || !refused || !rounded || !too_large) {
-    return 1;
+  for (const auto& exchange : exchanges) {
+    const auto result = scrydantic::encode(
+        call(tools, scrydantic::Json{.text = std::string{exchange.request}}));
+    if (!result) {
+      std::cerr << result.error().message << '\n';
+      return 1;
+    }
+    std::cout << "tools/call -> " << result->text << '\n';
+    ok = ok && result->text == exchange.expected;
   }
-  std::cout << "tools/call -> " << answered->text << '\n';
-  std::cout << "tools/call -> " << refused->text << '\n';
-  std::cout << "tools/call -> " << rounded->text << '\n';
-  std::cout << "tools/call -> " << too_large->text << '\n';
-
-  // What a client would check: the four tools in declaration order, a decoded and
-  // converted reading, a schema-derived refusal the model can act on, and a value
-  // the schema allows but the tool refuses to round.
-  const auto parsed = scrydantic::JsonView::parse(*listed);
-  const auto names = parsed ? parsed->find("tools") : std::nullopt;
-  std::vector<std::string_view> listed_names{};
-  for (std::size_t index = 0; names && index < names->size(); ++index) {
-    listed_names.push_back(names->at(index)->find("name")->string().value_or(""));
-  }
-  const bool ok =
-      listed_names == std::vector<std::string_view>{"convert", "round_number",
-                                                    "write_note", "count_notes"} &&
-      answered->text ==
-          R"({"content":[{"text":"{\"degrees\":212,\"scale\":\"fahrenheit\"}",)"
-          R"("type":"text"}],"isError":false})" &&
-      refused->text == R"({"content":[{"text":"$.text is a required member",)"
-                       R"("type":"text"}],"isError":true})" &&
-      rounded->text == R"({"content":[{"text":"3","type":"text"}],"isError":false})" &&
-      too_large->text ==
-          R"({"content":[{"text":"the rounded value does not fit in 64 bits",)"
-          R"("type":"text"}],"isError":true})";
   return ok ? 0 : 1;
 }

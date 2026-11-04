@@ -179,10 +179,10 @@ inline constexpr static_text annotation_text_v{Annotation.text,
                                                sizeof(Annotation.text) - 1};
 
 consteval std::string_view annotation_text(const std::meta::info annotation) {
-  const auto argument = std::meta::constant_of(annotation);
+  // Parenthesized so clang-format, which does not know `^^`, lays it out.
+  const auto variable = (^^annotation_text_v);
   const auto text = std::meta::extract<static_text>(
-      std::meta::substitute(^^annotation_text_v, {
-                                                     argument}));
+      std::meta::substitute(variable, {std::meta::constant_of(annotation)}));
   return {text.data, text.size};
 }
 
@@ -308,7 +308,26 @@ consteval std::string_view static_string(const std::string& text) {
   return {std::define_static_string(text), text.size()};
 }
 
-// `"key":`, escaped once at compile time so encoding a member appends one literal.
+// The decimal digits of `value`.
+consteval std::string decimal(std::uint64_t value) {
+  std::string digits{};
+  do {
+    digits.push_back(static_cast<char>('0' + (value % 10U)));
+    value /= 10U;
+  } while (value != 0U);
+  std::ranges::reverse(digits);
+  return digits;
+}
+
+// `text` as a JSON string literal, escaped once at compile time so encoding it
+// appends one static string.
+consteval std::string_view quoted(const std::string_view text) {
+  std::string literal{};
+  append_json_string(literal, text);
+  return static_string(literal);
+}
+
+// `"key":`, the text that introduces an object member.
 consteval std::string_view member_prefix(const std::string_view key) {
   std::string text{};
   append_json_string(text, key);
