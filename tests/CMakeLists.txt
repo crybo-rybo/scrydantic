@@ -131,6 +131,7 @@ set_tests_properties(
 # Catch2 alone.
 add_executable(
   scrydantic_tests
+  codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
   tools/tool_binding_tests.cpp
 )

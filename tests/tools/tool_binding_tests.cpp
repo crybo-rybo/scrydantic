@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <scrydantic/detail/binding.hpp>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <string_view>
@@ -330,6 +331,79 @@ TEST_CASE("typed handlers bind with and without a context") {
   REQUIRE_FALSE(rejected);
   CHECK(rejected.error().model_message == "sign in first");
   CHECK(rejected.error().message == "sign in first");
+}
+
+// ---- Results -----------------------------------------------------------------
+
+namespace {
+
+// Copyable but not movable: the destructor suppresses the implicit move
+// constructor, and the class is still an aggregate. Each destruction is counted,
+// so a test sees every copy that encoding a result makes.
+struct CopyOnlyResult {
+  static inline int destructions = 0;
+  std::vector<int> values;
+
+  // NOLINTNEXTLINE(cppcoreguidelines-special-member-functions): the point.
+  ~CopyOnlyResult() { ++destructions; }
+};
+
+} // namespace
+
+TEST_CASE("a handler's result is encoded where it lands, without a copy") {
+  CopyOnlyResult::destructions = 0;
+  const auto run = [](auto body) {
+    auto handler = scrydantic::bind_handler<Position>(std::move(body));
+    return handler(json(R"({"x":0,"y":0})"));
+  };
+
+  scrydantic::Result<scrydantic::Json> result{};
+  SECTION("a bare value") {
+    result = run([](Position) { return CopyOnlyResult{.values = {1, 2, 3}}; });
+  }
+  SECTION("a Result") {
+    result = run([](Position) -> scrydantic::Result<CopyOnlyResult> {
+      return scrydantic::Result<CopyOnlyResult>{std::in_place,
+                                                std::vector<int>{1, 2, 3}};
+    });
+  }
+  REQUIRE(result);
+  CHECK(result->text == R"({"values":[1,2,3]})");
+  // The one value the handler returned, and no copy of it.
+  CHECK(CopyOnlyResult::destructions == 1);
+}
+
+TEST_CASE("encoding a named result reads it in place") {
+  CopyOnlyResult::destructions = 0;
+  SECTION("a bare value") {
+    const CopyOnlyResult value{.values = {1, 2, 3}};
+    const auto encoded = scrydantic::detail::encode_handler_result(value);
+    REQUIRE(encoded);
+    CHECK(encoded->text == R"({"values":[1,2,3]})");
+    CHECK(CopyOnlyResult::destructions == 0);
+  }
+  SECTION("a Result passed as an rvalue") {
+    scrydantic::Result<CopyOnlyResult> value{std::in_place, std::vector<int>{1, 2, 3}};
+    const auto encoded = scrydantic::detail::encode_handler_result(std::move(value));
+    REQUIRE(encoded);
+    CHECK(encoded->text == R"({"values":[1,2,3]})");
+    CHECK(CopyOnlyResult::destructions == 0);
+  }
+  CHECK(CopyOnlyResult::destructions == 1);
+}
+
+TEST_CASE("encoding a named failed Result leaves the caller's error in place") {
+  const scrydantic::Result<CopyOnlyResult> value = std::unexpected(scrydantic::Error{
+      .message = "application rejected arguments",
+      .model_message = "rejected",
+  });
+  const auto encoded = scrydantic::detail::encode_handler_result(value);
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message == "application rejected arguments");
+  CHECK(encoded.error().model_message == "rejected");
+  REQUIRE_FALSE(value);
+  CHECK(value.error().message == "application rejected arguments");
+  CHECK(value.error().model_message == "rejected");
 }
 
 TEST_CASE("descriptors describe tools at compile time without handlers") {
