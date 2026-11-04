@@ -133,6 +133,7 @@ set_tests_properties(
 add_executable(
   scrydantic_tests
   codec/codec_tests.cpp
+  codec/number_spelling_tests.cpp
   tools/tool_binding_tests.cpp
 )
 target_link_libraries(

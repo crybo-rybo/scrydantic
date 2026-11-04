@@ -8,6 +8,7 @@
 #include <meta>
 #include <optional>
 #include <scrydantic/annotations.hpp>
+#include <scrydantic/detail/json_number.hpp>
 #include <scrydantic/detail/json_string.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
@@ -331,17 +332,6 @@ consteval std::string display(const std::meta::info reflection) {
 
 consteval std::string_view static_string(const std::string& text) {
   return {std::define_static_string(text), text.size()};
-}
-
-// The decimal digits of `value`.
-consteval std::string decimal(std::uint64_t value) {
-  std::string digits{};
-  do {
-    digits.push_back(static_cast<char>('0' + (value % 10U)));
-    value /= 10U;
-  } while (value != 0U);
-  std::ranges::reverse(digits);
-  return digits;
 }
 
 // `text` as a JSON string literal, escaped once at compile time so encoding it
