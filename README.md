@@ -3,9 +3,10 @@
 Scrydantic uses C++26 static reflection to generate JSON Schema, strictly
 encode and decode C++ values, and bind annotated C++ functions as tools that a
 model or any other JSON client can call. Declare plain structs and functions,
-annotate them, and get a schema, a strict decoder that reports every issue with
-its path, a canonical encoder, and a type-erased handler, with no code
-generation step and no dependency beyond the standard library.
+annotate them, and get a schema, a strict decoder that enforces the annotated
+constraints and reports every issue with its path, a canonical encoder, and a
+type-erased handler, with no code generation step and no dependency beyond the
+standard library.
 
 ## Build and test
 
@@ -74,6 +75,36 @@ use `scrydantic::Result<T>` or `Status`; a tool can refuse a call with
 `Error::issues`, with an `IssueKind` and a path, and its messages hold one line
 for each, such as `$.shapes[0].radius must be a number`. A bound tool returns
 those lines to the model in `model_message`.
+
+Constraint annotations bound a member in its schema and in decoding at once, and
+`check` runs a validator of your own on the decoded value:
+
+```cpp
+inline scrydantic::Status known_city(const std::string& city) {
+  if (city == "Oslo" || city == "Lima") {
+    return {};
+  }
+  return std::unexpected(
+      scrydantic::tool_error("must be a known city", "has no row in cities"));
+}
+
+struct Booking {
+  [[= scrydantic::check<&known_city>]] std::string city;
+  [[= scrydantic::range{.min = 1, .max = 8}]] std::int32_t guests{};
+  [[= scrydantic::length{.max = 200}]] std::string note;
+};
+```
+
+The schema of `guests` is `{"maximum":8,"minimum":1,"type":"integer"}`, and
+decoding `{"city":"Rome","guests":9,"note":""}` tells the model
+`$.city must be a known city` and `$.guests must be at most 8`. The host's
+`message` has `$.city has no row in cities` in the first line's place: a
+validator's host text never reaches the model. `multiple_of`, `items`, and
+`pattern` complete the constraints; `pattern` is written to the schema but not
+checked. A class can carry `check` too, and a constraint that cannot hold, such
+as `range{.min = -1}` on an unsigned member, does not compile. Constraints and
+validators see through `std::indirect` and apply at every level of a recursive
+model. Encoding checks nothing, since an encoded value is the program's own.
 
 See [the MCP tools example](examples/mcp_tools.cpp) for an MCP-style
 tool listing and calls; the example is not a complete MCP server.

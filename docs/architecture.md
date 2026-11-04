@@ -36,15 +36,16 @@ operations in `detail/json_text.hpp`. The document type remains private in
 | `scrydantic.hpp` | An umbrella header that includes every other public header |
 | `error.hpp` | `Error { message, model_message, issues }`, `Issue`, `IssueKind`, `PathSegment`, `json_path()`, `max_issues`, `Result<T>`, `Status`, `tool_error()` |
 | `json.hpp` | `Json`, `JsonKind`, `JsonView`, `escape_json_string()` |
-| `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown` (plain C++23 types) |
+| `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown`, the constraints `range`, `multiple_of`, `length`, `items`, and `pattern`, and `check` (plain C++23 types) |
 | `codec.hpp` | `encode()` and `decode()`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
 | `tools.hpp` | `bind()`, `bind_handler()`, `describe()`, `tools_of()`, `toolbox_tools_of()`, `Toolbox` |
 | `detail/model.hpp` | The reflected type model: `kind_of`, annotations, field layouts, static text, and which aggregates a schema defines once because they contain themselves |
 | `detail/meta.hpp` | The value families, their diagnostics, and the handler rules |
+| `detail/constraints.hpp` | Constraints and validators, resolved against their member's type: their diagnostics, schema keywords, and checks |
 | `detail/schema.hpp` | The consteval schema generator |
 | `detail/decode.hpp`, `detail/encode.hpp`, `detail/failure.hpp` | The codec and its failure paths |
 | `detail/tools.hpp`, `detail/binding.hpp` | Tool discovery and diagnostics, and handler generation |
-| `detail/json_text.hpp`, `detail/json_string.hpp` | The core operations the codec calls (validate, canonicalize, spell a number) and the codec's string escaping |
+| `detail/json_text.hpp`, `detail/json_string.hpp`, `detail/json_number.hpp` | The core operations the codec calls (validate, canonicalize, spell a number), the codec's string escaping, and the canonical spelling of a number at compile time |
 
 ## The codec
 
@@ -187,6 +188,76 @@ it, which cost 1.5% of a decode. The parser accepts at most
 one JSON object. Thus, the decoder's recursion is bounded by the input's
 nesting times a constant of the type.
 
+**Constraints** (`range`, `multiple_of`, `length`, `items`, `pattern`) are
+resolved once against the type of the member that carries them, or the value
+type of an optional member, each seen through any `std::indirect` as the codec
+sees it, in `detail/constraints.hpp`, and that one resolution feeds three
+readers. The
+family checks reject a constraint that cannot hold: one on a type it does not
+apply to, a second of one kind, a range that is empty or crossed, and a bound
+that is not exactly a value of the member's type. The schema generator writes
+each as its JSON Schema keyword, in sorted position, inside an optional's
+`anyOf`, and in place of an integer type's own bound, so an integer has one
+lower and one upper bound. An item bound sits beside `"items"`, which for a
+recursive element is a `$ref`, and a definition under `$defs` carries its
+members' keywords as a root does. The decoder checks each one but `pattern` on a
+member's decoded value, and reports a miss as `violated_constraint` in the
+keyword's words. The schema and the check therefore bound the same values.
+
+That needs a bound to be one number on both sides. A `detail::bound` keeps an
+integer as a sign and a magnitude and a floating-point value as a double, so it
+holds any literal exactly, and the checks require it to be exactly a value of
+the member's type, so the schema spells the same value that the decoder
+compares with, a float's as the double it is. A floating-point `multiple_of`
+must also be a binary fraction whose decimal spelling is exact, since JSON Schema
+tests decimal multiples and `fmod` binary ones.
+
+An integer member is compared in its own type, which holds the parsed integer
+exactly. A floating-point member is compared twice. First the number as the
+parser read it, an integer exactly and anything else as its double, against the
+bound, a comparison that is exact because the bound is a double too. So
+decoding rejects whatever the schema rejects, where comparing the converted
+value would let `2.50000001` round to `2.5f` and meet `"maximum":2.5`. Then the
+converted value, which the host gets: conversion rounds monotonically to values
+of the member's type, of which the bound is one, so it can carry a number onto
+an exclusive bound or off a multiple, never past an inclusive bound. That
+second miss has its own reason,
+`must be less than 2.5 even once rounded to single precision`, because the
+bound's reason alone would contradict the model's own number, which does meet
+it, and invite the same number again. JSON text more precise than a double is
+rounded by the parser before either check, as it is for any decoder that reads
+numbers as doubles.
+
+The schema spells a double as the canonical writer does, which reads its digits
+from `std::to_chars`. That is not constexpr for floating-point types, so
+`detail/json_number.hpp` finds the same shortest round-trip digits by exact
+decimal arithmetic, and a differential test holds the two spellings to the same
+bytes.
+
+`pattern` is written to the schema and never checked: JSON Schema's patterns are
+ECMA-262 regular expressions, which `std::regex` neither matches exactly nor
+runs at compile time. It is a contract for the producer, and a host that relies
+on it checks it in a validator.
+
+**Validators** are functions that `check<&fn>` names, on a member or a class.
+They state nothing in the schema. A member's validators run once its value has
+decoded and met its constraints, a class's once every member of an object is
+valid, each only if the ones before it accepted the value. A class's run last
+in `read_object()`, which returns whether the object passed, so no aggregate's
+failure is converted from a `std::unexpected` (see the GCC 16 notes), and in a
+recursive model each level's run once the levels inside it have passed theirs.
+A rejection is a `failed_check` issue. Since a validator runs only where nothing has been
+reported for its value, it runs only while the decode goes on, as the stop rule
+requires, and the decode after the limit calls none: 100 failing elements cost
+65 validator calls. A validator returns its rejection; an exception from one is
+an allocation failure and leaves the decode. Contracts (`pre` and `post`) would
+be the wrong tool: they are for the program's own errors, not untrusted input,
+and GCC needs `-fcontracts` for them, which every consumer would inherit.
+
+A member that keeps its default is not checked, and neither is any value being
+encoded: both are the program's own, and an encoder that rejected them would be
+a different feature.
+
 **Encoding** writes keys in canonical order and escapes strings in the
 canonical way. Only two parts of the output have a choice of spelling: numbers
 and spliced `Json` payloads. The `spelling` template argument makes this choice:
@@ -237,6 +308,14 @@ call site. A library that wraps these functions computes the same default with
 receives the context as a leading `const Context&` parameter. The consteval
 layer passes the context as a reflection, with `^^void` meaning "no context".
 
+**Parameter annotations.** A synthesized argument object is built from the
+parameters' types and names alone, so a binding reads no annotation on a
+parameter. A tool whose model-supplied parameter carries a Scrydantic
+annotation fails to bind, rather than silently drop a constraint or a check; a
+constrained argument is a member of an argument aggregate. Reading them would
+make parameter annotations, which accumulate across redeclarations, one more
+fact that `bound_tool` keys.
+
 ## Errors
 
 `Error` carries `message` for the host, `model_message` for a model, and
@@ -249,9 +328,19 @@ that it visits them: an object's unknown members in key order, then its
 declared members in declaration order, and an array's elements in index order.
 Each `Issue` has an `IssueKind`, a path from the decoded root as
 `PathSegment`s, and a reason in the words of the schema, such as
-`must be a number`. Both messages are the same text: one `<path> <reason>` line
-for each issue, such as `$.shapes[0].radius must be a number`, joined by
-newlines.
+`must be a number` or `must be at most 150`. Both messages are one
+`<path> <reason>` line for each issue, such as
+`$.shapes[0].radius must be a number`, joined by newlines.
+
+A validator's rejection is the one place where the two messages differ, because
+its `message` is the host's own text, which the model must not see. The issue's
+reason is what the model may see: the rejection's `model_message`, or, when that
+is empty, `is not valid`, which tells the model where its call went wrong
+without a word of why. Leaving the line out instead would leave the model with
+a failure it cannot place, or with no text at all when that was the only issue.
+The report keeps the host's text beside the issue, and `message` gives it in
+that line's place. Every `Issue` reason is therefore text a model may see, so a
+host can build its own model feedback from `issues` and leak nothing.
 
 A failure that leaves nothing to read inside a value is that value's only
 issue: a value of the wrong JSON type, a fixed-size array of the wrong length,
@@ -360,6 +449,20 @@ workaround is also commented where it is applied.
   public function that takes a Scrydantic type can also find the public
   overload. For example, `decode` finds `scrydantic::decode` through
   `JsonView`. Qualify such calls.
+- **Null function pointers under UBSan.** With `-fsanitize=null`, which
+  `-fsanitize=undefined` enables, GCC does not constant-fold the comparison of
+  a function's address with `nullptr`. `is_null_pointer()` therefore compares
+  the validator's reflection with that of a null pointer of its type.
+- **`-Wfree-nonheap-object` and `std::expected`.** At `-O2`, GCC warns that
+  `operator delete` is called on an unallocated object when a `std::expected`
+  whose value owns memory has its error moved out after a check that GCC cannot
+  see ends the function, such as a test framework's assertion: on the path where
+  the expected holds a value, the moved error's short strings point into the
+  storage that the value's destructor then frees. The warning comes from
+  `std::expected<std::vector<int>, std::string>` alone, so it is no Scrydantic
+  defect, and a caller of `decode()` meets it only by calling `error()` on a
+  result it has not branched on. Branch on the result, or copy the error, as
+  the test helper `rejection()` does.
 - **clang-format does not recognize `^^`.** Put a reflection in parentheses
   where it would otherwise merge with the next token: `(^^char)` and `(^^::)`.
 
@@ -393,9 +496,15 @@ remains the only way to read a document.
   `std::move_only_function`, which libc++ on macOS does not provide. This does
   not matter while the reflection layer requires GCC and libstdc++.
 - **Schema dialects.** The schemas are one portable subset of JSON Schema:
-  closed objects, `anyOf` for variants and optionals, numeric bounds, and
-  `$defs` and `$ref` for recursive types only. Some consumers need another
-  shape; OpenAI's strict structured outputs, for example, require every
-  property to be in `required`. A `schema_v<T, Dialect>` parameter is the
-  natural extension point.
+  closed objects, `anyOf` for variants and optionals, numeric bounds, the
+  constraint keywords, and `$defs` and `$ref` for recursive types only. Some
+  consumers need another shape; OpenAI's strict structured outputs, for example,
+  require every property to be in `required`. A `schema_v<T, Dialect>`
+  parameter is the natural extension point.
+- **Constraints on elements and parameters.** A constraint bounds a member's
+  own value, or an optional member's engaged value, seen through any
+  `std::indirect`. Bounding each element of a
+  vector needs an aggregate element type today, and a tool parameter cannot
+  carry one at all (see [Parameter annotations](#tools)). Either would need a
+  place to write the annotation that the type model can key.
 - **Package name.** Check `scrydantic` for name collisions before publishing.
