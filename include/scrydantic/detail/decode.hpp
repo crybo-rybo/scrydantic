@@ -168,7 +168,10 @@ template <typename Type, bool Tagged>
     valid = report_unknown_keys<Type, Tagged>(view, here);
   }
 
-  Type object{};
+  // Value-initialized, as is_storable checks, rather than list-initialized:
+  // `Type object{}` would copy-initialize a member without an initializer from
+  // `{}`, which std::indirect's explicit default constructor does not allow.
+  Type object = Type();
   template for (constexpr std::meta::info member : declared_members_v<Type>) {
     if (here.stopped()) {
       return std::unexpected(decode_failure::reported);
@@ -226,6 +229,15 @@ template <typename Optional>
       });
 }
 
+template <typename Indirect>
+[[nodiscard]] decode_result<Indirect> read_indirect(const JsonView& view,
+                                                    const decode_cursor& here) {
+  using Owned = typename Indirect::value_type;
+  return read_value<Owned>(view, here).transform([](Owned&& value) {
+    return Indirect{std::in_place, std::move(value)};
+  });
+}
+
 template <typename Vector>
 [[nodiscard]] decode_result<Vector> read_vector(const JsonView& view,
                                                 const decode_cursor& here) {
@@ -253,7 +265,8 @@ template <typename Array>
 [[nodiscard]] decode_result<Array> read_array(const JsonView& view,
                                               const decode_cursor& here) {
   constexpr std::string_view reason = "must be an array of the declared fixed size";
-  Array values{};
+  // Value-initialized for the reason read_object's object is.
+  Array values = Array();
   if (view.kind() != JsonKind::array) {
     return here.fail(IssueKind::wrong_type, reason);
   }
@@ -305,6 +318,8 @@ decode_result<Type> read_value(const JsonView& view, const decode_cursor& here) 
     return read_enum<Type>(view, here);
   } else if constexpr (kind == value_kind::optional) {
     return read_optional<Type>(view, here);
+  } else if constexpr (kind == value_kind::indirect) {
+    return read_indirect<Type>(view, here);
   } else if constexpr (kind == value_kind::vector) {
     return read_vector<Type>(view, here);
   } else if constexpr (kind == value_kind::array) {

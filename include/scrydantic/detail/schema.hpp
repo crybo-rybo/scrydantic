@@ -191,7 +191,7 @@ consteval void append_alternatives(std::vector<char>& output,
 consteval void append_optional_schema(std::vector<char>& output,
                                       const std::meta::info type,
                                       const schema_text description_text) {
-  const auto element = plain_type(element_of(type));
+  const auto element = owned_type(element_of(type));
   append_json_literal(output, "{\"anyOf\":[");
   if (kind_of(element) == value_kind::variant) {
     append_alternatives(output, element);
@@ -229,6 +229,8 @@ consteval void append_schema(std::vector<char>& output, const std::meta::info re
     return append_enum_schema(output, type, description_text);
   case value_kind::optional:
     return append_optional_schema(output, type, description_text);
+  case value_kind::indirect:
+    return append_schema(output, element_of(type), description_text);
   case value_kind::vector:
   case value_kind::array:
     return append_sequence_schema(output, type, description_text);

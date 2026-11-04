@@ -220,6 +220,16 @@ template <spelling Spelling, typename Variant>
       value);
 }
 
+// An indirect is written as the value it owns, which a move leaves it without.
+template <spelling Spelling, typename Indirect>
+[[nodiscard]] encode_result<void> write_indirect(std::string& output,
+                                                 const Indirect& value) {
+  if (value.valueless_after_move()) {
+    return encode_fail("is a std::indirect left valueless by a move");
+  }
+  return write_value<typename Indirect::value_type, Spelling>(output, *value);
+}
+
 template <typename Type, spelling Spelling>
 encode_result<void> write_value(std::string& output, const Type& value) {
   constexpr auto kind = kind_of(^^Type);
@@ -241,6 +251,8 @@ encode_result<void> write_value(std::string& output, const Type& value) {
       return {};
     }
     return write_value<typename Type::value_type, Spelling>(output, *value);
+  } else if constexpr (kind == value_kind::indirect) {
+    return write_indirect<Spelling>(output, value);
   } else if constexpr (kind == value_kind::vector || kind == value_kind::array) {
     return write_sequence<Spelling>(output, value);
   } else if constexpr (kind == value_kind::variant) {

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <meta>
 #include <optional>
 #include <scrydantic/annotations.hpp>
@@ -34,6 +35,7 @@ enum class value_kind : std::uint8_t {
   json,
   enumeration,
   optional,
+  indirect,
   vector,
   array,
   variant,
@@ -77,6 +79,9 @@ consteval bool is_character_type(const std::meta::info type) {
 consteval value_kind template_kind_of(const std::meta::info type) {
   if (is_specialization_of(type, ^^std::optional)) {
     return value_kind::optional;
+  }
+  if (is_specialization_of(type, ^^std::indirect)) {
+    return value_kind::indirect;
   }
   if (is_specialization_of(type, ^^std::vector)) {
     return value_kind::vector;
@@ -129,9 +134,19 @@ consteval std::vector<std::meta::info> data_members_of(const std::meta::info typ
                                               std::meta::access_context::unchecked());
 }
 
-// The first template argument of an optional, vector, or array.
+// The first template argument of an optional, std::indirect, vector, or array.
 consteval std::meta::info element_of(const std::meta::info container) {
   return std::meta::template_arguments_of(plain_type(container))[0];
+}
+
+// The value a type stands for once every std::indirect around it is seen
+// through: the codec and the schemas treat an indirect as the value it owns.
+consteval std::meta::info owned_type(const std::meta::info type) {
+  auto owned = plain_type(type);
+  while (kind_of(owned) == value_kind::indirect) {
+    owned = plain_type(element_of(owned));
+  }
+  return owned;
 }
 
 consteval std::vector<std::meta::info> alternatives_of(const std::meta::info variant) {

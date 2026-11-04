@@ -28,10 +28,10 @@ namespace scrydantic {
 /// @tparam Type Value from the Encodable family.
 /// @param value Value to encode without modifying it.
 /// @return Canonical JSON, or an Error whose `message` names the path of a
-/// non-finite number, an undeclared enumerator value, or an invalid Json, or
-/// says that a string is not valid UTF-8 or that the value nests arrays and
-/// objects deeper than JsonView::parse accepts, and whose `model_message` is
-/// empty.
+/// non-finite number, an undeclared enumerator value, an invalid Json, or a
+/// valueless variant or std::indirect, or says that a string is not valid UTF-8
+/// or that the value nests arrays and objects deeper than JsonView::parse
+/// accepts, and whose `model_message` is empty.
 template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
   constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);

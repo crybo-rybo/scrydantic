@@ -199,6 +199,15 @@ private:
                            "only nullable form")
                  : check(element, path);
     }
+    // An indirect is the value it owns, on the wire and in the schema, so it adds
+    // nothing to the path.
+    if (kind == value_kind::indirect) {
+      return kind_of(element) == value_kind::optional
+                 ? problem(path, type,
+                           "nests std::optional inside std::indirect; "
+                           "std::optional<std::indirect<T>> is the nullable form")
+                 : check(element, path);
+    }
     if (kind == value_kind::vector && plain_type(element) == (^^bool)) {
       return problem(path, type,
                      "is std::vector<bool>, whose elements are not addressable; use "
@@ -538,11 +547,13 @@ namespace scrydantic {
 ///
 /// Supported shapes are a deliberately closed matrix: booleans, bounded
 /// non-character integers, finite floats, strings, scoped enums, one optional layer,
-/// vectors except `vector<bool>`, fixed arrays, recursively supported plain
-/// aggregates, and tagged variants of such aggregates, each alternative carrying a
-/// distinct scrydantic::tag. Every supported value has a generated schema,
-/// encodes, and decodes. Reflected entry points report the member path and the
-/// reason a type falls outside this family.
+/// vectors except `vector<bool>`, fixed arrays, `std::indirect`, recursively
+/// supported plain aggregates, and tagged variants of such aggregates, each
+/// alternative carrying a distinct scrydantic::tag. An indirect encodes, decodes,
+/// and has the schema of the value it owns, and `std::optional<std::indirect<T>>`
+/// is its nullable form. Every supported value has a generated schema, encodes,
+/// and decodes. Reflected entry points report the member path and the reason a
+/// type falls outside this family.
 template <typename Type>
 concept SupportedValue =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::supported)

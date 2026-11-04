@@ -8,6 +8,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <memory_resource>
 #include <meta>
 #include <optional>
 #include <random>
@@ -20,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -1301,4 +1304,140 @@ TEST_CASE("an issue past max_issues stops the whole decode") {
                           .reason = R"(contains unknown member "k163")"});
   CHECK(crowded.error().message.ends_with("\n$ contains unknown member \"k163\"\n" +
                                           std::string{stopped_line}));
+}
+
+// ---- Indirection -------------------------------------------------------------
+
+namespace {
+
+struct Boxed {
+  std::optional<std::indirect<Shape>> highlight;
+  std::indirect<Renamed> renamed;
+};
+
+struct Unboxed {
+  std::optional<Shape> highlight;
+  Renamed renamed;
+};
+
+struct OptionalInside {
+  std::indirect<std::optional<int>> value;
+};
+
+// Decoding accepts any allocator it can default-construct, as for std::vector.
+struct Pooled {
+  std::pmr::indirect<int> value;
+};
+
+// An allocator that must be given the resource it allocates from.
+template <typename Value> class BoundAllocator {
+public:
+  using value_type = Value;
+
+  explicit BoundAllocator(std::pmr::memory_resource& resource) noexcept
+      : resource_{&resource} {}
+  template <typename Other>
+  // NOLINTNEXTLINE(google-explicit-constructor): allocators rebind implicitly.
+  BoundAllocator(const BoundAllocator<Other>& other) noexcept
+      : resource_{other.resource()} {}
+
+  [[nodiscard]] Value* allocate(const std::size_t count) {
+    return static_cast<Value*>(
+        resource_->allocate(count * sizeof(Value), alignof(Value)));
+  }
+  void deallocate(Value* const pointer, const std::size_t count) noexcept {
+    resource_->deallocate(pointer, count * sizeof(Value), alignof(Value));
+  }
+  [[nodiscard]] std::pmr::memory_resource* resource() const noexcept {
+    return resource_;
+  }
+  friend bool operator==(const BoundAllocator&, const BoundAllocator&) = default;
+
+private:
+  std::pmr::memory_resource* resource_;
+};
+
+struct Bound {
+  std::indirect<int, BoundAllocator<int>> value;
+};
+
+} // namespace
+
+static_assert(scrydantic::SupportedValue<Boxed>);
+static_assert(!scrydantic::SupportedValue<OptionalInside>);
+static_assert(
+    !scrydantic::SupportedValue<std::optional<std::indirect<std::optional<int>>>>);
+static_assert(scrydantic::SupportedValue<Pooled>);
+// Encoding only reads, so it takes an allocator that decoding cannot construct.
+static_assert(scrydantic::Encodable<Bound>);
+static_assert(!scrydantic::Decodable<Bound>);
+
+static_assert(mentions(scrydantic::detail::supported_diagnostic<OptionalInside>(),
+                       "OptionalInside::value: std::indirect<std::optional<int> > "
+                       "nests std::optional inside std::indirect; "
+                       "std::optional<std::indirect<T>> is the nullable form"));
+static_assert(mentions(scrydantic::detail::decodable_diagnostic<Bound>(),
+                       "Bound::value: std::indirect<int, "
+                       "{anonymous}::BoundAllocator<int> > must be default-"
+                       "constructible, move-constructible, and move-assignable"));
+
+// An indirect has the schema of the value it owns, and an optional one joins null
+// to a variant's alternatives as an optional variant does.
+static_assert(scrydantic::schema_v<Boxed> == scrydantic::schema_v<Unboxed>);
+static_assert(
+    scrydantic::schema_v<Pooled> ==
+    R"({"additionalProperties":false,"properties":{"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["value"],"type":"object"})");
+
+TEST_CASE("std::indirect encodes and decodes as the value it owns") {
+  const Boxed boxed{
+      .highlight = std::indirect<Shape>(Shape{Circle{.radius = 1}}),
+      .renamed = std::indirect<Renamed>(Renamed{.limit = 5, .zed = "z"}),
+  };
+  const Unboxed unboxed{
+      .highlight = Shape{Circle{.radius = 1}},
+      .renamed = Renamed{.limit = 5, .zed = "z"},
+  };
+  const auto text = std::string{R"({"highlight":{"radius":1,"type":"circle"},)"
+                                R"("renamed":{"a_first":"z","max_tokens":5}})"};
+  CHECK(scrydantic::encode(boxed)->text == text);
+  CHECK(scrydantic::encode(unboxed)->text == text);
+
+  const auto decoded = decode_text<Boxed>(text);
+  REQUIRE(decoded);
+  CHECK(std::get<Circle>(**decoded->highlight).radius == 1.0);
+  CHECK(decoded->renamed->zed == "z");
+  CHECK_FALSE(decode_text<Boxed>(R"({"highlight":null,"renamed":{"a_first":"y"}})")
+                  ->highlight.has_value());
+
+  const auto failed = decode_text<Boxed>(
+      R"({"highlight":{"type":"hexagon"},"renamed":{"a_first":"y"}})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.highlight.type must be one of: circle, rectangle");
+
+  const auto pooled = decode_text<Pooled>(R"({"value":7})");
+  REQUIRE(pooled);
+  CHECK(*pooled->value == 7);
+  CHECK(scrydantic::encode(*pooled)->text == R"({"value":7})");
+
+  std::pmr::monotonic_buffer_resource resource{};
+  const Bound bound{.value = std::indirect<int, BoundAllocator<int>>(
+                        std::allocator_arg, BoundAllocator<int>{resource}, 3)};
+  CHECK(scrydantic::encode(bound)->text == R"({"value":3})");
+}
+
+TEST_CASE("encoding reports a std::indirect left valueless by a move") {
+  Boxed boxed{
+      .highlight = std::nullopt,
+      .renamed = std::indirect<Renamed>(Renamed{.limit = 5, .zed = "z"}),
+  };
+  const auto taken = std::move(boxed.renamed);
+  REQUIRE(boxed.renamed.valueless_after_move());
+
+  const auto encoded = scrydantic::encode(boxed);
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message ==
+        "$.renamed is a std::indirect left valueless by a move");
+  CHECK(encoded.error().model_message.empty());
+  CHECK(taken->zed == "z");
 }
