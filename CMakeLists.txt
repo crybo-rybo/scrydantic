@@ -5,9 +5,32 @@
 # third-party library (Catch2).
 cmake_minimum_required(VERSION 3.30)
 
+# include/scrydantic/version.hpp is the one place that sets the version.
+file(
+  STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/scrydantic/version.hpp"
+  SCRYDANTIC_VERSION_LINES
+  REGEX "^#define SCRYDANTIC_VERSION_(MAJOR|MINOR|PATCH) [0-9]+$"
+)
+foreach(SCRYDANTIC_COMPONENT IN ITEMS MAJOR MINOR PATCH)
+  set(SCRYDANTIC_MATCHED "${SCRYDANTIC_VERSION_LINES}")
+  list(FILTER SCRYDANTIC_MATCHED INCLUDE REGEX "_${SCRYDANTIC_COMPONENT} ")
+  list(LENGTH SCRYDANTIC_MATCHED SCRYDANTIC_MATCH_COUNT)
+  if(NOT SCRYDANTIC_MATCH_COUNT EQUAL 1)
+    message(
+      FATAL_ERROR
+      "include/scrydantic/version.hpp must define SCRYDANTIC_VERSION_${SCRYDANTIC_COMPONENT} "
+      "exactly once, as a decimal integer"
+    )
+  endif()
+  string(
+    REGEX REPLACE "^.* ([0-9]+)$" "\\1"
+    "SCRYDANTIC_VERSION_${SCRYDANTIC_COMPONENT}" "${SCRYDANTIC_MATCHED}"
+  )
+endforeach()
+
 project(
   scrydantic
-  VERSION 0.1.0
+  VERSION "${SCRYDANTIC_VERSION_MAJOR}.${SCRYDANTIC_VERSION_MINOR}.${SCRYDANTIC_VERSION_PATCH}"
   DESCRIPTION "C++26 reflection to JSON Schema, a strict JSON codec, and reflected tools"
   LANGUAGES CXX
 )
@@ -111,6 +134,7 @@ set(
   include/scrydantic/detail/json_text.hpp
   include/scrydantic/error.hpp
   include/scrydantic/json.hpp
+  include/scrydantic/version.hpp
 )
 target_sources(
   scrydantic_json
