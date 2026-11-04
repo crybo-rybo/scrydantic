@@ -66,8 +66,16 @@ template <typename Type> using encode_result = std::expected<Type, encode_failur
 // the first issue past max_issues, which is not kept; decoding ends there.
 struct decode_report {
   std::vector<Issue> issues{};
+  // The host's reason for each issue whose reason the model is not given in
+  // full, by the issue's index: a validator's `message`, where the issue's
+  // reason is its `model_message`. Few decodes have one, so they are kept apart.
+  std::vector<std::pair<std::size_t, std::string>> host_reasons{};
   bool stopped{};
 };
+
+// What the model is told of a validator's rejection that gives it no text: that
+// the value was rejected, and nothing of why.
+inline constexpr std::string_view unexplained_rejection = "is not valid";
 
 // Why a value failed to decode: its issues are already in the decode_report, so
 // the failure carries nothing else. It is an enumeration rather than an empty
@@ -128,12 +136,29 @@ public:
   // Reports an issue at this cursor's value. Past max_issues it only stops the
   // decode, without building the issue.
   void report(const IssueKind kind, const std::string_view reason) const {
-    if (report_->issues.size() < max_issues) {
+    if (admit()) {
       report_->issues.push_back(
           Issue{.kind = kind, .path = path(), .reason = std::string{reason}});
-    } else {
-      report_->stopped = true;
     }
+  }
+
+  // Reports a validator's rejection of this cursor's value. The issue's reason
+  // is what the model may see, the rejection's model_message, and the host's own
+  // text, its message, is kept beside it when the two differ.
+  void reject(const Error& rejection) const {
+    if (!admit()) {
+      return;
+    }
+    const std::string_view model = rejection.model_message.empty()
+                                       ? unexplained_rejection
+                                       : std::string_view{rejection.model_message};
+    const std::string_view host =
+        rejection.message.empty() ? model : std::string_view{rejection.message};
+    if (host != model) {
+      report_->host_reasons.emplace_back(report_->issues.size(), host);
+    }
+    report_->issues.push_back(Issue{
+        .kind = IssueKind::failed_check, .path = path(), .reason = std::string{model}});
   }
 
   // Reports an issue and fails the value it is about.
@@ -147,6 +172,16 @@ private:
   decode_cursor(decode_report* const report, const decode_cursor* const parent,
                 const std::string_view key, const std::size_t index) noexcept
       : report_{report}, parent_{parent}, key_{key}, index_{index} {}
+
+  // Whether the report keeps one more issue. The first issue past max_issues is
+  // not kept and stops the decode instead.
+  [[nodiscard]] bool admit() const noexcept {
+    if (report_->issues.size() < max_issues) {
+      return true;
+    }
+    report_->stopped = true;
+    return false;
+  }
 
   // The owned path of this cursor's value, collected from the innermost step out.
   [[nodiscard]] std::vector<PathSegment> path() const {
@@ -174,21 +209,44 @@ private:
   std::size_t index_{};
 };
 
-// A decode failure: one `<path> <reason>` line per issue. Every word of a line
-// comes from the schema the model was already given or from the input itself, so
-// the model receives the host's text unchanged.
-[[nodiscard]] inline Error decode_error(decode_report report) {
-  auto text = report.issues | std::views::transform([](const Issue& issue) {
-                return located(json_path(issue.path), issue.reason);
+// One `<path> <reason>` line per issue, each with the reason `reason_of` gives
+// its index, then the line that says the decode stopped, if it did.
+template <typename Reason>
+[[nodiscard]] std::string issue_lines(const decode_report& report, Reason reason_of) {
+  auto text = std::views::iota(0UZ, report.issues.size()) |
+              std::views::transform([&](const std::size_t index) {
+                return located(json_path(report.issues[index].path), reason_of(index));
               }) |
               std::views::join_with('\n') | std::ranges::to<std::string>();
   if (report.stopped) {
     text.append("\nfurther issues past the first " + std::to_string(max_issues) +
                 " were not reported");
   }
+  return text;
+}
+
+// A decode failure. Every word of an issue's reason comes from the schema the
+// model was already given, from the input itself, or from a validator's
+// model_message, so the model is told the reasons, and the host the same lines
+// but with each validator's own message where it gave one.
+[[nodiscard]] inline Error decode_error(decode_report report) {
+  auto model_text =
+      issue_lines(report, [&](const std::size_t index) -> std::string_view {
+        return report.issues[index].reason;
+      });
+  auto host_text =
+      report.host_reasons.empty()
+          ? model_text
+          : issue_lines(report, [&](const std::size_t index) -> std::string_view {
+              const auto host =
+                  std::ranges::find(report.host_reasons, index,
+                                    &std::pair<std::size_t, std::string>::first);
+              return host == report.host_reasons.end() ? report.issues[index].reason
+                                                       : host->second;
+            });
   return Error{
-      .message = text,
-      .model_message = std::move(text),
+      .message = std::move(host_text),
+      .model_message = std::move(model_text),
       .issues = std::move(report.issues),
   };
 }

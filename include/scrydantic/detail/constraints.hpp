@@ -14,6 +14,7 @@
 #include <scrydantic/detail/json_number.hpp>
 #include <scrydantic/detail/json_string.hpp>
 #include <scrydantic/detail/model.hpp>
+#include <scrydantic/error.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -24,7 +25,8 @@
 // cannot hold; the schema generator, which writes it as JSON Schema keywords; and
 // the decoder, which checks it and reports a value past it in those keywords'
 // words. The schema and the check therefore bound the same values. Everything
-// here assumes the member's type has passed its family check.
+// here assumes the member's type has passed its family check. The validators
+// that check annotations name, which no schema states, are resolved here too.
 namespace scrydantic::detail {
 
 // A constraint annotation type, and the name a diagnostic gives it. The display
@@ -677,6 +679,96 @@ template <typename Number> consteval Number bound_value(const bound value) {
   } else {
     return static_cast<Number>(value.magnitude);
   }
+}
+
+// ---- Validators --------------------------------------------------------------
+
+// The validators that the check annotations of `entity`, a data member or a
+// class, name, in declaration order: each the reflection of a function pointer.
+consteval std::vector<std::meta::info> validators_of(const std::meta::info entity) {
+  std::vector<std::meta::info> validators{};
+  for (const auto annotation : std::meta::annotations_of(entity)) {
+    if (annotation_matches(annotation, ^^check_t)) {
+      validators.push_back(
+          std::meta::template_arguments_of(std::meta::type_of(annotation))[0]);
+    }
+  }
+  return validators;
+}
+
+template <std::meta::info Entity>
+inline constexpr auto validators_v = std::define_static_array(validators_of(Entity));
+
+// The function types a validator of a `Value` may have.
+template <typename Value> using validator_function = Status(const Value&);
+template <typename Value>
+using noexcept_validator_function = Status(const Value&) noexcept;
+
+// Whether `function`, a function type, is that of a validator of a `type`.
+consteval bool is_validator_of(const std::meta::info function,
+                               const std::meta::info type) {
+  // Parenthesized so clang-format, which does not know `^^`, lays them out.
+  for (const auto alias : {(^^validator_function), (^^noexcept_validator_function)}) {
+    if (function == std::meta::dealias(std::meta::substitute(alias, {type}))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+template <typename Pointer> inline constexpr Pointer null_pointer_v = nullptr;
+
+// Compares reflections rather than pointers: under -fsanitize=null, which
+// -fsanitize=undefined enables, GCC 16 does not constant-fold the comparison of
+// a function's address with nullptr.
+consteval bool is_null_pointer(const std::meta::info pointer) {
+  // Parenthesized so clang-format, which does not know `^^`, lays it out.
+  const auto variable = (^^null_pointer_v);
+  return pointer == std::meta::constant_of(
+                        std::meta::substitute(variable, {std::meta::type_of(pointer)}));
+}
+
+// Why `validator`, a check annotation's argument, is not a validator of a value
+// of `type`; empty when it is one.
+consteval std::string validator_problem(const std::meta::info validator,
+                                        const std::meta::info type) {
+  const auto pointer = std::meta::type_of(validator);
+  if (!std::meta::is_pointer_type(pointer) ||
+      !std::meta::is_function_type(std::meta::remove_pointer(pointer))) {
+    return "carries scrydantic::check<" + display(validator) +
+           ">, whose argument is not a pointer to a function";
+  }
+  if (is_null_pointer(validator)) {
+    return "carries a scrydantic::check of a null function pointer";
+  }
+  const auto function = std::meta::dealias(std::meta::remove_pointer(pointer));
+  if (!is_validator_of(function, type)) {
+    return "carries scrydantic::check<&" + display(validator) +
+           ">, whose validator is " + display(function) + "; a validator here takes " +
+           display(std::meta::add_lvalue_reference(std::meta::add_const(type))) +
+           " and returns scrydantic::Status";
+  }
+  return {};
+}
+
+// Why the check annotations of `entity` do not each name a distinct validator of
+// a value of `type`; empty when they do.
+consteval std::string validators_problem(const std::meta::info entity,
+                                         const std::meta::info type) {
+  const auto validators = validators_of(entity);
+  for (const auto validator : validators) {
+    if (auto text = validator_problem(validator, type); !text.empty()) {
+      return text;
+    }
+  }
+  for (std::size_t left = 0; left < validators.size(); ++left) {
+    for (std::size_t right = left + 1; right < validators.size(); ++right) {
+      if (validators[left] == validators[right]) {
+        return "carries scrydantic::check<&" + display(validators[left]) + "> twice";
+      }
+    }
+  }
+  return {};
 }
 
 } // namespace scrydantic::detail

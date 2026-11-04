@@ -348,8 +348,8 @@ struct items {
 /// states for the producer, not a guarantee that decoding gives the host. JSON
 /// Schema's patterns are ECMA-262 regular expressions, which std::regex neither
 /// matches exactly nor runs at compile time, so a check would be slow and could
-/// disagree with the schema. A host that relies on the pattern checks it itself
-/// on every decoded value. Usage:
+/// disagree with the schema. A host that relies on the pattern checks it itself,
+/// in a scrydantic::check validator on the same member. Usage:
 /// `[[= scrydantic::pattern{"^[a-z]+$"}]] std::string slug;`. On a std::optional
 /// member it applies to the engaged value, and through a std::indirect to the
 /// value it owns.
@@ -363,5 +363,39 @@ template <std::size_t Size> struct pattern : detail::fixed_text<Size> {
 /// Deduces a pattern extent from a string literal.
 /// @param value Regular expression whose extent is deduced.
 template <std::size_t Size> pattern(const char (&value)[Size]) -> pattern<Size>;
+
+/// Type of the check annotation, which names its validator.
+/// @tparam Validator Pointer to the validator function.
+template <auto Validator> struct check_t {};
+
+/// Runs a validator on a decoded value: a member's, or a whole object's.
+///
+/// On a data member, `Validator` points to a function that takes the member's
+/// type, or for a std::optional member its value type, as `const T&`, and returns
+/// scrydantic::Status: `[[= scrydantic::check<&is_known_city>]] std::string city;`.
+/// It runs once the member has decoded and met its constraint annotations, and on
+/// an optional member only when the member is engaged. On a class, written
+/// between the class-key and the class name, the function takes `const Class&`
+/// and runs once every member of an object has decoded without an issue. Several
+/// checks on one member or class run in declaration order, each only if the ones
+/// before it accepted the value, so a validator may rely on those before it. The
+/// compiler rejects a validator of any other signature, and one validator named
+/// twice. A member that is absent and keeps its default is not checked, and
+/// neither is a value being encoded, since both are the program's own.
+///
+/// A rejection is the Error that the validator returns, which decoding reports as
+/// an IssueKind::failed_check issue at the value's path. Decoding uses its two
+/// messages and nothing else, and each is one line that follows the path in a
+/// sentence, as Scrydantic's own reasons do: `must be a known city`. The model is
+/// told the path and the Error's `model_message`, or, when that is empty, only
+/// that the value `is not valid`. The Error's `message`, the host's own text,
+/// reaches the host alone; when it is empty, the host is told what the model is.
+/// tool_error() builds such an Error.
+///
+/// A validator reports a rejection by returning it, never by throwing:
+/// Scrydantic treats an exception as an allocation failure, so an exception that
+/// leaves a validator leaves the decode too, and fails the call that decoded.
+/// @tparam Validator Pointer to the validator function.
+template <auto Validator> inline constexpr check_t<Validator> check{};
 
 } // namespace scrydantic

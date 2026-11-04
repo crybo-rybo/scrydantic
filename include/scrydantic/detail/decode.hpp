@@ -33,8 +33,9 @@
 // before it descends, so a function is only entered while the decode goes on,
 // and a loop that finds it stopped has already seen one of its own values fail.
 // A value fails when it, or any value inside it, does, and a member also fails
-// when its decoded value misses one of its constraints. Those are checked only
-// once the value has decoded without an issue, so while the decode goes on.
+// when its decoded value misses one of its constraints or fails a check, as an
+// object does that fails its class's checks. Those run only once the value has
+// decoded without an issue, so while the decode goes on.
 namespace scrydantic::detail {
 
 template <typename Type>
@@ -299,18 +300,33 @@ template <std::meta::info Constraint, typename Value>
   }
 }
 
+// Runs the validators of `Entity`, a member or a class, on `value` in
+// declaration order, and reports the first rejection, after which none runs: a
+// validator may rely on the ones before it.
+template <std::meta::info Entity, typename Value>
+[[nodiscard]] bool passes_checks(const Value& value, const decode_cursor& here) {
+  template for (constexpr std::meta::info validator : validators_v<Entity>) {
+    if (const Status status = [:validator:](value); !status) {
+      here.reject(status.error());
+      return false;
+    }
+  }
+  return true;
+}
+
 // Reports each constraint of `Member` that `value`, the member's value decoded
-// from `view`, misses, in declaration order, and returns false if there was one.
-// A range has one end a value can miss, since the checks admit no empty range.
-// It sees through an optional and an indirect as constrained_type() does; a
-// decoded indirect always owns a value.
+// from `view`, misses, in declaration order, and runs its validators on a value
+// that misses none. Returns false if there was an issue. A range has one end a
+// value can miss, since the checks admit no empty range. It sees through an
+// optional and an indirect as constrained_type() does, so the validators take the
+// value they own; a decoded indirect always owns one.
 template <std::meta::info Member, typename Value>
-[[nodiscard]] bool meets_constraints(const Value& value, const JsonView& view,
-                                     const decode_cursor& here) {
+[[nodiscard]] bool accepts_member(const Value& value, const JsonView& view,
+                                  const decode_cursor& here) {
   if constexpr (kind_of(^^Value) == value_kind::optional) {
-    return !value.has_value() || meets_constraints<Member>(*value, view, here);
+    return !value.has_value() || accepts_member<Member>(*value, view, here);
   } else if constexpr (kind_of(^^Value) == value_kind::indirect) {
-    return meets_constraints<Member>(*value, view, here);
+    return accepts_member<Member>(*value, view, here);
   } else {
     bool met = true;
     template for (constexpr std::meta::info constraint :
@@ -319,7 +335,7 @@ template <std::meta::info Member, typename Value>
         met = false;
       }
     }
-    return met;
+    return met && passes_checks<Member>(value, here);
   }
 }
 
@@ -356,9 +372,9 @@ template <typename Type, bool Tagged>
 }
 
 // Reads one declared member of `object` from `view`, an object, and returns
-// false if the member failed, missed a constraint, or is required and absent. A
-// member that keeps its default is the program's own value, so its constraints
-// are not checked.
+// false if the member failed, missed a constraint, failed a check, or is
+// required and absent. A member that keeps its default is the program's own
+// value, so it is not checked.
 template <typename Type, std::meta::info Member>
 [[nodiscard]] bool read_member(Type& object, const JsonView& view,
                                const decode_cursor& parent) {
@@ -371,8 +387,9 @@ template <typename Type, std::meta::info Member>
     if (!decoded) {
       return false;
     }
-    if constexpr (!checked_constraints_v<Member>.empty()) {
-      if (!meets_constraints<Member>(*decoded, *found, here)) {
+    if constexpr (!checked_constraints_v<Member>.empty() ||
+                  !validators_v<Member>.empty()) {
+      if (!accepts_member<Member>(*decoded, *found, here)) {
         return false;
       }
     }
@@ -386,7 +403,9 @@ template <typename Type, std::meta::info Member>
   return true;
 }
 
-// Reads `view` into `object` and returns false if it failed.
+// Reads `view` into `object` and returns false if it failed. The class's
+// validators run last, and see only an object whose every member is valid; in a
+// recursive model each level's run once the levels inside it have passed theirs.
 template <typename Type, bool Tagged>
 [[nodiscard]] bool read_object(Type& object, const JsonView& view,
                                const decode_cursor& here) {
@@ -406,7 +425,7 @@ template <typename Type, bool Tagged>
       valid = false;
     }
   }
-  return valid;
+  return valid && passes_checks<^^Type>(object, here);
 }
 
 // An aggregate is read in place, so this is the one place that builds its

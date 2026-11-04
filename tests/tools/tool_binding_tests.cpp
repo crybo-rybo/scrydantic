@@ -140,6 +140,37 @@ struct Channel {
 
 } // namespace mixer_tools
 
+namespace booking_tools {
+
+inline scrydantic::Status is_open_city(const std::string& city) {
+  if (city == "Oslo") {
+    return {};
+  }
+  return std::unexpected(scrydantic::tool_error("must be a city with open bookings",
+                                                "has no row in bookings.cities"));
+}
+
+struct Booking;
+scrydantic::Status has_room(const Booking& booking);
+
+struct[[= scrydantic::check<&has_room>]] Booking {
+  [[= scrydantic::check<&is_open_city>]] std::string city{};
+  [[= scrydantic::range{.min = 1}]] std::int32_t guests{};
+};
+
+inline scrydantic::Status has_room(const Booking& booking) {
+  if (booking.guests <= 4) {
+    return {};
+  }
+  return std::unexpected(scrydantic::Error{.message = "hotel 17 is full"});
+}
+
+[[= scrydantic::tool{"Book a stay"}]] inline std::string book(Booking booking) {
+  return booking.city;
+}
+
+} // namespace booking_tools
+
 namespace {
 
 class Counter {
@@ -485,4 +516,34 @@ TEST_CASE("a tool's argument constraints are in its schema and checked on each c
   REQUIRE_FALSE(faded);
   CHECK(faded.error().model_message == "$.from.level must be at least 0\n"
                                        "$.to.name must have at most 8 characters");
+}
+
+TEST_CASE("a tool's validators reject arguments without telling the model the "
+          "host's text") {
+  auto tools = scrydantic::bind<^^booking_tools>();
+  REQUIRE(tools.size() == 1);
+  // A validator states nothing in the schema.
+  CHECK(tools[0].input_schema.text ==
+        R"({"additionalProperties":false,"properties":{"city":{"type":"string"},)"
+        R"("guests":{"maximum":2147483647,"minimum":1,"type":"integer"}},)"
+        R"("required":[],"type":"object"})");
+
+  const auto booked = tools[0].invoke(json(R"({"city":"Oslo","guests":2})"));
+  REQUIRE(booked);
+  CHECK(booked->text == R"("Oslo")");
+
+  const auto closed = tools[0].invoke(json(R"({"city":"Bergen","guests":0})"));
+  REQUIRE_FALSE(closed);
+  CHECK(closed.error().model_message == "$.city must be a city with open bookings\n"
+                                        "$.guests must be at least 1");
+  CHECK(closed.error().message == "$.city has no row in bookings.cities\n"
+                                  "$.guests must be at least 1");
+
+  const auto full = tools[0].invoke(json(R"({"city":"Oslo","guests":9})"));
+  REQUIRE_FALSE(full);
+  CHECK(full.error().model_message == "$ is not valid");
+  CHECK(full.error().message == "$ hotel 17 is full");
+  CHECK(full.error().issues ==
+        std::vector<scrydantic::Issue>{
+            {.kind = scrydantic::IssueKind::failed_check, .reason = "is not valid"}});
 }

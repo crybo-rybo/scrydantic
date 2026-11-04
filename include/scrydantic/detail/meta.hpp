@@ -323,7 +323,8 @@ private:
                            ", which applies to data members");
       }
     }
-    return {};
+    const auto reason = validators_problem(type, type);
+    return reason.empty() ? reason : problem(path, type, reason);
   }
 
   consteval std::string check_member(const std::meta::info owner,
@@ -357,13 +358,17 @@ private:
     return check_member_value(member, here);
   }
 
-  // The member's type, then its constraints, which bound a value of that type.
+  // The member's type, then its constraints and validators, which take a value
+  // of that type.
   consteval std::string check_member_value(const std::meta::info member,
                                            const std::string& here) {
     if (auto text = check(std::meta::type_of(member), here); !text.empty()) {
       return text;
     }
-    const auto reason = constraint_problem(member);
+    auto reason = constraint_problem(member);
+    if (reason.empty()) {
+      reason = validators_problem(member, constrained_type(member));
+    }
     return reason.empty() ? reason : at_path(here, reason);
   }
 

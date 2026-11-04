@@ -135,6 +135,7 @@ add_executable(
   codec/codec_tests.cpp
   codec/constraint_tests.cpp
   codec/number_spelling_tests.cpp
+  codec/validator_tests.cpp
   tools/tool_binding_tests.cpp
 )
 target_link_libraries(
@@ -366,4 +367,34 @@ scrydantic_add_compile_fail_test(
   constrained-tool
   constrained_tool.cpp
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::range, which applies to data members"
+)
+scrydantic_add_compile_fail_test(
+  validator-signature
+  validator_signature.cpp
+  "Order::quantity: carries scrydantic::check<&checks::positive>, whose validator is std::expected<void, scrydantic::Error>(int); a validator here takes const int& and returns scrydantic::Status"
+)
+scrydantic_add_compile_fail_test(
+  validator-not-function
+  validator_not_function.cpp
+  "Order::quantity: carries scrydantic::check<42>, whose argument is not a pointer to a function"
+)
+scrydantic_add_compile_fail_test(
+  null-validator
+  null_validator.cpp
+  "does not satisfy scrydantic::Decodable: Order::quantity: carries a scrydantic::check of a null function pointer"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-validator
+  duplicate_validator.cpp
+  "Order::quantity: carries scrydantic::check<&checks::positive> twice"
+)
+scrydantic_add_compile_fail_test(
+  class-validator-signature
+  class_validator_signature.cpp
+  "Range carries scrydantic::check<&checks::ordered>, whose validator is std::expected<void, scrydantic::Error>(const int&); a validator here takes const Range& and returns scrydantic::Status"
+)
+scrydantic_add_compile_fail_test(
+  checked-tool
+  checked_tool.cpp
+  "scrydantic::bind<^^order_tools>(): order_tools::order carries scrydantic::check, which applies to data members and classes"
 )

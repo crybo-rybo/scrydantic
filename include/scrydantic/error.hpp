@@ -40,6 +40,10 @@ enum class IssueKind : std::uint8_t {
   /// scrydantic::range, multiple_of, length, or items. The reason states the
   /// bound as the schema's keyword means it, such as `must be at most 150`.
   violated_constraint,
+  /// A value that a scrydantic::check validator rejected. The reason is the
+  /// validator's `model_message`, or `is not valid` when it gave the model none;
+  /// its `message` is only ever in Error::message.
+  failed_check,
 };
 
 /// One step of the path from a decoded value to an issue in it: the key of an
@@ -54,7 +58,8 @@ struct Issue {
   /// root itself. json_path() spells it.
   std::vector<PathSegment> path{};
   /// What the value at `path` failed to be, worded to follow the path in a
-  /// sentence, such as `must be a number`.
+  /// sentence, such as `must be a number`. It is text a model may see: words of
+  /// the schema or of the input, or a validator's `model_message`.
   std::string reason{};
 
   /// Compares every member.
@@ -92,13 +97,18 @@ struct Error {
   /// A decode failure writes one `<path> <reason>` line per issue, such as
   /// `$.shapes[0].radius must be a number`, joined by newlines, then a last line
   /// saying that further issues were not reported when decoding stopped past
-  /// max_issues. Text that is not JSON is one sentence naming the input instead,
-  /// such as `JSON text is not valid JSON`.
+  /// max_issues. The line of an IssueKind::failed_check issue gives the
+  /// validator's own `message` as its reason, where it has one. Text that is not
+  /// JSON is one sentence naming the input instead, such as
+  /// `JSON text is not valid JSON`.
   std::string message{};
   /// Text meant for a model, or empty when the failure carries nothing a model
-  /// could act on. Scrydantic fills it for strict decode failures, whose every
-  /// word is derived from a schema the model was already given, with the text of
-  /// `message`; a tool handler fills it through tool_error().
+  /// could act on. Scrydantic fills it for strict decode failures with the same
+  /// lines as `message`, but each with its issue's reason, whose every word comes
+  /// from a schema the model was already given, from the input, or from a
+  /// validator's own `model_message`. So it differs from `message` only where a
+  /// validator gave the host text of its own. A tool handler fills it through
+  /// tool_error().
   std::string model_message{};
   /// The issues a decode found, in the order it visited them: an object's
   /// unknown members in key order, then its declared members in declaration

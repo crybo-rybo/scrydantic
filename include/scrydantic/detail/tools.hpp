@@ -292,6 +292,9 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
       return "carries " + owned_text(constraint_name(annotation)) +
              ", which applies to data members";
     }
+    if (annotation_matches(annotation, ^^check_t)) {
+      return "carries scrydantic::check, which applies to data members and classes";
+    }
   }
   if (!has_annotation(function, ^^name) && !std::meta::has_identifier(function)) {
     return "has no identifier to name the tool after; give it a "
