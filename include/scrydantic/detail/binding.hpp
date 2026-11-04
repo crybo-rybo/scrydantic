@@ -42,7 +42,7 @@ template <> struct tool_function<void> {
 /// writer's number spelling. A result that cannot be JSON, such as a string holding
 /// invalid UTF-8, is a failure. A failure is an Error whose `model_message` is the
 /// text meant for the model, empty when the failure carries nothing the model could
-/// act on.
+/// act on. Arguments that fail to decode also list their issues in `issues`.
 /// @tparam Context Call context passed to every invocation, or void for none.
 template <typename Context = void>
 using ToolFunction = typename detail::tool_function<Context>::type;

@@ -273,11 +273,11 @@ consteval std::vector<field_layout> fields_of(const std::meta::info type) {
 template <typename Type>
 inline constexpr auto fields_v = std::define_static_array(fields_of(^^Type));
 
-// Decoding visits members in declaration order, which decides the failure it
-// reports when several members are wrong. This is an array of member reflections
-// rather than a second array of field_layout: GCC 16 rejects a define_static_array
-// of consteval-only class elements whose value equals one it already made, which
-// the two orders of a one-member class would be.
+// Decoding visits members in declaration order, which is the order it reports
+// their issues in. This is an array of member reflections rather than a second
+// array of field_layout: GCC 16 rejects a define_static_array of consteval-only
+// class elements whose value equals one it already made, which the two orders of
+// a one-member class would be.
 template <typename Type>
 inline constexpr auto declared_members_v =
     std::define_static_array(data_members_of(plain_type(^^Type)));

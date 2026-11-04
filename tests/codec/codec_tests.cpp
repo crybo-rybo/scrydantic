@@ -1,17 +1,21 @@
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_tostring.hpp>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <meta>
 #include <optional>
 #include <random>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
 #include <scrydantic/detail/encode.hpp>
 #include <scrydantic/detail/json_text.hpp>
+#include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
@@ -499,11 +503,12 @@ TEST_CASE("name annotations replace keys in encoding decoding and errors") {
   REQUIRE_FALSE(rejected);
   CHECK(rejected.error().model_message == "$.a_first is a required member");
 
-  // With several bad members, the first in declaration order is reported, even
-  // though its key sorts later.
+  // With several bad members, each is reported, in declaration order, even
+  // though the first one's key sorts later.
   rejected = decode_text<Renamed>(R"({"a_first":1,"max_tokens":"x"})");
   REQUIRE_FALSE(rejected);
-  CHECK(rejected.error().model_message == "$.max_tokens must be an integer");
+  CHECK(rejected.error().model_message ==
+        "$.max_tokens must be an integer\n$.a_first must be a string");
 }
 
 TEST_CASE("skip_null omits disengaged members and reads their absence as null") {
@@ -909,4 +914,391 @@ TEST_CASE("encoding reports a valueless variant instead of throwing") {
   const auto encoded = scrydantic::encode(block);
   REQUIRE_FALSE(encoded);
   CHECK(encoded.error().message == "$ is a variant left valueless by an exception");
+}
+
+// ---- Decode issues -----------------------------------------------------------
+
+namespace {
+
+struct Account {
+  std::string name;
+  std::int16_t age{};
+  bool active{};
+  Role role{};
+};
+
+struct Address {
+  std::string city;
+  std::uint32_t zip{};
+};
+
+struct Customer {
+  Address home;
+  std::optional<Address> work = std::nullopt;
+  std::vector<std::int32_t> scores;
+  std::array<bool, 2> flags{};
+};
+
+// Keys that a path cannot spell in dot shorthand.
+struct Awkward {
+  [[= scrydantic::name{"content-type"}]] std::string content_type;
+  [[= scrydantic::name{"a.b"}]] std::vector<int> dotted;
+  [[= scrydantic::name{"\"]"}]] bool quote{};
+};
+
+struct AwkwardNumber {
+  [[= scrydantic::name{"a.b"}]] double value{};
+};
+
+struct Bulk {
+  std::vector<int> values;
+  std::string after;
+};
+
+using scrydantic::IssueKind;
+using Issues = std::vector<scrydantic::Issue>;
+
+constexpr std::string_view stopped_line =
+    "further issues past the first 64 were not reported";
+
+// A JSON array of `count` strings, each an issue where Bulk wants integers.
+[[nodiscard]] std::string wrong_values(const std::size_t count) {
+  std::string text{"["};
+  for (std::size_t index = 0; index < count; ++index) {
+    text.append(index == 0 ? R"("x")" : R"(,"x")");
+  }
+  text.push_back(']');
+  return text;
+}
+
+// The message lines of the first `count` wrong values, joined.
+[[nodiscard]] std::string wrong_value_lines(const std::size_t count) {
+  std::string text{};
+  for (std::size_t index = 0; index < count; ++index) {
+    text.append(index == 0 ? "" : "\n")
+        .append("$.values[" + std::to_string(index) + "] must be an integer");
+  }
+  return text;
+}
+
+} // namespace
+
+namespace {
+
+// A function template because GCC 16 reports -Wshadow for each expansion of a
+// `template for` in a function that is not one.
+template <typename Enum> [[nodiscard]] std::string enumerator_name(const Enum value) {
+  template for (constexpr std::meta::info enumerator :
+                std::define_static_array(std::meta::enumerators_of(^^Enum))) {
+    if (value == [:enumerator:]) {
+      return std::string{std::meta::identifier_of(enumerator)};
+    }
+  }
+  return "an undeclared enumerator";
+}
+
+} // namespace
+
+// Issues print as `kind at path: reason`, so a failed comparison shows them.
+template <> struct Catch::StringMaker<scrydantic::IssueKind> {
+  static std::string convert(const scrydantic::IssueKind kind) {
+    return enumerator_name(kind);
+  }
+};
+
+template <> struct Catch::StringMaker<scrydantic::Issue> {
+  static std::string convert(const scrydantic::Issue& issue) {
+    return StringMaker<scrydantic::IssueKind>::convert(issue.kind) + " at " +
+           scrydantic::json_path(issue.path) + ": " + issue.reason;
+  }
+};
+
+TEST_CASE("decoding reports every issue in an object, in declaration order") {
+  const auto decoded = decode_text<Account>(
+      R"({"active":"yes","age":70000,"extra":1,"name":7,"role":"admin"})");
+  REQUIRE_FALSE(decoded);
+  // Unknown members are found before the declared ones are read.
+  CHECK(decoded.error().issues ==
+        Issues{
+            {.kind = IssueKind::unknown_member,
+             .reason = R"(contains unknown member "extra")"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"name"},
+             .reason = "must be a string"},
+            {.kind = IssueKind::out_of_range,
+             .path = {"age"},
+             .reason = "is outside the integer range"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"active"},
+             .reason = "must be a boolean"},
+            {.kind = IssueKind::unknown_enumerator,
+             .path = {"role"},
+             .reason = "is not a declared enumerator; must be one of: user, assistant"},
+        });
+  constexpr std::string_view message =
+      "$ contains unknown member \"extra\"\n"
+      "$.name must be a string\n"
+      "$.age is outside the integer range\n"
+      "$.active must be a boolean\n"
+      "$.role is not a declared enumerator; must be one of: user, assistant";
+  CHECK(decoded.error().message == message);
+  CHECK(decoded.error().model_message == message);
+
+  // Each unknown member is its own issue, in key order, and a missing required
+  // member is one more.
+  const auto sparse = decode_text<Account>(R"({"b":1,"a":2})");
+  REQUIRE_FALSE(sparse);
+  CHECK(sparse.error().issues == Issues{
+                                     {.kind = IssueKind::unknown_member,
+                                      .reason = R"(contains unknown member "a")"},
+                                     {.kind = IssueKind::unknown_member,
+                                      .reason = R"(contains unknown member "b")"},
+                                     {.kind = IssueKind::missing_member,
+                                      .path = {"name"},
+                                      .reason = "is a required member"},
+                                 });
+  CHECK(sparse.error().model_message == "$ contains unknown member \"a\"\n"
+                                        "$ contains unknown member \"b\"\n"
+                                        "$.name is a required member");
+}
+
+TEST_CASE("issues inside nested objects, optionals, and arrays carry full paths") {
+  const auto decoded = decode_text<Customer>(
+      R"({"flags":[true,1],"home":{"zip":-1},"scores":[1,"two",3,4.5],)"
+      R"("work":{"city":null,"zip":"x"}})");
+  REQUIRE_FALSE(decoded);
+  CHECK(decoded.error().issues == Issues{
+                                      {.kind = IssueKind::missing_member,
+                                       .path = {"home", "city"},
+                                       .reason = "is a required member"},
+                                      {.kind = IssueKind::out_of_range,
+                                       .path = {"home", "zip"},
+                                       .reason = "is outside the integer range"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"work", "city"},
+                                       .reason = "must be a string"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"work", "zip"},
+                                       .reason = "must be an integer"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"scores", 1UZ},
+                                       .reason = "must be an integer"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"scores", 3UZ},
+                                       .reason = "must be an integer"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"flags", 1UZ},
+                                       .reason = "must be a boolean"},
+                                  });
+  constexpr std::string_view message = "$.home.city is a required member\n"
+                                       "$.home.zip is outside the integer range\n"
+                                       "$.work.city must be a string\n"
+                                       "$.work.zip must be an integer\n"
+                                       "$.scores[1] must be an integer\n"
+                                       "$.scores[3] must be an integer\n"
+                                       "$.flags[1] must be a boolean";
+  CHECK(decoded.error().message == message);
+  CHECK(decoded.error().model_message == message);
+}
+
+TEST_CASE("a value of the wrong JSON type is one issue, and nothing inside is read") {
+  const auto decoded =
+      decode_text<Customer>(R"({"flags":[true],"home":[],"scores":{},"work":"w"})");
+  REQUIRE_FALSE(decoded);
+  CHECK(decoded.error().issues ==
+        Issues{
+            {.kind = IssueKind::wrong_type,
+             .path = {"home"},
+             .reason = "must be an object"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"work"},
+             .reason = "must be an object"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"scores"},
+             .reason = "must be an array"},
+            {.kind = IssueKind::wrong_size,
+             .path = {"flags"},
+             .reason = "must be an array of the declared fixed size"},
+        });
+  CHECK(decoded.error().model_message == "$.home must be an object\n"
+                                         "$.work must be an object\n"
+                                         "$.scores must be an array\n"
+                                         "$.flags must be an array of the declared "
+                                         "fixed size");
+
+  // A fixed-size array's two failures share their text but not their kind.
+  const auto not_array =
+      decode_text<Customer>(R"({"flags":{},"home":{"city":""},"scores":[]})");
+  REQUIRE_FALSE(not_array);
+  CHECK(not_array.error().issues ==
+        Issues{{.kind = IssueKind::wrong_type,
+                .path = {"flags"},
+                .reason = "must be an array of the declared fixed size"}});
+  CHECK(not_array.error().model_message ==
+        "$.flags must be an array of the declared fixed size");
+}
+
+TEST_CASE("a variant reports its alternative's issues, or one issue for its tag") {
+  const auto decoded = decode_text<Drawing>(
+      R"({"highlight":{"radius":"big"},"shapes":[)"
+      R"({"radius":"big","side":1,"type":"circle"},{"type":"hexagon","width":"w"},7,)"
+      R"({"height":"h","type":"rectangle","width":"w"}]})");
+  REQUIRE_FALSE(decoded);
+  // With no alternative chosen, an object's other members are not checked: the
+  // hexagon's width and the highlight's radius go unreported.
+  CHECK(decoded.error().issues ==
+        Issues{
+            {.kind = IssueKind::unknown_member,
+             .path = {"shapes", 0UZ},
+             .reason = R"(contains unknown member "side")"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"shapes", 0UZ, "radius"},
+             .reason = "must be a number"},
+            {.kind = IssueKind::unknown_tag,
+             .path = {"shapes", 1UZ, "type"},
+             .reason = "must be one of: circle, rectangle"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"shapes", 2UZ},
+             .reason = "must be an object"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"shapes", 3UZ, "height"},
+             .reason = "must be a number"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"shapes", 3UZ, "width"},
+             .reason = "must be a number"},
+            {.kind = IssueKind::missing_tag,
+             .path = {"highlight", "type"},
+             .reason = "is a required member; must be one of: circle, rectangle"},
+        });
+  constexpr std::string_view message =
+      "$.shapes[0] contains unknown member \"side\"\n"
+      "$.shapes[0].radius must be a number\n"
+      "$.shapes[1].type must be one of: circle, rectangle\n"
+      "$.shapes[2] must be an object\n"
+      "$.shapes[3].height must be a number\n"
+      "$.shapes[3].width must be a number\n"
+      "$.highlight.type is a required member; must be one of: circle, rectangle";
+  CHECK(decoded.error().message == message);
+  CHECK(decoded.error().model_message == message);
+
+  // A tag that is not a string names no alternative either.
+  const auto untyped = decode_text<Shape>(R"({"radius":"big","type":7})");
+  REQUIRE_FALSE(untyped);
+  CHECK(untyped.error().issues ==
+        Issues{{.kind = IssueKind::unknown_tag,
+                .path = {"type"},
+                .reason = "must be one of: circle, rectangle"}});
+}
+
+TEST_CASE("text that is not JSON is one issue at the root") {
+  const auto decoded = decode_text<Account>(R"({"name":)");
+  REQUIRE_FALSE(decoded);
+  CHECK(decoded.error().issues ==
+        Issues{{.kind = IssueKind::invalid_json, .reason = "is not valid JSON"}});
+  CHECK(decoded.error().message == "JSON text is not valid JSON");
+  CHECK(decoded.error().model_message == "JSON text is not valid JSON");
+}
+
+TEST_CASE("paths quote keys that are not identifiers") {
+  const auto decoded =
+      decode_text<Awkward>(R"({"\"]":0,"a.b":[1,"x"],"content-type":1,"x.y":2})");
+  REQUIRE_FALSE(decoded);
+  CHECK(decoded.error().issues == Issues{
+                                      {.kind = IssueKind::unknown_member,
+                                       .reason = R"(contains unknown member "x.y")"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"content-type"},
+                                       .reason = "must be a string"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"a.b", 1UZ},
+                                       .reason = "must be an integer"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"\"]"},
+                                       .reason = "must be a boolean"},
+                                  });
+  CHECK(decoded.error().model_message == R"($ contains unknown member "x.y")"
+                                         "\n"
+                                         R"($["content-type"] must be a string)"
+                                         "\n"
+                                         R"($["a.b"][1] must be an integer)"
+                                         "\n"
+                                         R"($["\"]"] must be a boolean)");
+
+  // An encode failure spells its path the same way, and is no decode issue.
+  const auto encoded = scrydantic::encode(
+      AwkwardNumber{.value = std::numeric_limits<double>::infinity()});
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message == R"($["a.b"] must be finite)");
+  CHECK(encoded.error().model_message.empty());
+  CHECK(encoded.error().issues.empty());
+}
+
+TEST_CASE("decoding reports at most max_issues issues, then says it stopped") {
+  static_assert(scrydantic::max_issues == 64);
+  const auto check_reported = [](const std::size_t count) {
+    INFO(count << " wrong values");
+    const auto decoded =
+        decode_text<Bulk>(R"({"after":"","values":)" + wrong_values(count) + "}");
+    REQUIRE_FALSE(decoded);
+    const auto& error = decoded.error();
+    const std::size_t reported = std::min(count, scrydantic::max_issues);
+    REQUIRE(error.issues.size() == reported);
+    for (std::size_t index = 0; index < reported; ++index) {
+      CHECK(error.issues[index] == scrydantic::Issue{.kind = IssueKind::wrong_type,
+                                                     .path = {"values", index},
+                                                     .reason = "must be an integer"});
+    }
+    const auto expected =
+        count > scrydantic::max_issues
+            ? wrong_value_lines(reported) + "\n" + std::string{stopped_line}
+            : wrong_value_lines(reported);
+    CHECK(error.message == expected);
+    CHECK(error.model_message == expected);
+    return error;
+  };
+  check_reported(scrydantic::max_issues - 1);
+  check_reported(scrydantic::max_issues);
+  const auto stopped = check_reported(scrydantic::max_issues + 1);
+  // Hostile input reports exactly what one issue too many does.
+  const auto hostile = check_reported(100'000);
+  CHECK(hostile.issues == stopped.issues);
+  CHECK(hostile.message == stopped.message);
+}
+
+TEST_CASE("an issue past max_issues stops the whole decode") {
+  // Below the limit, the missing `after` is the 64th issue and is reported.
+  const auto at_limit = decode_text<Bulk>(R"({"values":)" + wrong_values(63) + "}");
+  REQUIRE_FALSE(at_limit);
+  REQUIRE(at_limit.error().issues.size() == scrydantic::max_issues);
+  CHECK(at_limit.error().issues.back() ==
+        scrydantic::Issue{.kind = IssueKind::missing_member,
+                          .path = {"after"},
+                          .reason = "is a required member"});
+  CHECK(at_limit.error().message ==
+        wrong_value_lines(63) + "\n$.after is a required member");
+
+  // At it, the missing `after` is the 65th, a sibling of the array that filled
+  // the report, and the decode stops there.
+  const auto past_limit = decode_text<Bulk>(R"({"values":)" + wrong_values(64) + "}");
+  REQUIRE_FALSE(past_limit);
+  CHECK(past_limit.error().issues.size() == scrydantic::max_issues);
+  CHECK(past_limit.error().message ==
+        wrong_value_lines(64) + "\n" + std::string{stopped_line});
+
+  // Unknown members count too, and stop the decode before any declared member.
+  // Three-digit keys visit in the order they are written.
+  std::string unknown{"{"};
+  for (std::size_t index = 0; index <= scrydantic::max_issues; ++index) {
+    unknown.append(index == 0 ? "" : ",")
+        .append("\"k" + std::to_string(100 + index) + "\":0");
+  }
+  unknown.push_back('}');
+  const auto crowded = decode_text<Bulk>(unknown);
+  REQUIRE_FALSE(crowded);
+  REQUIRE(crowded.error().issues.size() == scrydantic::max_issues);
+  CHECK(crowded.error().issues.back() ==
+        scrydantic::Issue{.kind = IssueKind::unknown_member,
+                          .reason = R"(contains unknown member "k163")"});
+  CHECK(crowded.error().message.ends_with("\n$ contains unknown member \"k163\"\n" +
+                                          std::string{stopped_line}));
 }

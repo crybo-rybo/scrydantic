@@ -160,6 +160,51 @@ TEST_CASE("bound handlers report decode and handler failures as Errors") {
   CHECK(refused.error().model_message == "not today");
 }
 
+TEST_CASE("bound handlers give the model every issue in their arguments") {
+  auto tools = scrydantic::bind<^^grid_tools>();
+  REQUIRE(tools.size() == 3);
+
+  const auto sum = tools[1].invoke(json(R"({"extra":true,"left":"two"})"));
+  REQUIRE_FALSE(sum);
+  constexpr std::string_view listed = "$ contains unknown member \"extra\"\n"
+                                      "$.left must be an integer\n"
+                                      "$.right is a required member";
+  CHECK(sum.error().model_message == listed);
+  CHECK(sum.error().message == listed);
+  CHECK(sum.error().issues == std::vector<scrydantic::Issue>{
+                                  {.kind = scrydantic::IssueKind::unknown_member,
+                                   .reason = R"(contains unknown member "extra")"},
+                                  {.kind = scrydantic::IssueKind::wrong_type,
+                                   .path = {"left"},
+                                   .reason = "must be an integer"},
+                                  {.kind = scrydantic::IssueKind::missing_member,
+                                   .path = {"right"},
+                                   .reason = "is a required member"},
+                              });
+
+  // A typed handler's argument object reports the same way.
+  auto handler = scrydantic::bind_handler<Position>([](Position) { return 0; });
+  const auto stepped = handler(json(R"({"x":1.5,"y":null})"));
+  REQUIRE_FALSE(stepped);
+  CHECK(stepped.error().model_message ==
+        "$.x must be an integer\n$.y must be an integer");
+
+  // Arguments that are not JSON are one issue; the handler's own failures,
+  // whether refusals or results that cannot be JSON, are none.
+  const auto malformed = tools[1].invoke(json("{"));
+  REQUIRE_FALSE(malformed);
+  CHECK(malformed.error().issues ==
+        std::vector<scrydantic::Issue>{{.kind = scrydantic::IssueKind::invalid_json,
+                                        .reason = "is not valid JSON"}});
+  const auto refused = tools[2].invoke(json("{}"));
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().issues.empty());
+  const auto unencodable =
+      scrydantic::bind<^^bad_text_tools>().front().invoke(json("{}"));
+  REQUIRE_FALSE(unencodable);
+  CHECK(unencodable.error().issues.empty());
+}
+
 TEST_CASE("bound handlers refuse a result that is not valid JSON") {
   constexpr std::string_view reason =
       "the value holds a string that is not valid UTF-8, so it cannot be JSON";

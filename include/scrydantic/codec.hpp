@@ -45,14 +45,16 @@ template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
 
 /// Decodes a parsed JSON value into a reflected value, strictly.
 ///
-/// The rules are the ones reflected tool arguments are decoded by. A failure is an
-/// Error whose `message` and `model_message` are both the JSON path of the
-/// offending value followed by what the type required there, such as
+/// The rules are the ones reflected tool arguments are decoded by. Decoding goes
+/// on past a failure, so one call reports every issue it finds, up to
+/// max_issues. A failure is an Error whose `issues` lists them, each with its
+/// kind, its path, and what the type required there, and whose `message` and
+/// `model_message` are both one `<path> <reason>` line per issue, such as
 /// `$.shapes[0].radius must be a number`. A type outside Decodable fails to
 /// compile with the offending member path and the reason.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param view Parsed JSON value to decode.
-/// @return The decoded value, or the first decode failure.
+/// @return The decoded value, or every issue that kept it from decoding.
 template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view) {
   constexpr std::string_view problem = detail::decodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
@@ -66,18 +68,15 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 /// Parses JSON text and decodes it into a reflected value, strictly.
 ///
 /// Text that is not JSON fails with `JSON text is not valid JSON` as both
-/// messages; every other failure is reported as decode(const JsonView&) reports
-/// it.
+/// messages, and one IssueKind::invalid_json issue at `$`; every other failure
+/// is reported as decode(const JsonView&) reports it.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param json JSON text to parse and decode.
 /// @return The decoded value, or the parse or decode failure.
 template <typename Type> [[nodiscard]] Result<Type> decode(const Json& json) {
   auto parsed = JsonView::parse(json);
   if (!parsed) {
-    return std::unexpected(Error{
-        .message = "JSON text is not valid JSON",
-        .model_message = "JSON text is not valid JSON",
-    });
+    return std::unexpected(detail::invalid_json_error("JSON text is not valid JSON"));
   }
   return decode<Type>(*parsed);
 }

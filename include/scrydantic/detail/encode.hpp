@@ -43,7 +43,7 @@ enum class spelling : std::uint8_t {
 };
 
 template <typename Type, spelling Spelling = spelling::verbatim>
-[[nodiscard]] codec_result<void> write_value(std::string& output, const Type& value);
+[[nodiscard]] encode_result<void> write_value(std::string& output, const Type& value);
 
 // Whether the parser reads `text`, std::to_chars' spelling of a finite number,
 // as an integer: digits alone, after at most a '-', that fit uint64 when not
@@ -87,10 +87,11 @@ void append_canonical_float(std::string& output, const Float value,
 }
 
 template <spelling Spelling, typename Number>
-[[nodiscard]] codec_result<void> write_number(std::string& output, const Number value) {
+[[nodiscard]] encode_result<void> write_number(std::string& output,
+                                               const Number value) {
   if constexpr (std::floating_point<Number>) {
     if (!std::isfinite(value)) {
-      return codec_fail("must be finite");
+      return encode_fail("must be finite");
     }
   }
   // Wide enough for any 64-bit integer and for the shortest round-trip form of any
@@ -109,28 +110,28 @@ template <spelling Spelling, typename Number>
 }
 
 template <typename Enum>
-[[nodiscard]] codec_result<void> write_enum(std::string& output, const Enum value) {
+[[nodiscard]] encode_result<void> write_enum(std::string& output, const Enum value) {
   template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
     if (value == [:enumerator:]) {
       output.append(quoted(std::meta::identifier_of(enumerator)));
       return {};
     }
   }
-  return codec_fail("is not a declared enumerator value");
+  return encode_fail("is not a declared enumerator value");
 }
 
 // A Json value is checked and then written byte for byte, or canonicalized; the
 // caller owns its verbatim spelling.
 template <spelling Spelling>
-[[nodiscard]] codec_result<void> write_json_value(std::string& output,
-                                                  const Json& value) {
+[[nodiscard]] encode_result<void> write_json_value(std::string& output,
+                                                   const Json& value) {
   if constexpr (Spelling == spelling::canonical) {
     if (!append_canonical_json(output, value.text)) {
-      return codec_fail("is not valid JSON");
+      return encode_fail("is not valid JSON");
     }
   } else {
     if (!validate_json(value.text)) {
-      return codec_fail("is not valid JSON");
+      return encode_fail("is not valid JSON");
     }
     output.append(value.text);
   }
@@ -138,8 +139,8 @@ template <spelling Spelling>
 }
 
 template <spelling Spelling, typename Sequence>
-[[nodiscard]] codec_result<void> write_sequence(std::string& output,
-                                                const Sequence& value) {
+[[nodiscard]] encode_result<void> write_sequence(std::string& output,
+                                                 const Sequence& value) {
   output.push_back('[');
   for (std::size_t index = 0; index < value.size(); ++index) {
     if (index != 0) {
@@ -159,7 +160,7 @@ template <spelling Spelling, typename Sequence>
 // its members at its lexical position: before the first key that sorts after it,
 // or last.
 template <typename Type, bool Tagged, spelling Spelling>
-[[nodiscard]] codec_result<void> write_object(std::string& output, const Type& value) {
+[[nodiscard]] encode_result<void> write_object(std::string& output, const Type& value) {
   output.push_back('{');
   bool first = true;
   const auto separate = [&output, &first] {
@@ -207,10 +208,10 @@ template <typename Type, bool Tagged, spelling Spelling>
 }
 
 template <spelling Spelling, typename Variant>
-[[nodiscard]] codec_result<void> write_variant(std::string& output,
-                                               const Variant& value) {
+[[nodiscard]] encode_result<void> write_variant(std::string& output,
+                                                const Variant& value) {
   if (value.valueless_by_exception()) {
-    return codec_fail("is a variant left valueless by an exception");
+    return encode_fail("is a variant left valueless by an exception");
   }
   return std::visit(
       [&output]<typename Alternative>(const Alternative& alternative) {
@@ -220,7 +221,7 @@ template <spelling Spelling, typename Variant>
 }
 
 template <typename Type, spelling Spelling>
-codec_result<void> write_value(std::string& output, const Type& value) {
+encode_result<void> write_value(std::string& output, const Type& value) {
   constexpr auto kind = kind_of(^^Type);
   if constexpr (kind == value_kind::boolean) {
     output.append(value ? "true" : "false");
@@ -262,7 +263,7 @@ template <typename Type, spelling Spelling = spelling::verbatim>
   std::string output{};
   if (auto status = write_value<std::remove_cvref_t<Type>, Spelling>(output, value);
       !status) {
-    return std::unexpected(encode_failure_error(status.error()));
+    return std::unexpected(encode_failure_error(std::move(status.error())));
   }
   return Json{.text = std::move(output)};
 }
