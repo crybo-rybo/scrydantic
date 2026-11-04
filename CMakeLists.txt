@@ -80,6 +80,7 @@ add_library(
   scrydantic_json
   STATIC
     src/json/document.cpp
+    src/json/error.cpp
     src/json/number.cpp
     src/json/text.cpp
     src/json/view.cpp

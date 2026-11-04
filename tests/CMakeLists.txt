@@ -61,6 +61,7 @@ add_executable(
   scrydantic_json_tests
   json/json_entry_point_tests.cpp
   json/json_document_tests.cpp
+  json/json_error_tests.cpp
   json/json_fixture_tests.cpp
   json/json_view_tests.cpp
 )
