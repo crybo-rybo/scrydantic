@@ -909,6 +909,27 @@ TEST_CASE("encode() reports spliced payloads that nest too deep together") {
   CHECK(scrydantic::encode(DocToolResult{.result = nest(255), .tool_call_id = "c"}));
 }
 
+TEST_CASE("encode_verbatim() checks the depth of the text it writes") {
+  // The earlier `x` sits at the parser's limit within the payload. encode() drops
+  // it as a duplicate key; encode_verbatim() keeps it, one level deeper inside the
+  // enclosing object.
+  const scrydantic::Json payload{
+      .text = R"({"x":)" + std::string(255, '[') + "0" + std::string(255, ']') +
+              R"(,"x":0})",
+  };
+  REQUIRE(scrydantic::is_valid_json(payload.text));
+  const DocToolResult value{.result = payload, .tool_call_id = "c"};
+
+  const auto encoded = scrydantic::encode(value);
+  REQUIRE(encoded);
+  CHECK(encoded->text == R"({"is_error":false,"result":{"x":0},"tool_call_id":"c"})");
+
+  const auto verbatim = scrydantic::encode_verbatim(value);
+  REQUIRE_FALSE(verbatim);
+  CHECK(verbatim.error().message ==
+        "the value nests arrays and objects more than 256 deep, so it cannot be JSON");
+}
+
 TEST_CASE("encode() takes a reference or cv-qualified type argument") {
   // As a generic wrapper forwarding its own T writes it: the value type decides.
   std::optional<int> value{42};

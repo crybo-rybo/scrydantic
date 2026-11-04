@@ -56,7 +56,7 @@ template <typename Type>
 template <typename Type> [[nodiscard]] std::string encode_rejection(const Type& value) {
   const auto encoded = scrydantic::encode(value);
   const auto verbatim = scrydantic::encode_verbatim(value);
-  CHECK(encoded.has_value() == verbatim.has_value());
+  REQUIRE(encoded.has_value() == verbatim.has_value());
   if (encoded) {
     return "accepted";
   }
@@ -121,8 +121,10 @@ TEST_CASE("an integer out of range names its element and member") {
         "$.values[1] is outside the integer range");
   CHECK(rejection<Reading>(std::string{prefix} + R"("values":[1.5]})") ==
         "$.values[0] must be an integer");
-  CHECK(decoded<Reading>(std::string{prefix} + R"("values":[4294967295]})")->values ==
-        std::vector<std::uint32_t>{4294967295U});
+  const auto widest =
+      decoded<Reading>(std::string{prefix} + R"("values":[4294967295]})");
+  REQUIRE(widest);
+  CHECK(widest->values == std::vector<std::uint32_t>{4294967295U});
 }
 
 TEST_CASE("floating-point values decode from every numeric kind within range") {
@@ -196,4 +198,27 @@ TEST_CASE("encode() spells numbers canonically") {
         "18446744073709551615");
   CHECK(scrydantic::encode(std::numeric_limits<std::int64_t>::min())->text ==
         "-9223372036854775808");
+}
+
+TEST_CASE("encode() keeps the digits of a wide whole double that format_json_number() "
+          "respells") {
+  // Below 2^53 the two agree; above it, encode() keeps std::to_chars' plain digits
+  // when they fit a 64-bit integer, and the text reads back as an integer kind.
+  CHECK(scrydantic::encode(9007199254740991.0)->text ==
+        scrydantic::format_json_number(9007199254740991.0));
+
+  constexpr double wide = 123456789012345680.0;
+  const auto encoded = scrydantic::encode(wide);
+  REQUIRE(encoded);
+  CHECK(encoded->text == "123456789012345680");
+  CHECK(scrydantic::format_json_number(wide) == "1.2345678901234568E17");
+
+  const auto from_encode = scrydantic::JsonView::parse(*encoded);
+  REQUIRE(from_encode);
+  CHECK(from_encode->kind() == scrydantic::JsonKind::unsigned_integer);
+  const auto from_format =
+      scrydantic::JsonView::parse(scrydantic::Json{.text = "1.2345678901234568E17"});
+  REQUIRE(from_format);
+  CHECK(from_format->kind() == scrydantic::JsonKind::number);
+  CHECK(from_format->number() == wide);
 }

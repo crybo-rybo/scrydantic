@@ -393,7 +393,9 @@ TEST_CASE("encoding a named result reads it in place") {
 }
 
 TEST_CASE("encoding a named failed Result leaves the caller's error in place") {
-  const scrydantic::Result<CopyOnlyResult> value = std::unexpected(scrydantic::Error{
+  // Mutable, so that moving from the caller's error, rather than copying it,
+  // would empty the strings checked below.
+  scrydantic::Result<CopyOnlyResult> value = std::unexpected(scrydantic::Error{
       .message = "application rejected arguments",
       .model_message = "rejected",
   });

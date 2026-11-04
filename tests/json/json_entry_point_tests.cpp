@@ -107,6 +107,13 @@ TEST_CASE("the JSON core rejects every shape of incomplete document") {
       {"trailing newline", "{\"a\":1}\n", true},
       {"leading whitespace", "  {\"a\":1}", true},
       {"bare number", "123", true},
+      // Numbers the grammar allows but a double cannot hold.
+      {"overflowing number", "1e400", false},
+      {"overflowing negative number", "-1e400", false},
+      {"nonzero number that rounds to zero", "1e-400", false},
+      {"number below half the smallest subnormal", "2e-324", false},
+      {"smallest subnormal", "5e-324", true},
+      {"zero with a huge negative exponent", "0e-400", true},
       {"bare number with space", "123 ", true},
       {"bare true", "true", true},
       {"bare null", "null", true},

@@ -114,9 +114,15 @@ template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
 /// where encode() writes `1E-7`. Keys are still in canonical order, strings still
 /// use the canonical escapes, and the whole text is checked as encode()'s is.
 /// Reflected tool handlers encode their results this way.
+///
+/// The check reads this function's own output, so encode() succeeding does not
+/// imply that this does. A payload with a duplicate key keeps both members here,
+/// where encode() keeps only the last, so a deeply nested earlier value can take
+/// this output past the nesting limit when encode()'s is within it.
 /// @tparam Type Value from the Encodable family.
 /// @param value Value to encode without modifying it.
-/// @return JSON text, or an Error that encode() would report for the same value.
+/// @return JSON text, or an Error of the kinds encode() reports, for this
+/// function's output.
 template <typename Type> [[nodiscard]] Result<Json> encode_verbatim(const Type& value) {
   constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
