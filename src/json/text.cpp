@@ -14,6 +14,10 @@ bool validate_json(const std::string_view input) noexcept {
   return json::validate(input);
 }
 
+json_validity check_json(const std::string_view input) noexcept {
+  return json::check(input);
+}
+
 bool append_canonical_json(std::string& output, const std::string_view text) {
   const auto document = json::parse(text);
   if (!document) {

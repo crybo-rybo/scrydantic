@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
@@ -16,6 +18,21 @@ namespace scrydantic::detail {
 // truncation, trailing garbage, and a second document. Surrounding whitespace is
 // accepted, as any parser would.
 [[nodiscard]] bool validate_json(std::string_view input) noexcept;
+
+// The deepest nesting of arrays and objects the parser accepts, counting an
+// empty one.
+inline constexpr std::size_t json_max_depth = 256;
+
+// What check_json() found: valid JSON, text that stopped being read at a
+// container nested deeper than json_max_depth, or text that breaks another rule.
+enum class json_validity : std::uint8_t {
+  valid,
+  too_deep,
+  invalid,
+};
+
+// validate_json() that also says why it rejects text, in the same single pass.
+[[nodiscard]] json_validity check_json(std::string_view input) noexcept;
 
 // Appends the canonical form of `text` to `output`: object keys in lexical
 // order, no insignificant whitespace, and the canonical spelling of every number

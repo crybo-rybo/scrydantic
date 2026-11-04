@@ -44,7 +44,7 @@ operations in `detail/json_text.hpp`. The document type remains private in
 | `detail/schema.hpp` | The consteval schema generator |
 | `detail/decode.hpp`, `detail/encode.hpp`, `detail/failure.hpp` | The codec and its failure paths |
 | `detail/tools.hpp`, `detail/binding.hpp` | Tool discovery and diagnostics, and handler generation |
-| `detail/json_text.hpp`, `detail/json_string.hpp` | The three core operations the codec calls (validate, canonicalize, spell a number) and the codec's string escaping |
+| `detail/json_text.hpp`, `detail/json_string.hpp` | The core operations the codec calls (validate, canonicalize, spell a number) and the codec's string escaping |
 
 ## The codec
 
@@ -85,8 +85,11 @@ and spliced `Json` payloads. The `spelling` template argument makes this choice:
   spellings produce the same bytes. The tests use boundary doubles and floats,
   random bit patterns, and payloads.
 
-The writer copies string bytes without checking them. A string that is not
-UTF-8 is caught by the final validating pass, which every encoding does.
+The writer copies string bytes without checking them, and it checks each
+spliced payload alone. The final validating pass, which every encoding does,
+catches what is left: a string that is not UTF-8, and payloads that are each
+valid but together nest deeper than the parser accepts. That pass reports
+which of the two it found.
 
 ## Tools
 

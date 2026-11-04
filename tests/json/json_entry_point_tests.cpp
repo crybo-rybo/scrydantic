@@ -30,6 +30,8 @@ namespace core = scrydantic::detail;
   std::string appended{};
   const bool canonicalized = core::append_canonical_json(appended, input);
   REQUIRE(core::validate_json(input) == document.has_value());
+  REQUIRE((core::check_json(input) == core::json_validity::valid) ==
+          document.has_value());
   REQUIRE(viewed.has_value() == document.has_value());
   REQUIRE(canonicalized == document.has_value());
   if (!document) {

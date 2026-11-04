@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -250,12 +251,17 @@ codec_result<void> write_value(std::string& output, const Type& value) {
 
 // Encodes a value checked against a family. Failures are host-only diagnostics,
 // with no model_message, rooted at `$`. The text is valid JSON except where a
-// string value holds invalid UTF-8, the one thing the writer copies unchecked;
-// validate_encoded_json catches that.
+// string value holds invalid UTF-8, the one thing the writer copies unchecked,
+// or where spliced Json payloads, each valid alone, nest past the parser's depth
+// limit together; validate_encoded_json catches both.
+//
+// `Type` may be a reference or cv-qualified, as `encode<T>(value)` with a
+// forwarded T makes it; the writer sees the value type alone.
 template <typename Type, spelling Spelling = spelling::verbatim>
 [[nodiscard]] Result<Json> encode_value(const Type& value) {
   std::string output{};
-  if (auto status = write_value<Type, Spelling>(output, value); !status) {
+  if (auto status = write_value<std::remove_cvref_t<Type>, Spelling>(output, value);
+      !status) {
     return std::unexpected(encode_failure_error(status.error()));
   }
   return Json{.text = std::move(output)};
@@ -264,15 +270,23 @@ template <typename Type, spelling Spelling = spelling::verbatim>
 // The check every encoding ends with. It builds no document, so a host can
 // still bound an oversized tool result before paying for a canonicalizing parse.
 // The writer escapes every control character, rejects non-finite numbers, and
-// checks spliced Json payloads itself, so the one way its text can fail here is
-// a string, key, or tag that is not valid UTF-8.
+// checks spliced Json payloads itself, so its text can fail here only by nesting
+// too deep or by holding a string, key, or tag that is not valid UTF-8. Both
+// failures are host-only diagnostics: the value is the program's own, not the
+// model's.
 [[nodiscard]] inline Result<Json> validate_encoded_json(Json&& json) {
-  if (!validate_json(json.text)) {
-    // A host-only diagnostic: the value is the program's own, not the model's.
-    return std::unexpected(Error{.message = "the value holds a string that is not "
-                                            "valid UTF-8, so it cannot be JSON"});
+  switch (check_json(json.text)) {
+  case json_validity::valid:
+    return std::move(json);
+  case json_validity::too_deep:
+    return std::unexpected(Error{
+        .message = "the value nests arrays and objects more than " +
+                   std::to_string(json_max_depth) + " deep, so it cannot be JSON"});
+  case json_validity::invalid:
+    break;
   }
-  return std::move(json);
+  return std::unexpected(Error{.message = "the value holds a string that is not "
+                                          "valid UTF-8, so it cannot be JSON"});
 }
 
 } // namespace scrydantic::detail

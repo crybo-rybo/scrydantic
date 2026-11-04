@@ -767,6 +767,43 @@ TEST_CASE("encode() rejects a string that is not UTF-8") {
   CHECK(encoded.error().model_message.empty());
 }
 
+TEST_CASE("encode() reports spliced payloads that nest too deep together") {
+  // Each payload is valid alone; the enclosing object takes the whole text one
+  // level past the parser's limit, and the text is ASCII throughout.
+  const auto nest = [](const std::size_t depth) {
+    return scrydantic::Json{.text = std::string(depth, '[') + "0" +
+                                    std::string(depth, ']')};
+  };
+  constexpr std::string_view reason =
+      "the value nests arrays and objects more than 256 deep, so it cannot be JSON";
+  const DocToolResult deep{.result = nest(256), .tool_call_id = "c"};
+  REQUIRE(scrydantic::JsonView::parse(deep.result));
+
+  const auto encoded = scrydantic::encode(deep);
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message == reason);
+  CHECK(encoded.error().model_message.empty());
+
+  const auto verbatim = scrydantic::detail::encode_value(deep).and_then(
+      scrydantic::detail::validate_encoded_json);
+  REQUIRE_FALSE(verbatim);
+  CHECK(verbatim.error().message == reason);
+
+  CHECK(scrydantic::encode(DocToolResult{.result = nest(255), .tool_call_id = "c"}));
+}
+
+TEST_CASE("encode() takes a reference or cv-qualified type argument") {
+  // As a generic wrapper forwarding its own T writes it: the value type decides.
+  std::optional<int> value{42};
+  static_assert(scrydantic::Encodable<std::optional<int>&>);
+  CHECK(scrydantic::encode<std::optional<int>&>(value)->text == "42");
+  CHECK(scrydantic::encode<const std::optional<int>&>(value)->text == "42");
+  CHECK(scrydantic::encode<const std::optional<int>>(value)->text == "42");
+  const DocText text{.text = "hi"};
+  CHECK(scrydantic::encode<const DocText&>(text)->text == R"({"text":"hi"})");
+  CHECK(scrydantic::detail::encode_value<std::optional<int>&>(value)->text == "42");
+}
+
 TEST_CASE("an invalid spliced JSON payload fails encoding at its path") {
   for (const auto* text : {"", "   ", "{", R"({"a":1} 2)", "nul"}) {
     const BorrowedRequest body{

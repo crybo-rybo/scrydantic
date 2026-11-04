@@ -212,6 +212,11 @@ public:
     return cursor_ == end_;
   }
 
+  // After document() fails: whether it stopped at a container opened past
+  // max_depth. Reading stops at the first problem, so the text may also break
+  // another rule further on.
+  [[nodiscard]] bool too_deep() const noexcept { return too_deep_; }
+
 private:
   [[nodiscard]] bool at_end() const noexcept { return cursor_ == end_; }
 
@@ -272,7 +277,8 @@ private:
 
   [[nodiscard]] bool enter() noexcept {
     ++cursor_;
-    return ++depth_ <= max_depth;
+    too_deep_ = ++depth_ > max_depth;
+    return !too_deep_;
   }
 
   // After an element or member: a comma continues the container and the
@@ -573,6 +579,7 @@ private:
   const char* cursor_{};
   const char* end_{};
   std::size_t depth_{};
+  bool too_deep_{};
 };
 
 // ---------------------------------------------------------------------------
@@ -753,9 +760,16 @@ std::optional<Value> parse(const std::string_view text) {
 }
 
 bool validate(const std::string_view text) noexcept {
+  return check(text) == Validity::valid;
+}
+
+Validity check(const std::string_view text) noexcept {
   Discard discarded{};
   Reader<false> reader{text};
-  return reader.document(discarded);
+  if (reader.document(discarded)) {
+    return Validity::valid;
+  }
+  return reader.too_deep() ? Validity::too_deep : Validity::invalid;
 }
 
 void write(const Value& value, std::string& output) { write_value(value, output); }
