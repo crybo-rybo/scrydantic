@@ -37,12 +37,12 @@ template <> struct tool_function<void> {
 /// Move-only type-erased handler of one bound tool.
 ///
 /// It receives the canonical JSON argument object, preceded by a `const
-/// Context&` when `Context` is not void, and returns the JSON result. A result is
-/// always valid JSON, with keys in canonical order; unlike encode(), it keeps the
-/// writer's number spelling. A result that cannot be JSON, such as a string holding
-/// invalid UTF-8, is a failure. A failure is an Error whose `model_message` is the
-/// text meant for the model, empty when the failure carries nothing the model could
-/// act on.
+/// Context&` when `Context` is not void, and returns the JSON result, encoded as
+/// encode_verbatim() encodes it: valid JSON with keys in canonical order, and
+/// spliced `Json` payloads byte for byte. A result that cannot be JSON, such as a
+/// string holding invalid UTF-8, is a failure. A failure is an Error whose
+/// `model_message` is the text meant for the model, empty when the failure carries
+/// nothing the model could act on.
 /// @tparam Context Call context passed to every invocation, or void for none.
 template <typename Context = void>
 using ToolFunction = typename detail::tool_function<Context>::type;

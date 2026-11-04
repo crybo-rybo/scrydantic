@@ -10,7 +10,6 @@
 #include <random>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
-#include <scrydantic/detail/encode.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
@@ -416,7 +415,7 @@ TEST_CASE("tagged variants encode the tag at its canonical position") {
       R"({"highlight":{"height":4,"type":"rectangle","width":5},)"
       R"("shapes":[{"radius":1.5,"type":"circle"},{"height":2,"type":"rectangle","width":3}]})"};
 
-  const auto direct = scrydantic::detail::encode_value(drawing);
+  const auto direct = scrydantic::encode_verbatim(drawing);
   REQUIRE(direct);
   CHECK(direct->text == expected);
   const auto canonical = scrydantic::encode(drawing);
@@ -586,7 +585,7 @@ TEST_CASE("encode-only values borrow text and splice JSON verbatim") {
       }},
   };
 
-  const auto direct = scrydantic::detail::encode_value(body);
+  const auto direct = scrydantic::encode_verbatim(body);
   REQUIRE(direct);
   CHECK(direct->text ==
         R"({"max_tokens":1024,"model":"model-name","stream":true,"temperature":0.7,)"
@@ -605,6 +604,40 @@ TEST_CASE("encode-only values borrow text and splice JSON verbatim") {
         R"({"model":"m","stream":true,"system":"s","temperature":0,"top_p":0.5})");
 }
 
+TEST_CASE("encode_verbatim() keeps payload text that encode() respells") {
+  // Wider than any 64-bit integer, so canonical form reads it as a double.
+  const Payload wide{.body = {.text = R"({"z": 12345678901234567890123, "a": 1.50})"}};
+  const auto verbatim = scrydantic::encode_verbatim(wide);
+  REQUIRE(verbatim);
+  CHECK(verbatim->text == R"({"body":{"z": 12345678901234567890123, "a": 1.50}})");
+  const auto canonical = scrydantic::encode(wide);
+  REQUIRE(canonical);
+  CHECK(canonical->text == R"({"body":{"a":1.5,"z":1.2345678901234568E22}})");
+
+  // Numbers take std::to_chars' shortest text; keys and escapes stay canonical.
+  CHECK(scrydantic::encode_verbatim(1e-7)->text == "1e-07");
+  CHECK(scrydantic::encode(1e-7)->text == "1E-7");
+  CHECK(scrydantic::encode_verbatim(Renamed{.limit = 3, .zed = "a\nb"})->text ==
+        R"({"a_first":"a\nb","max_tokens":3})");
+}
+
+TEST_CASE("encode_verbatim() fails where encode() fails") {
+  const auto non_finite =
+      scrydantic::encode_verbatim(std::vector<double>{1.0, std::nan("")});
+  REQUIRE_FALSE(non_finite);
+  CHECK(non_finite.error().message == "$[1] must be finite");
+  CHECK(non_finite.error().model_message.empty());
+
+  const auto invalid = scrydantic::encode_verbatim(Payload{.body = {.text = "{"}});
+  REQUIRE_FALSE(invalid);
+  CHECK(invalid.error().message == "$.body is not valid JSON");
+
+  const auto bad_text = scrydantic::encode_verbatim(DocText{.text = "bad \xff byte"});
+  REQUIRE_FALSE(bad_text);
+  CHECK(bad_text.error().message ==
+        "the value holds a string that is not valid UTF-8, so it cannot be JSON");
+}
+
 // ---- Canonical spelling ------------------------------------------------------
 
 namespace {
@@ -614,7 +647,7 @@ namespace {
 template <typename Type>
 [[nodiscard]] std::optional<std::string> spelling_mismatch(const Type& value) {
   const auto direct = scrydantic::encode(value);
-  const auto verbatim = scrydantic::detail::encode_value(value);
+  const auto verbatim = scrydantic::encode_verbatim(value);
   if (!direct || !verbatim) {
     return direct ? "the verbatim writer failed" : "encode() failed";
   }
@@ -753,7 +786,7 @@ TEST_CASE("strings are escaped as the canonical writer escapes them") {
   const auto expected =
       std::string{R"("\"\\/\b\f\n\r\t\u0001\u001F)"} + "\x7f\xc3\xa9\"";
   CHECK(scrydantic::encode(text)->text == expected);
-  CHECK(scrydantic::detail::encode_value(text)->text == expected);
+  CHECK(scrydantic::encode_verbatim(text)->text == expected);
   CHECK(scrydantic::escape_json_string(text) == expected);
   CHECK(decode_text<std::string>(expected).value() == text);
 }
@@ -783,8 +816,7 @@ TEST_CASE("encode() reports spliced payloads that nest too deep together") {
   CHECK(encoded.error().message == reason);
   CHECK(encoded.error().model_message.empty());
 
-  const auto verbatim = scrydantic::detail::encode_value(deep).and_then(
-      scrydantic::detail::validate_encoded_json);
+  const auto verbatim = scrydantic::encode_verbatim(deep);
   REQUIRE_FALSE(verbatim);
   CHECK(verbatim.error().message == reason);
 
@@ -800,7 +832,7 @@ TEST_CASE("encode() takes a reference or cv-qualified type argument") {
   CHECK(scrydantic::encode<const std::optional<int>>(value)->text == "42");
   const DocText text{.text = "hi"};
   CHECK(scrydantic::encode<const DocText&>(text)->text == R"({"text":"hi"})");
-  CHECK(scrydantic::detail::encode_value<std::optional<int>&>(value)->text == "42");
+  CHECK(scrydantic::encode_verbatim<std::optional<int>&>(value)->text == "42");
 }
 
 TEST_CASE("an invalid spliced JSON payload fails encoding at its path") {
@@ -809,7 +841,7 @@ TEST_CASE("an invalid spliced JSON payload fails encoding at its path") {
         .model = "m",
         .tools = std::vector<BorrowedTool>{{.input_schema = {.text = text}}},
     };
-    const auto encoded = scrydantic::detail::encode_value(body);
+    const auto encoded = scrydantic::encode_verbatim(body);
     REQUIRE_FALSE(encoded);
     CHECK(encoded.error().message == "$.tools[0].input_schema is not valid JSON");
     CHECK(encoded.error().model_message.empty());
@@ -834,7 +866,7 @@ TEST_CASE("document-like values round trip byte for byte") {
   const auto& result = std::get<DocToolResult>(decoded->messages[2].content[0]);
   CHECK(result.result.text == R"({"summary":"sunny","temperature_c":21.5})");
 
-  const auto direct = scrydantic::detail::encode_value(*decoded);
+  const auto direct = scrydantic::encode_verbatim(*decoded);
   REQUIRE(direct);
   CHECK(direct->text == text);
   const auto canonical = scrydantic::encode(*decoded);

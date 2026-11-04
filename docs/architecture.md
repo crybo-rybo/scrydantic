@@ -37,7 +37,7 @@ operations in `detail/json_text.hpp`. The document type remains private in
 | `error.hpp` | `Error { message, model_message }`, `Result<T>`, `Status`, `tool_error()` |
 | `json.hpp` | `Json`, `JsonKind`, `JsonView`, `is_valid_json()`, `escape_json_string()`, `format_json_number()` |
 | `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown` (plain C++23 types) |
-| `codec.hpp` | `encode()` and `decode()`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
+| `codec.hpp` | `encode()`, `encode_verbatim()`, and `decode()`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
 | `tools.hpp` | `bind()`, `bind_handler()`, `describe()`, `tools_of()`, `toolbox_tools_of()`, `Toolbox` |
 | `detail/model.hpp` | The reflected type model: `kind_of`, annotations, field layouts, and static text |
 | `detail/meta.hpp` | The value families, their diagnostics, and the handler rules |
@@ -75,9 +75,10 @@ and spliced `Json` payloads. The `spelling` template argument makes this choice:
 
 - `verbatim` writes the shortest text that `std::to_chars` produces for a
   number, and splices a payload byte for byte after the writer checks that the
-  payload is JSON. Bound tool results use this spelling, so a host can bound
-  a result's size before paying for a canonicalizing parse. It is the default
-  of `detail::encode_value()`.
+  payload is JSON. `encode_verbatim()` and bound tool results use this
+  spelling. A payload keeps the exact text that it was stored with, including
+  numbers that neither a 64-bit integer nor a double holds exactly, and a host
+  can bound a result's size before paying for a canonicalizing parse.
 - `canonical` writes the text that canonicalizing the verbatim text would
   produce. `encode()` uses this spelling, followed by one validating pass that
   allocates nothing. Thus, `encode()` does not need to re-parse its own output.

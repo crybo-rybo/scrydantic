@@ -15,7 +15,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <scrydantic/detail/encode.hpp>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <variant>
@@ -133,9 +132,7 @@ TEST_CASE("reflected codec", "[codec]") {
   const auto conversation = bench::make_conversation(message_count);
   const auto& text = conversation_text();
   BENCHMARK("encode (canonical)") { return scrydantic::encode(conversation); };
-  BENCHMARK("encode_value (verbatim)") {
-    return scrydantic::detail::encode_value(conversation);
-  };
+  BENCHMARK("encode_verbatim") { return scrydantic::encode_verbatim(conversation); };
   BENCHMARK("decode from text") {
     return scrydantic::decode<bench::Conversation>(text);
   };

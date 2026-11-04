@@ -21,10 +21,13 @@ namespace scrydantic {
 
 /// Encodes a reflected value as Scrydantic's canonical JSON.
 ///
-/// This is the same value encoder used for reflected tool-handler results. The
-/// returned text is canonical within the current Scrydantic version but is not a
-/// versioned archival format. A type outside Encodable fails to compile with the
-/// offending member path and the reason.
+/// Every number and every spliced `Json` payload is written in canonical form, so
+/// the text is the one JsonView::to_json() writes for it. Canonical form reads
+/// each number in a payload as a 64-bit integer or a double, so a number that
+/// neither holds exactly loses digits; encode_verbatim() keeps a payload's own
+/// text. The returned text is canonical within the current Scrydantic version but
+/// is not a versioned archival format. A type outside Encodable fails to compile
+/// with the offending member path and the reason.
 /// @tparam Type Value from the Encodable family.
 /// @param value Value to encode without modifying it.
 /// @return Canonical JSON, or an Error whose `message` names the path of a
@@ -39,6 +42,30 @@ template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
     return {};
   } else {
     return detail::encode_value<Type, detail::spelling::canonical>(value).and_then(
+        detail::validate_encoded_json);
+  }
+}
+
+/// Encodes a reflected value as JSON, keeping spliced `Json` payloads byte for byte.
+///
+/// The writer is the one encode() uses, with two parts of the text left as they
+/// are instead of canonicalized. A `Json` payload is checked and then copied
+/// exactly, with its own whitespace, key order, and number text, so a stored
+/// document or a number wider than a double reaches the output unchanged. A
+/// float or double is written as std::to_chars' shortest text, such as `1e-07`
+/// where encode() writes `1E-7`. Keys are still in canonical order, strings still
+/// use the canonical escapes, and the whole text is checked as encode()'s is.
+/// Reflected tool handlers encode their results this way.
+/// @tparam Type Value from the Encodable family.
+/// @param value Value to encode without modifying it.
+/// @return JSON text, or an Error that encode() would report for the same value.
+template <typename Type> [[nodiscard]] Result<Json> encode_verbatim(const Type& value) {
+  constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return {};
+  } else {
+    return detail::encode_value<Type, detail::spelling::verbatim>(value).and_then(
         detail::validate_encoded_json);
   }
 }
