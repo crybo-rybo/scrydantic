@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
@@ -48,7 +49,7 @@
 namespace scrydantic::detail::json {
 
 // The deepest nesting the parser accepts.
-inline constexpr std::size_t max_depth = 256;
+inline constexpr std::size_t max_depth = json_max_depth;
 
 class Value;
 
@@ -112,6 +113,12 @@ private:
 
 // True exactly when parse(text) would succeed, without allocating.
 [[nodiscard]] bool validate(std::string_view text) noexcept;
+
+using Validity = json_validity;
+
+// What validate(text) decides, and when it rejects the text, whether reading
+// stopped at a container nested deeper than max_depth.
+[[nodiscard]] Validity check(std::string_view text) noexcept;
 
 // Appends the canonical text of `value`.
 void write(const Value& value, std::string& output);

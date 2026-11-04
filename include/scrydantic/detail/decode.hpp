@@ -80,17 +80,13 @@ template <typename Enum>
     return codec_fail("must be an enumerator name");
   }
   const auto text = *view.string();
-  std::optional<Enum> value{};
   template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
     if (text == std::meta::identifier_of(enumerator)) {
-      value = std::meta::extract<Enum>(std::meta::constant_of(enumerator));
+      return [:enumerator:];
     }
   }
-  if (!value.has_value()) {
-    return codec_fail(std::string{"is not a declared enumerator; must be one of: "} +
-                      std::string{enumerator_names(^^Enum)});
-  }
-  return *value;
+  return codec_fail(std::string{"is not a declared enumerator; must be one of: "} +
+                    std::string{enumerator_names(^^Enum)});
 }
 
 template <typename Type>
@@ -133,30 +129,22 @@ template <typename Type, bool Tagged>
   }
 
   Type object{};
-  std::optional<codec_failure> failure{};
   template for (constexpr std::meta::info member : declared_members_v<Type>) {
     constexpr field_layout field = field_of(^^Type, member);
     constexpr std::string_view key = field.key_view();
     using Member = std::remove_cv_t<typename[:std::meta::type_of(member):]>;
-    if (!failure.has_value()) {
-      const auto found = view.find(key);
-      if (found.has_value()) {
-        auto decoded = read_value<Member>(*found);
-        if (decoded) {
-          object.[:member:] = std::move(*decoded);
-        } else {
-          failure = at_member(std::move(decoded.error()), key);
-        }
-      } else if constexpr (field.omit_null) {
-        object.[:member:].reset();
-      } else if constexpr (field.required) {
-        failure = at_member(codec_failure{.reason = "is a required member"}, key);
+    if (const auto found = view.find(key)) {
+      auto decoded = read_value<Member>(*found);
+      if (!decoded) {
+        return std::unexpected(at_member(std::move(decoded.error()), key));
       }
+      object.[:member:] = std::move(*decoded);
+    } else if constexpr (field.omit_null) {
+      object.[:member:].reset();
+    } else if constexpr (field.required) {
+      return std::unexpected(
+          at_member(codec_failure{.reason = "is a required member"}, key));
     }
-  }
-
-  if (failure.has_value()) {
-    return std::unexpected(std::move(*failure));
   }
   return object;
 }
@@ -176,21 +164,17 @@ template <typename Variant>
   }
 
   const auto selected = discriminator->string();
-  std::optional<codec_result<Variant>> decoded{};
   template for (constexpr std::meta::info alternative : alternatives_v<Variant>) {
     using Alternative = typename[:alternative:];
-    if (!decoded.has_value() && selected == *tag_of(alternative)) {
-      decoded = read_object<Alternative, true>(view).transform([](Alternative&& value) {
+    if (selected == *tag_of(alternative)) {
+      return read_object<Alternative, true>(view).transform([](Alternative&& value) {
         return Variant{std::in_place_type<Alternative>, std::move(value)};
       });
     }
   }
-  if (!decoded.has_value()) {
-    return std::unexpected(at_member(
-        codec_failure{.reason = std::string{"must be one of: "} + std::string{tags}},
-        tag_key));
-  }
-  return std::move(*decoded);
+  return std::unexpected(at_member(
+      codec_failure{.reason = std::string{"must be one of: "} + std::string{tags}},
+      tag_key));
 }
 
 template <typename Optional>
@@ -292,7 +276,7 @@ template <ToolArguments Args>
   auto parsed = JsonView::parse(input);
   if (!parsed) {
     return std::unexpected(Error{
-        .message = "reflected tool arguments are not valid JSON",
+        .message = "tool arguments are not valid JSON",
         .model_message = "tool arguments are not valid JSON",
     });
   }

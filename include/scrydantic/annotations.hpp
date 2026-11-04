@@ -13,6 +13,42 @@
 /// is the placement that appertains to the class itself.
 namespace scrydantic {
 
+namespace detail {
+
+// The payload of every text annotation: a copy of the string literal it was
+// written with, so the annotation owns its text and is a structural value. Every
+// member is public, as an annotation's type requires.
+template <std::size_t Size> struct fixed_text {
+  static_assert(Size > 0);
+
+  /// Owned null-terminated text.
+  char text[Size]{};
+
+  /// Captures a string literal at compile time.
+  /// @param value Null-terminated text.
+  consteval fixed_text(const char (&value)[Size]) {
+    for (std::size_t index = 0; index < Size; ++index) {
+      text[index] = value[index];
+    }
+  }
+
+  /// Returns the text without its null terminator.
+  /// @return Non-owning view into text.
+  [[nodiscard]] constexpr std::string_view view() const noexcept {
+    return {text, Size - 1};
+  }
+
+protected:
+  // Copies a view of Size - 1 characters; the terminator stays zero.
+  consteval explicit fixed_text(const std::string_view value) {
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      text[index] = value[index];
+    }
+  }
+};
+
+} // namespace detail
+
 template <std::size_t Size> struct description;
 
 /// Builds a description annotation from a string_view naming a text catalog entry.
@@ -28,24 +64,8 @@ template <const std::string_view& View> [[nodiscard]] consteval auto description
 ///
 /// Applies to data members; the text becomes the member schema's `description`.
 /// @tparam Size Character-array extent including the null terminator.
-template <std::size_t Size> struct description {
-  /// Owned null-terminated annotation text.
-  char text[Size]{};
-
-  /// Captures a string literal at compile time.
-  /// @param value Null-terminated annotation text.
-  consteval description(const char (&value)[Size]) {
-    for (std::size_t index = 0; index < Size; ++index) {
-      text[index] = value[index];
-    }
-  }
-
-  /// Returns the annotation without its null terminator.
-  /// @return Non-owning view into text.
-  [[nodiscard]] constexpr std::string_view view() const noexcept {
-    static_assert(Size > 0);
-    return {text, Size - 1};
-  }
+template <std::size_t Size> struct description : detail::fixed_text<Size> {
+  using detail::fixed_text<Size>::fixed_text;
 
 private:
   struct view_tag {};
@@ -53,11 +73,8 @@ private:
   // The copy happens inside the type so a catalog-built annotation is still a
   // description<Size>, which is what the schema generator detects and what the
   // annotation NTTP rules require.
-  consteval description(view_tag, const std::string_view value) {
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      text[index] = value[index];
-    }
-  }
+  consteval description(view_tag, const std::string_view value)
+      : detail::fixed_text<Size>{value} {}
 
   template <const std::string_view& View> friend consteval auto description_of();
 };
@@ -80,25 +97,10 @@ template <const std::string_view& View> [[nodiscard]] consteval auto description
 /// scrydantic::tool it replaces the function's identifier as the tool name
 /// the model sees. Usage: `[[= scrydantic::name{"max_tokens"}]]`.
 /// @tparam Size Character-array extent including the null terminator.
-template <std::size_t Size> struct name {
+template <std::size_t Size> struct name : detail::fixed_text<Size> {
   static_assert(Size > 1, "scrydantic::name must not be empty");
 
-  /// Owned null-terminated key text.
-  char text[Size]{};
-
-  /// Captures a string literal at compile time.
-  /// @param value Null-terminated key text.
-  consteval name(const char (&value)[Size]) {
-    for (std::size_t index = 0; index < Size; ++index) {
-      text[index] = value[index];
-    }
-  }
-
-  /// Returns the key without its null terminator.
-  /// @return Non-owning view into text.
-  [[nodiscard]] constexpr std::string_view view() const noexcept {
-    return {text, Size - 1};
-  }
+  using detail::fixed_text<Size>::fixed_text;
 };
 
 /// Deduces a name extent from a string literal.
@@ -114,25 +116,10 @@ template <std::size_t Size> name(const char (&value)[Size]) -> name<Size>;
 /// variant the tag has no effect. Usage:
 /// `struct [[= scrydantic::tag{"text"}]] TextBlock { std::string text; };`.
 /// @tparam Size Character-array extent including the null terminator.
-template <std::size_t Size> struct tag {
+template <std::size_t Size> struct tag : detail::fixed_text<Size> {
   static_assert(Size > 1, "scrydantic::tag must not be empty");
 
-  /// Owned null-terminated discriminator text.
-  char text[Size]{};
-
-  /// Captures a string literal at compile time.
-  /// @param value Null-terminated discriminator text.
-  consteval tag(const char (&value)[Size]) {
-    for (std::size_t index = 0; index < Size; ++index) {
-      text[index] = value[index];
-    }
-  }
-
-  /// Returns the discriminator without its null terminator.
-  /// @return Non-owning view into text.
-  [[nodiscard]] constexpr std::string_view view() const noexcept {
-    return {text, Size - 1};
-  }
+  using detail::fixed_text<Size>::fixed_text;
 };
 
 /// Deduces a tag extent from a string literal.
@@ -151,25 +138,10 @@ template <std::size_t Size> tag(const char (&value)[Size]) -> tag<Size>;
 /// Usage: `[[= scrydantic::tool{"Move the NPC one tile"}]] Position
 /// step(Direction direction);`.
 /// @tparam Size Character-array extent including the null terminator.
-template <std::size_t Size> struct tool {
+template <std::size_t Size> struct tool : detail::fixed_text<Size> {
   static_assert(Size > 1, "scrydantic::tool needs a description for the model");
 
-  /// Owned null-terminated description text.
-  char text[Size]{};
-
-  /// Captures a string literal at compile time.
-  /// @param value Null-terminated description text.
-  consteval tool(const char (&value)[Size]) {
-    for (std::size_t index = 0; index < Size; ++index) {
-      text[index] = value[index];
-    }
-  }
-
-  /// Returns the description without its null terminator.
-  /// @return Non-owning view into text.
-  [[nodiscard]] constexpr std::string_view view() const noexcept {
-    return {text, Size - 1};
-  }
+  using detail::fixed_text<Size>::fixed_text;
 };
 
 /// Deduces a tool description extent from a string literal.

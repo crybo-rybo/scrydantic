@@ -1,6 +1,8 @@
-# Scrydantic builds on its own or as a subdirectory of a consumer such as Scry.
-# It depends on no other project: scripts/lint.sh rejects an include of a Scry
-# header, and no target links libcurl or Threads.
+# Scrydantic: C++26 reflection to JSON Schema, a strict JSON codec, and
+# reflected tools. It builds on its own or as a subdirectory of another project.
+# The library depends on nothing but the C++ standard library; scripts/lint.sh
+# holds every header and source to that boundary. Only the tests fetch a
+# third-party library (Catch2).
 cmake_minimum_required(VERSION 3.30)
 
 project(
@@ -10,8 +12,10 @@ project(
   LANGUAGES CXX
 )
 
-# Scrydantic uses no C++ modules, so dependency scanning stays off.
+# Scrydantic uses no C++ modules, so dependency scanning stays off, and its own
+# targets compile as standard C++ (-std=c++26, not -std=gnu++26).
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
@@ -23,10 +27,24 @@ option(
   ${PROJECT_IS_TOP_LEVEL}
 )
 option(
+  SCRYDANTIC_BUILD_BENCHMARKS
+  "Build Scrydantic's benchmarks (needs SCRYDANTIC_BUILD_TESTS)"
+  OFF
+)
+option(
   SCRYDANTIC_WARNINGS_AS_ERRORS
   "Treat compiler warnings as errors"
   ${PROJECT_IS_TOP_LEVEL}
 )
+option(
+  SCRYDANTIC_COVERAGE
+  "Instrument Scrydantic's own targets for gcov (scripts/coverage.sh)"
+  OFF
+)
+option(SCRYDANTIC_INSTALL "Generate Scrydantic's install rules" ON)
+if(SCRYDANTIC_BUILD_BENCHMARKS AND NOT SCRYDANTIC_BUILD_TESTS)
+  message(WARNING "SCRYDANTIC_BUILD_BENCHMARKS needs SCRYDANTIC_BUILD_TESTS; no benchmarks will be built")
+endif()
 set(
   SCRYDANTIC_SANITIZER
   "none"
@@ -43,48 +61,21 @@ if(
   NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
   OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16
 )
-  message(FATAL_ERROR "Scrydantic requires GCC 16 or newer (C++26 reflection)")
+  message(
+    FATAL_ERROR
+    "Scrydantic requires GCC 16 or newer (C++26 reflection), but the C++ "
+    "compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} "
+    "(${CMAKE_CXX_COMPILER}). Configure a fresh build directory with CXX set "
+    "to GCC 16, such as CXX=g++-16, or with -DCMAKE_CXX_COMPILER=g++-16."
+  )
 endif()
 
-# Scry's package configuration names the Scrydantic version it was built with.
-if(NOT PROJECT_IS_TOP_LEVEL)
-  set(SCRYDANTIC_VERSION "${PROJECT_VERSION}" PARENT_SCOPE)
-endif()
-
-# Warning and sanitizer flags for Scrydantic's own targets; never exported.
-add_library(scrydantic_project_options INTERFACE)
-target_compile_options(
-  scrydantic_project_options
-  INTERFACE -Wall -Wextra -Wconversion -Wshadow
-)
-if(SCRYDANTIC_WARNINGS_AS_ERRORS)
-  target_compile_options(scrydantic_project_options INTERFACE -Werror)
-endif()
-if(SCRYDANTIC_SANITIZER STREQUAL "address-undefined")
-  set(
-    SCRYDANTIC_SANITIZER_FLAGS
-    -fsanitize=address,undefined -fno-sanitize-recover=undefined
-  )
-elseif(SCRYDANTIC_SANITIZER STREQUAL "thread")
-  set(SCRYDANTIC_SANITIZER_FLAGS -fsanitize=thread)
-elseif(NOT SCRYDANTIC_SANITIZER STREQUAL "none")
-  message(FATAL_ERROR "Unsupported SCRYDANTIC_SANITIZER: ${SCRYDANTIC_SANITIZER}")
-endif()
-if(SCRYDANTIC_SANITIZER_FLAGS)
-  target_compile_options(
-    scrydantic_project_options
-    INTERFACE ${SCRYDANTIC_SANITIZER_FLAGS} -fno-omit-frame-pointer
-  )
-  target_link_options(
-    scrydantic_project_options
-    INTERFACE ${SCRYDANTIC_SANITIZER_FLAGS}
-  )
-endif()
+include(cmake/ScrydanticProjectOptions.cmake)
 
 # The JSON core: the strict parser, the canonical writer, and JsonView. It is
 # compiled as C++23 without -freflection, so plain clang-tidy can analyze it
-# (scripts/lint.sh) and a C++23 consumer, such as Scry's kernel, can link
-# it. src/json/core.hpp states its include boundary.
+# (scripts/lint.sh) and a C++23 consumer that does not enable reflection can
+# link it. src/json/core.hpp states its include boundary.
 add_library(
   scrydantic_json
   STATIC
@@ -101,10 +92,7 @@ target_compile_features(scrydantic_json PUBLIC cxx_std_23)
 target_compile_options(scrydantic_json PRIVATE -Werror=c++26-extensions)
 set_target_properties(
   scrydantic_json
-  PROPERTIES
-    EXPORT_NAME json
-    CXX_EXTENSIONS OFF
-    POSITION_INDEPENDENT_CODE ON
+  PROPERTIES EXPORT_NAME json POSITION_INDEPENDENT_CODE ON
 )
 target_include_directories(
   scrydantic_json
@@ -169,7 +157,7 @@ target_sources(
 )
 
 # CTest is enabled here when Scrydantic is the top-level project; a parent
-# project that adds it as a subdirectory (Scry does) enables it before that.
+# project that builds Scrydantic's tests enables CTest itself.
 if(SCRYDANTIC_BUILD_TESTS)
   if(PROJECT_IS_TOP_LEVEL)
     include(CTest)
@@ -181,12 +169,16 @@ if(SCRYDANTIC_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
 
+if(NOT SCRYDANTIC_INSTALL)
+  return()
+endif()
+
 configure_package_config_file(
   cmake/scrydanticConfig.cmake.in
   "${PROJECT_BINARY_DIR}/scrydanticConfig.cmake"
   INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/scrydantic"
 )
-# Pre-1.0, minor releases may break API, as for Scry.
+# Before 1.0, a minor release may break the API.
 write_basic_package_version_file(
   "${PROJECT_BINARY_DIR}/scrydanticConfigVersion.cmake"
   VERSION "${PROJECT_VERSION}"

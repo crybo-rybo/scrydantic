@@ -30,6 +30,7 @@ using scrydantic::JsonKind;
 [[nodiscard]] bool rejected(const std::string_view text) {
   const bool parsed = json::parse(text).has_value();
   CHECK(json::validate(text) == parsed);
+  CHECK((json::check(text) == json::Validity::valid) == parsed);
   return !parsed;
 }
 
@@ -197,6 +198,19 @@ TEST_CASE("json nesting stops at max_depth") {
   CHECK(rejected(nest(257)));
   CHECK(rejected(std::string(256, '[') + "{}" + std::string(256, ']')));
   CHECK(rejected(std::string(100000, '[')));
+}
+
+TEST_CASE("json check says when nesting is what stopped the read") {
+  CHECK(json::check(std::string(256, '[') + std::string(256, ']')) ==
+        json::Validity::valid);
+  CHECK(json::check(std::string(257, '[') + std::string(257, ']')) ==
+        json::Validity::too_deep);
+  CHECK(json::check(std::string(257, '[')) == json::Validity::too_deep);
+  // Nesting inside the limit, then a problem of another kind.
+  CHECK(json::check(std::string(256, '[') + "\"\xff\"" + std::string(256, ']')) ==
+        json::Validity::invalid);
+  CHECK(json::check(std::string(256, '[')) == json::Validity::invalid);
+  CHECK(json::check("{") == json::Validity::invalid);
 }
 
 TEST_CASE("json quoting escapes only what JSON requires") {

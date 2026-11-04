@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,47 +13,55 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    # Explicitly bash, so every step also runs with -o pipefail.
+    shell: bash
+
 jobs:
+  # The scripts run the pinned clang-format, clang-tidy, shellcheck, and lizard
+  # (scripts/lib/tools.sh) through pipx, which the runner image provides.
   lint:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      # Ubuntu 24.04 ships LLVM 18, which formats reflection annotations
-      # differently and cannot parse libstdc++'s <expected>, so both tools come
-      # from apt.llvm.org.
-      # clang-tidy reads the libstdc++ headers of the newest GCC that it finds.
-      # g++-14 makes sure that the headers of that GCC are installed.
-      - name: Install clang-format and clang-tidy
-        run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" | sudo tee /etc/apt/sources.list.d/llvm-22.list
-          sudo apt-get update
-          sudo apt-get install -y clang-format-22 clang-tidy-22 g++-14
+      # clang-tidy reads the libstdc++ headers of the newest GCC it finds;
+      # g++-14 makes sure they include <expected> and <print>.
+      - run: sudo apt-get update && sudo apt-get install -y g++-14
       - run: ./scripts/format.sh --check
-        env:
-          CLANG_FORMAT: clang-format-22
       - run: ./scripts/lint.sh
-        env:
-          CLANG_TIDY: clang-tidy-22
 
   test:
     name: test (${{ matrix.preset }})
     strategy:
       fail-fast: false
       matrix:
-        preset: [dev, asan, tsan]
+        preset: [dev, release, asan, tsan]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Install GCC 16
-        run: |
-          sudo add-apt-repository --yes ppa:ubuntu-toolchain-r/test
-          sudo apt-get install -y g++-16 ninja-build
-          # High-entropy ASLR breaks ASan/TSan shadow memory on these runners.
-          sudo sysctl vm.mmap_rnd_bits=28
+      - uses: ./.github/actions/setup-gcc16
       - run: ./scripts/test.sh
         env:
           PRESET: ${{ matrix.preset }}
+          CXX: g++-16
+
+  coverage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-gcc16
+      - run: ./scripts/coverage.sh | tee coverage.txt
+        env:
+          CXX: g++-16
+      - name: Summarize
+        run: |
+          {
+            echo '## Line coverage of include/ and src/'
+            echo '```'
+            sed -n '/GCC Code Coverage Report/,$p' coverage.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   # Install the package without tests or examples, then build and run a
   # consumer that knows only find_package(scrydantic).
@@ -60,10 +69,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Install GCC 16
-        run: |
-          sudo add-apt-repository --yes ppa:ubuntu-toolchain-r/test
-          sudo apt-get install -y g++-16 ninja-build
+      - uses: ./.github/actions/setup-gcc16
       - name: Build and install
         run: |
           cmake -S . -B build/package -G Ninja -DCMAKE_BUILD_TYPE=Release \

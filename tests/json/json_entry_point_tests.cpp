@@ -1,14 +1,16 @@
-// What the JSON core accepts, seen from outside it: the text-level entry points
-// in <scrydantic/detail/json_text.hpp> and the public JsonView are thin layers
-// over the core's document (src/json/document.hpp), which json_fixture_tests.cpp
-// holds to the golden fixtures. So every entry point must give the document's
-// verdict and write the document's canonical text, checked here on a table of
-// adversarial documents named by shape and a handful of representative ones.
+// What the JSON core accepts, seen from outside it: the public JsonView and the
+// text operations in <scrydantic/detail/json_text.hpp> that the reflected codec
+// calls are thin layers over the core's document (src/json/document.hpp), which
+// json_fixture_tests.cpp holds to the golden fixtures. So every entry point must
+// give the document's verdict and write the document's canonical text, checked
+// here on a table of adversarial documents named by shape and a handful of
+// representative ones.
 
 #include "json/document.hpp"
 
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <limits>
 #include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
@@ -19,30 +21,29 @@ namespace {
 
 using scrydantic::JsonView;
 namespace json = scrydantic::detail::json;
-namespace text_codec = scrydantic::detail;
+namespace core = scrydantic::detail;
 
 // Every entry point's verdict on `input`, each checked against the document's.
-[[nodiscard]] bool codec_accepts(const std::string_view input) {
+[[nodiscard]] bool core_accepts(const std::string_view input) {
   const auto document = json::parse(input);
-  const scrydantic::Json text{.text = std::string{input}};
-  const auto canonical = text_codec::canonicalize_json(text);
-  const auto viewed = JsonView::parse(text);
-  REQUIRE(text_codec::validate_json(input) == document.has_value());
-  REQUIRE(canonical.has_value() == document.has_value());
+  const auto viewed = JsonView::parse(scrydantic::Json{.text = std::string{input}});
+  std::string appended{};
+  const bool canonicalized = core::append_canonical_json(appended, input);
+  REQUIRE(core::validate_json(input) == document.has_value());
+  REQUIRE((core::check_json(input) == core::json_validity::valid) ==
+          document.has_value());
   REQUIRE(viewed.has_value() == document.has_value());
-  // The object variants accept exactly the documents whose root is an object.
-  const bool object = document && document->kind() == scrydantic::JsonKind::object;
-  CHECK(text_codec::validate_json_object(input) == object);
-  CHECK(text_codec::canonicalize_json_object(text).has_value() == object);
+  REQUIRE(canonicalized == document.has_value());
   if (!document) {
     // The whole error: the view's failure carries nothing for a model.
     CHECK(viewed.error().message == "JSON text is not valid");
     CHECK(viewed.error().model_message.empty());
+    CHECK(appended.empty());
     return false;
   }
   const auto written = json::write(*document);
-  CHECK(canonical->text == written);
   CHECK(viewed->to_json().text == written);
+  CHECK(appended == written);
   return true;
 }
 
@@ -54,7 +55,7 @@ struct Adversarial {
 
 } // namespace
 
-TEST_CASE("the JSON codec rejects every shape of incomplete document") {
+TEST_CASE("the JSON core rejects every shape of incomplete document") {
   static constexpr Adversarial cases[] = {
       // Truncation: the buffer stops mid-value.
       {"truncated object", R"({"a":1)", false},
@@ -116,22 +117,21 @@ TEST_CASE("the JSON codec rejects every shape of incomplete document") {
 
   for (const auto& adversarial : cases) {
     INFO(adversarial.name);
-    CHECK(codec_accepts(adversarial.text) == adversarial.accepted);
+    CHECK(core_accepts(adversarial.text) == adversarial.accepted);
   }
 }
 
-TEST_CASE("the JSON codec bounds malformed non-null-terminated input") {
+TEST_CASE("the JSON core bounds malformed non-null-terminated input") {
   // A lone brace in a buffer with no terminator after it: the read must stop at
   // the view's end rather than look for a NUL.
   constexpr std::array input{'{'};
   const auto text = std::string_view{input.data(), input.size()};
-  CHECK_FALSE(text_codec::validate_json(text));
-  CHECK_FALSE(codec_accepts(text));
+  CHECK_FALSE(core::validate_json(text));
+  CHECK_FALSE(core_accepts(text));
 }
 
-TEST_CASE("the JSON codec still collapses duplicate object keys") {
-  // docs/architecture.md: "Canonical parsing collapses duplicate object keys before
-  // dispatch." The last occurrence wins, at every nesting level.
+TEST_CASE("the JSON core keeps the last of duplicate object keys") {
+  // src/json/document.hpp: the last occurrence wins, at every nesting level.
   auto document = JsonView::parse(scrydantic::Json{.text = R"({"a":1,"a":2})"});
   REQUIRE(document);
   REQUIRE(document->size() == 1);
@@ -143,8 +143,8 @@ TEST_CASE("the JSON codec still collapses duplicate object keys") {
   CHECK(nested->find("o")->find("k")->unsigned_integer() == 2U);
 }
 
-TEST_CASE("the JSON codec and JsonView write the kernel's canonical text") {
-  // One input per canonical-form rule; codec_accepts compares every entry point's
+TEST_CASE("every entry point writes the core's canonical text") {
+  // One input per canonical-form rule; core_accepts compares every entry point's
   // output with the document writer's.
   for (const std::string_view input : {
            R"( { "b" : 1 , "a" : [ 2 , { "d" : 3 , "c" : 4 } ] , "a" : null } )",
@@ -154,6 +154,33 @@ TEST_CASE("the JSON codec and JsonView write the kernel's canonical text") {
            "true",
        }) {
     INFO(input);
-    CHECK(codec_accepts(input));
+    CHECK(core_accepts(input));
   }
+}
+
+TEST_CASE("canonical numbers are spelled positionally or with an uppercase E") {
+  const auto spelled = [](const double value) {
+    std::string text{};
+    core::append_canonical_json_number(text, value);
+    return text;
+  };
+  CHECK(spelled(1.0) == "1");
+  CHECK(spelled(-0.0) == "-0");
+  CHECK(spelled(1234.5) == "1234.5");
+  CHECK(spelled(0.0001) == "0.0001");
+  CHECK(spelled(1e-7) == "1E-7");
+  CHECK(spelled(1.5e300) == "1.5E300");
+  // JSON has no spelling for a non-finite number.
+  CHECK(spelled(std::numeric_limits<double>::infinity()) == "null");
+  CHECK(spelled(-std::numeric_limits<double>::infinity()) == "null");
+  CHECK(spelled(std::numeric_limits<double>::quiet_NaN()) == "null");
+}
+
+TEST_CASE("appending canonical JSON leaves the output alone on a rejection") {
+  std::string output{"prefix:"};
+  CHECK(core::append_canonical_json(output, R"( { "b" : 1.0 , "a" : [ ] } )"));
+  CHECK(output == R"(prefix:{"a":[],"b":1})");
+  CHECK_FALSE(core::append_canonical_json(output, R"({"a":1} 2)"));
+  CHECK_FALSE(core::append_canonical_json(output, ""));
+  CHECK(output == R"(prefix:{"a":[],"b":1})");
 }

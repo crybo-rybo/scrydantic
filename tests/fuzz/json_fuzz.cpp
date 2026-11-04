@@ -12,12 +12,15 @@
 
 #include "json/document.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <format>
+#include <print>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
@@ -26,19 +29,20 @@ namespace {
 
 namespace json = scrydantic::detail::json;
 
+// Reports a broken property with the input that broke it, printable ASCII as
+// itself and every other byte, '%' included, as %HH, then aborts.
 [[noreturn]] void fail(const std::string_view what, const std::string_view input) {
-  std::fprintf(stderr,
-               "json fuzz: %.*s\ninput (%zu bytes): ", static_cast<int>(what.size()),
-               what.data(), input.size());
+  std::string shown{};
   for (const char character : input) {
     const auto byte = static_cast<unsigned char>(character);
     if (byte >= 0x20U && byte < 0x7FU && byte != '%') {
-      std::fputc(byte, stderr);
+      shown.push_back(character);
     } else {
-      std::fprintf(stderr, "%%%02X", byte);
+      shown += std::format("%{:02X}", byte);
     }
   }
-  std::fputc('\n', stderr);
+  std::println(stderr, "json fuzz: {}\ninput ({} bytes): {}", what, input.size(),
+               shown);
   std::abort();
 }
 
@@ -66,16 +70,22 @@ namespace json = scrydantic::detail::json;
 }
 
 [[nodiscard]] bool same_number(const json::Value& left, const json::Value& right) {
-  if (left.kind() == scrydantic::JsonKind::number &&
-      right.kind() == scrydantic::JsonKind::number) {
-    return std::bit_cast<std::uint64_t>(*left.number()) ==
-           std::bit_cast<std::uint64_t>(*right.number());
+  const auto left_number = left.number();
+  const auto right_number = right.number();
+  if (!left_number || !right_number) {
+    return false;
   }
-  if (left.kind() == scrydantic::JsonKind::number) {
-    return double_equals_integer(*left.number(), right);
+  const bool left_double = left.kind() == scrydantic::JsonKind::number;
+  const bool right_double = right.kind() == scrydantic::JsonKind::number;
+  if (left_double && right_double) {
+    return std::bit_cast<std::uint64_t>(*left_number) ==
+           std::bit_cast<std::uint64_t>(*right_number);
   }
-  if (right.kind() == scrydantic::JsonKind::number) {
-    return double_equals_integer(*right.number(), left);
+  if (left_double) {
+    return double_equals_integer(*left_number, right);
+  }
+  if (right_double) {
+    return double_equals_integer(*right_number, left);
   }
   return left.kind() == right.kind() &&
          left.signed_integer() == right.signed_integer() &&
@@ -145,12 +155,9 @@ void check_objects(const json::Value& value, const std::string_view input) {
 }
 
 [[nodiscard]] bool is_ascii(const std::string_view text) {
-  for (const char character : text) {
-    if (static_cast<unsigned char>(character) >= 0x80U) {
-      return false;
-    }
-  }
-  return true;
+  return std::ranges::all_of(text, [](const char character) {
+    return static_cast<unsigned char>(character) < 0x80U;
+  });
 }
 
 void check_quoting(const std::string_view input) {

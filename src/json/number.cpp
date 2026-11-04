@@ -1,10 +1,8 @@
-#include "json/core.hpp"
+#include "json/core.hpp" // IWYU pragma: keep
 
 #include "json/number.hpp"
 
-#include <algorithm>
 #include <array>
-#include <bit>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -78,7 +76,7 @@ struct ShortestDecimal {
   }
   const bool negative = cursor[1] == '-';
   for (cursor += 2; cursor != written.ptr; ++cursor) {
-    decimal.exponent = decimal.exponent * 10 + (*cursor - '0');
+    decimal.exponent = (decimal.exponent * 10) + (*cursor - '0');
   }
   if (negative) {
     decimal.exponent = -decimal.exponent;

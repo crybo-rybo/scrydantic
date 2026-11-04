@@ -1,19 +1,40 @@
 ---
+# clang-tidy for the C++23 code: the JSON core under src/json/ and the fuzz
+# harness (scripts/lint.sh). Whole families are enabled, and each exclusion
+# below says why it does not fit this code.
 Checks: >
   -*,
   bugprone-*,
-  -bugprone-exception-escape,
+  cert-*,
   concurrency-*,
-  modernize-use-equals-default,
-  modernize-use-nullptr,
+  misc-*,
+  modernize-*,
   performance-*,
-  readability-function-cognitive-complexity,
-  readability-redundant-*,
+  portability-*,
+  readability-*,
+  -bugprone-exception-escape,
+  -misc-const-correctness,
+  -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
   -readability-redundant-member-init
+# bugprone-exception-escape: allocation failure is outside Scrydantic's
+#   failure-as-value contract, main() included.
+# misc-const-correctness: it asks for const on locals whose type is const-able
+#   for one instantiation of a template only (the parser's Discard).
+# misc-no-recursion: the parser and writer are recursive descent, bounded by
+#   json::max_depth.
+# misc-non-private-member-variables-in-classes: small structs with a helper
+#   member function are aggregates, as intended.
+# modernize-use-trailing-return-type: a style this code does not use.
+# readability-identifier-length, readability-magic-numbers: the parser's
+#   byte values and bounds read best as the literals the RFCs give.
+# readability-redundant-member-init: explicit `{}` defaults keep partial
+#   designated initialization free of -Wmissing-field-initializers.
 WarningsAsErrors: '*'
 HeaderFilterRegex: '^.*/(include|src|tests|examples)/.*'
 CheckOptions:
   readability-function-cognitive-complexity.Threshold: '25'
-# Allocation failures are outside Scrydantic's failure-as-value contract, including main().
-# Explicit aggregate defaults keep partial designated initialization warning-clean.
 ...

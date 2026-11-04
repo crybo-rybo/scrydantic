@@ -1,11 +1,11 @@
 # Scrydantic
 
 Scrydantic uses C++26 static reflection to generate JSON Schema, strictly
-encode and decode C++ values, and bind annotated C++ functions as tools. It
-builds independently of Scry and needs no libcurl, model, or network service.
-
-Scrydantic was extracted from [Scry](https://github.com/crybo-rybo/scry),
-which consumes it, and is developed in this repository.
+encode and decode C++ values, and bind annotated C++ functions as tools that a
+model or any other JSON client can call. Declare plain structs and functions,
+annotate them, and get a schema, a strict decoder with path-based errors, a
+canonical encoder, and a type-erased handler, with no code generation step and
+no dependency beyond the standard library.
 
 ## Build and test
 
@@ -13,26 +13,27 @@ Use GCC 16 or newer with reflection support, CMake 3.30 or newer, and Ninja.
 From the repository root:
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=g++-16
-cmake --build build
-ctest --test-dir build --output-on-failure
-build/examples/scrydantic_standalone_tools_example
-cmake --install build --prefix "$PWD/stage"
+CXX=g++-16 cmake --workflow --preset dev    # configure, build, and run every test
+build/dev/examples/scrydantic_mcp_tools_example
+cmake --install build/dev --prefix "$PWD/stage"
 ```
 
-Set `CMAKE_CXX_COMPILER` to your compiler's name or path if it differs.
-Tests fetch Catch2; the library itself has no third-party library dependencies.
+`CXX` names the compiler on the first configure. Omit it where `g++` is
+already GCC 16. Tests fetch Catch2; the library itself depends on nothing but
+the standard library.
 
-The presets and scripts that CI runs are the same ones to use locally:
+The scripts that CI runs are the same ones to use locally, and
+`scripts/check.sh` runs all of them:
 
 ```sh
-PRESET=dev ./scripts/test.sh    # also asan and tsan; CXX overrides g++-16
-./scripts/format.sh --check     # or --fix; CLANG_FORMAT overrides clang-format
-./scripts/lint.sh               # CLANG_TIDY overrides clang-tidy
+scripts/check.sh                # formatting, static checks, and the dev tests
+PRESET=asan scripts/test.sh     # also dev, release, and tsan
+scripts/format.sh --fix         # clang-format, pinned to CI's version
+scripts/coverage.sh             # line coverage of the library by its tests
 ```
 
-CI uses clang-format and clang-tidy 22. clang-tidy checks only the C++23 JSON
-core under `src/json/`, because it cannot parse the reflection code.
+[CONTRIBUTING.md](CONTRIBUTING.md) describes the presets, every check and its
+thresholds, the test layout, and the benchmarks.
 
 ## Use the installed package
 
@@ -68,9 +69,10 @@ handler. `describe()` supplies compile-time contracts without handlers.
 of tool binding. Fallible operations use `scrydantic::Result<T>` or `Status`;
 a tool can refuse a call with `scrydantic::tool_error()`.
 
-See [the standalone example](examples/standalone_tools.cpp) for an MCP-style
-tool listing and calls, and [NOTES.md](NOTES.md) for the extraction design and
-its open questions. The example is not a complete MCP server.
+See [the MCP tools example](examples/mcp_tools.cpp) for an MCP-style
+tool listing and calls; the example is not a complete MCP server.
+[docs/architecture.md](docs/architecture.md) describes the design and its open
+questions.
 
 ## License
 

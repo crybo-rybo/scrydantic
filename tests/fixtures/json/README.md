@@ -8,25 +8,21 @@ writer writes.
 
 ## Provenance
 
-Scry used a third-party header-only codec through v0.5 (see Scry's
-`docs/releases/`). That codec made each expectation before the JSON layer of
-Scry replaced it; the layer later moved into Scrydantic unchanged. We
-checked each expectation against the new layer when we wrote it. Before we
-removed the old codec, a differential fuzz target compared the two
-implementations for 45 minutes and 4.3 million executions. It found no
-divergence.
+An independent, widely used JSON library made each expectation first, and each
+one was checked against the rules in `src/json/document.hpp`. A differential
+fuzz target then compared the two implementations for 45 minutes and 4.3
+million executions, and found no divergence.
 
-The layer is intentionally different from the old codec in two places. Both
-places are about the kind that a number reads as. The expectations include
-these differences:
+The core differs from that library on purpose in two places. Both concern the
+kind that a number reads as, and the expectations include them:
 
 - A number with an exponent is a double, also when its value is whole. Thus,
-  `1.0e19` and `1e19` both write as `1E19`. The old codec wrote the second
+  `1.0e19` and `1e19` both write as `1E19`. The other library wrote the second
   number as `10000000000000000000`.
-- `-0` is the double -0.0, and it writes as `-0`. The old codec read it as the
-  integer 0 and wrote `0`.
+- `-0` is the double -0.0, and it writes as `-0`. The other library read it as
+  the integer 0 and wrote `0`.
 
-Without these differences, the old canonical form was not idempotent.
+Without these differences, the canonical form would not be idempotent.
 
 ## Files
 
@@ -74,14 +70,11 @@ The parser must reject each other length from zero to the size of the file.
 
 ## Adding a case or a corpus file
 
-The old codec is removed, so a new expectation comes from the layer itself. The
-rules in `src/json/document.hpp` must justify each new expectation. Do
-not only record the output of the layer.
+A new expectation comes from the core itself, so the rules in
+`src/json/document.hpp` must justify it. Do not only record the output of the
+core.
 
-The corpus holds the JSON fuzz seeds under `json/` and, under the other
-directories, copies of Scry's provider, conversation, SSE, and response-policy
-seeds as they were when the JSON layer moved into Scrydantic. Those copies are
-frozen JSON inputs here; Scry's own fuzz targets replay the originals.
+The corpus is the JSON fuzz seeds under `tests/fuzz/corpus/json/`.
 
 For a new file under `tests/fuzz/corpus/`, do these steps:
 

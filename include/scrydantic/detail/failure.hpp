@@ -38,28 +38,29 @@ template <typename Type> using codec_result = std::expected<Type, codec_failure>
   return failure;
 }
 
-// A host-only codec diagnostic. Result encoding uses this shape: the failure
-// describes the handler's own result type, whose schema the model never sees,
-// so nothing about it is text the model could act on.
-[[nodiscard]] inline Error codec_error(const std::string_view path,
-                                       const std::string_view message) {
-  std::string text{"reflected JSON at "};
-  text.append(path);
+// `<path> <reason>`, such as `$.shapes[0].radius must be a number`.
+[[nodiscard]] inline std::string located(const std::string_view path,
+                                         const std::string_view reason) {
+  std::string text{path};
   text.push_back(' ');
-  text.append(message);
-  return Error{.message = std::move(text)};
+  text.append(reason);
+  return text;
 }
 
-// An argument-decode diagnostic. Every word of this text is derived from the
-// input schema the model was already given, so the model copy is the host copy
-// without the library's prefix.
+// A host-only codec diagnostic. Encoding uses this shape: the failure describes
+// the program's own value, whose schema the model never sees, so nothing about
+// it is text the model could act on.
+[[nodiscard]] inline Error codec_error(const std::string_view path,
+                                       const std::string_view reason) {
+  return Error{.message = located(path, reason)};
+}
+
+// A decode diagnostic. Every word of this text is derived from the schema the
+// model was already given, so the model receives the host's text unchanged.
 [[nodiscard]] inline Error decode_error(const std::string_view path,
-                                        const std::string_view message) {
-  auto error = codec_error(path, message);
-  error.model_message.assign(path);
-  error.model_message.push_back(' ');
-  error.model_message.append(message);
-  return error;
+                                        const std::string_view reason) {
+  auto text = located(path, reason);
+  return Error{.message = text, .model_message = std::move(text)};
 }
 
 [[nodiscard]] inline Error encode_failure_error(const codec_failure& failure) {

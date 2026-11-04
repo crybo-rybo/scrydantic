@@ -28,25 +28,28 @@ namespace scrydantic {
 /// @tparam Type Value from the Encodable family.
 /// @param value Value to encode without modifying it.
 /// @return Canonical JSON, or an Error whose `message` names the path of a
-/// non-finite number, an undeclared enumerator value, or an invalid Json, and
-/// whose `model_message` is empty.
+/// non-finite number, an undeclared enumerator value, or an invalid Json, or
+/// says that a string is not valid UTF-8 or that the value nests arrays and
+/// objects deeper than JsonView::parse accepts, and whose `model_message` is
+/// empty.
 template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
   constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
   if constexpr (!problem.empty()) {
     return {};
   } else {
-    return detail::encode_value(value).and_then(detail::canonicalize_encoded_json);
+    return detail::encode_value<Type, detail::spelling::canonical>(value).and_then(
+        detail::validate_encoded_json);
   }
 }
 
 /// Decodes a parsed JSON value into a reflected value, strictly.
 ///
 /// The rules are the ones reflected tool arguments are decoded by. A failure is an
-/// Error whose `message` is `reflected JSON at ` followed by the JSON path of the
-/// offending value and what the type required there, and whose `model_message` is
-/// that text without the prefix. A type outside Decodable fails to compile with
-/// the offending member path and the reason.
+/// Error whose `message` and `model_message` are both the JSON path of the
+/// offending value followed by what the type required there, such as
+/// `$.shapes[0].radius must be a number`. A type outside Decodable fails to
+/// compile with the offending member path and the reason.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param view Parsed JSON value to decode.
 /// @return The decoded value, or the first decode failure.
@@ -62,9 +65,9 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 
 /// Parses JSON text and decodes it into a reflected value, strictly.
 ///
-/// Text that is not JSON fails with the messages
-/// `reflected JSON text is not valid JSON` and `JSON text is not valid JSON`;
-/// every other failure is reported as decode(const JsonView&) reports it.
+/// Text that is not JSON fails with `JSON text is not valid JSON` as both
+/// messages; every other failure is reported as decode(const JsonView&) reports
+/// it.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param json JSON text to parse and decode.
 /// @return The decoded value, or the parse or decode failure.
@@ -72,7 +75,7 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const Json& json) {
   auto parsed = JsonView::parse(json);
   if (!parsed) {
     return std::unexpected(Error{
-        .message = "reflected JSON text is not valid JSON",
+        .message = "JSON text is not valid JSON",
         .model_message = "JSON text is not valid JSON",
     });
   }

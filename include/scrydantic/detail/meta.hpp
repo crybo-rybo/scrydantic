@@ -1,9 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <functional>
 #include <meta>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/model.hpp>
@@ -36,6 +37,9 @@ consteval std::string at_path(const std::string& path, const std::string& text) 
 
 // Decoding default-constructs a value, move-assigns decoded parts into it, and
 // returns it by move.
+inline constexpr std::string_view unstorable_reason =
+    "must be default-constructible, move-constructible, and move-assignable";
+
 consteval bool is_storable(const std::meta::info type) {
   return std::meta::is_default_constructible_type(type) &&
          std::meta::is_move_constructible_type(type) &&
@@ -126,11 +130,16 @@ private:
                                            const std::string& path) {
     const auto type = plain_type(shown);
     if (std::meta::is_integral_type(type)) {
+      if (!is_character_type(type)) {
+        return problem(path, shown, "is wider than 64 bits");
+      }
+      // std::int8_t and std::uint8_t are these two, so they cannot be told apart.
       return problem(path, shown,
-                     is_character_type(type)
-                         ? "is a character type; use std::string for text or a "
-                           "fixed-width integer for a number"
-                         : "is wider than 64 bits");
+                     type == (^^signed char) || type == (^^unsigned char)
+                         ? "is a character type, as std::int8_t and std::uint8_t "
+                           "are; use std::int16_t or std::uint16_t for a number"
+                         : "is a character type; use std::string for text or a "
+                           "fixed-width integer of at least 16 bits for a number");
     }
     if (std::meta::is_union_type(type)) {
       return problem(path, shown,
@@ -174,9 +183,7 @@ private:
       return check_aggregate(type, path);
     }
     if (decodes() && !is_storable(type)) {
-      return problem(path, type,
-                     "must be default-constructible, move-constructible, and "
-                     "move-assignable");
+      return problem(path, type, unstorable_reason);
     }
     if (kind == value_kind::variant) {
       return check_variant(type, path);
@@ -195,7 +202,8 @@ private:
     if (kind == value_kind::vector && plain_type(element) == (^^bool)) {
       return problem(path, type,
                      "is std::vector<bool>, whose elements are not addressable; use "
-                     "std::vector<std::uint8_t>");
+                     "std::vector<std::uint16_t>, or std::array<bool, N> for a "
+                     "fixed size");
     }
     return check(element, element_path(path, type));
   }
@@ -221,9 +229,7 @@ private:
     // After the members, so a const member is reported as such rather than as
     // the missing assignment it causes.
     if (decodes() && !is_storable(type)) {
-      return problem(path, type,
-                     "must be default-constructible, move-constructible, and "
-                     "move-assignable");
+      return problem(path, type, unstorable_reason);
     }
     return check_keys(type, path);
   }
@@ -544,7 +550,7 @@ concept SupportedValue =
 
 /// Values scrydantic::encode() accepts: SupportedValue plus the encode-only leaves.
 ///
-/// `std::string_view` is written as a JSON string, for wire text borrowed from
+/// `std::string_view` is written as a JSON string, for text the caller owns
 /// elsewhere. `Json` is checked for validity and spliced verbatim.
 /// Aggregates here need not be default-constructible, movable, or free of `const`
 /// members, and may borrow a member through a reference, since encoding only reads
