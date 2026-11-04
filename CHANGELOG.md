@@ -10,7 +10,7 @@ The entries use ASD-STE100 Simplified Technical English.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-11-03
+## [0.1.0] - 2026-11-04
 
 This is the first release.
 
