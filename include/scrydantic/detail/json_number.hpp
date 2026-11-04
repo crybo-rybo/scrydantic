@@ -180,6 +180,12 @@ constexpr binary_value binary_value_of(const double magnitude) {
   };
 }
 
+// The exact value of a positive finite double.
+constexpr exact_decimal exact_decimal_of(const double magnitude) {
+  const auto binary = binary_value_of(magnitude);
+  return dyadic_decimal(binary.mantissa, binary.exponent);
+}
+
 // The shortest decimal that reads back as `magnitude`, a positive finite double,
 // and of those the nearest, a tie going to an even last digit: the digits that
 // std::to_chars writes.

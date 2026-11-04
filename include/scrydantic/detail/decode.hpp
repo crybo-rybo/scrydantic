@@ -3,10 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <compare>
+#include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <meta>
 #include <optional>
+#include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/failure.hpp>
 #include <scrydantic/detail/json_string.hpp>
 #include <scrydantic/detail/meta.hpp>
@@ -28,7 +32,9 @@
 // reports every issue until max_issues stops it. Every loop checks for that stop
 // before it descends, so a function is only entered while the decode goes on,
 // and a loop that finds it stopped has already seen one of its own values fail.
-// A value fails when it, or any value inside it, does.
+// A value fails when it, or any value inside it, does, and a member also fails
+// when its decoded value misses one of its constraints. Those are checked only
+// once the value has decoded without an issue, so while the decode goes on.
 namespace scrydantic::detail {
 
 template <typename Type>
@@ -101,6 +107,222 @@ template <typename Enum>
                        std::string{enumerator_names(^^Enum)});
 }
 
+// The code points of `text`, which the parser has checked is UTF-8: every byte
+// but a continuation byte, 10xxxxxx, starts one.
+[[nodiscard]] inline std::size_t code_points(const std::string_view text) noexcept {
+  return static_cast<std::size_t>(std::ranges::count_if(text, [](const char byte) {
+    return (static_cast<unsigned char>(byte) & 0xC0U) != 0x80U;
+  }));
+}
+
+// How `integer` compares with `number`, a finite double, exactly. Converting the
+// integer to a double instead could round it onto the number.
+template <std::integral Integer>
+[[nodiscard]] constexpr std::partial_ordering
+compare_exactly(const Integer integer, const double number) noexcept {
+  // Both limits are doubles exactly: every Integer is below the first and at or
+  // above the second.
+  constexpr double past = std::signed_integral<Integer> ? 0x1p63 : 0x1p64;
+  constexpr double lowest = std::signed_integral<Integer> ? -0x1p63 : 0.0;
+  if (number >= past) {
+    return std::partial_ordering::less;
+  }
+  if (number < lowest) {
+    return std::partial_ordering::greater;
+  }
+  // Within the range, so the conversion truncates without overflow, and the
+  // fraction it drops is exact.
+  const auto whole = static_cast<Integer>(number);
+  if (integer != whole) {
+    return integer <=> whole;
+  }
+  return 0.0 <=> number - static_cast<double>(whole);
+}
+
+// How the number in `view` compares with `bound`, as the parser read the number,
+// which is what the schema bounds: an integer as itself, and anything else as the
+// double that its text rounds to.
+[[nodiscard]] inline std::partial_ordering compare_parsed(const JsonView& view,
+                                                          const double bound) noexcept {
+  if (const auto integer = view.signed_integer()) {
+    return compare_exactly(*integer, bound);
+  }
+  if (const auto integer = view.unsigned_integer()) {
+    return compare_exactly(*integer, bound);
+  }
+  return *view.number() <=> bound;
+}
+
+// Whether `order`, how a value compares with `end`, keeps the value within it.
+[[nodiscard]] constexpr bool within(const std::partial_ordering order,
+                                    const checked_end& end) noexcept {
+  if (end.lower) {
+    return end.exclusive ? order > 0 : order >= 0;
+  }
+  return end.exclusive ? order < 0 : order <= 0;
+}
+
+// Checks `value` against one end of a range, `limit` as a Number. A
+// floating-point member is checked first as the parser read the number, so that
+// decoding rejects whatever the schema does, and then as converted, so that the
+// host's value is within the end too. Conversion rounds monotonically to values
+// of Number, of which the limit is one, so it can carry a number onto an
+// exclusive end but never past an end.
+template <typename Number>
+[[nodiscard]] bool
+meets_end(const Number value, const Number limit, const checked_end& end,
+          [[maybe_unused]] const JsonView& view, const decode_cursor& here) {
+  if constexpr (std::floating_point<Number>) {
+    if (!within(compare_parsed(view, static_cast<double>(limit)), end)) {
+      here.report(IssueKind::violated_constraint, end.reason);
+      return false;
+    }
+    if (end.exclusive && !within(value <=> limit, end)) {
+      here.report(IssueKind::violated_constraint, end.rounded_reason);
+      return false;
+    }
+  } else if (!within(value <=> limit, end)) {
+    here.report(IssueKind::violated_constraint, end.reason);
+    return false;
+  }
+  return true;
+}
+
+template <std::meta::info Constraint, typename Number>
+[[nodiscard]] bool meets_range(const Number value, const JsonView& view,
+                               const decode_cursor& here) {
+  constexpr checked_range limits = checked_range_of(Constraint, ^^Number);
+  if constexpr (limits.lower.present) {
+    if (!meets_end(value, bound_value<Number>(limits.lower.value), limits.lower, view,
+                   here)) {
+      return false;
+    }
+  }
+  if constexpr (limits.upper.present) {
+    return meets_end(value, bound_value<Number>(limits.upper.value), limits.upper, view,
+                     here);
+  }
+  return true;
+}
+
+// Whether an integer of `magnitude` is a multiple of a factor of odd * 2^exponent,
+// exactly. The quotient is magnitude * 2^-exponent / odd, and odd shares no
+// factor with a power of two: with exponent at most zero, any multiple of odd
+// is one, and otherwise a multiple of 2^exponent whose quotient by it is.
+[[nodiscard]] constexpr bool is_multiple(std::uint64_t magnitude,
+                                         const checked_multiple& multiple) noexcept {
+  if (multiple.two_exponent > 0) {
+    if (multiple.two_exponent >= 64) {
+      return magnitude == 0U;
+    }
+    const std::uint64_t power = std::uint64_t{1} << multiple.two_exponent;
+    if (magnitude % power != 0U) {
+      return false;
+    }
+    magnitude /= power;
+  }
+  return magnitude % multiple.odd == 0U;
+}
+
+// Whether the number in `view`, as the parser read it, is a multiple of
+// `factor`. For a double, fmod is exact.
+[[nodiscard]] inline bool is_parsed_multiple(const JsonView& view,
+                                             const checked_multiple& multiple,
+                                             const double factor) noexcept {
+  if (const auto integer = view.signed_integer()) {
+    // A signed integer here is negative: the parser reads others as unsigned.
+    return is_multiple(std::uint64_t{0} - static_cast<std::uint64_t>(*integer),
+                       multiple);
+  }
+  if (const auto integer = view.unsigned_integer()) {
+    return is_multiple(*integer, multiple);
+  }
+  return std::fmod(*view.number(), factor) == 0.0;
+}
+
+// The factor is a value of Number, and for a floating-point Number a binary
+// fraction, so fmod, which is exact, finds exactly the multiples that the
+// schema's multipleOf means. A floating-point member is checked as the parser
+// read the number and then as converted, as meets_end explains.
+template <std::meta::info Constraint, typename Number>
+[[nodiscard]] bool meets_multiple(const Number value,
+                                  [[maybe_unused]] const JsonView& view,
+                                  const decode_cursor& here) {
+  constexpr checked_multiple multiple = checked_multiple_of(Constraint, ^^Number);
+  constexpr auto factor = bound_value<Number>(multiple.value);
+  if constexpr (std::floating_point<Number>) {
+    if (!is_parsed_multiple(view, multiple, static_cast<double>(factor))) {
+      here.report(IssueKind::violated_constraint, multiple.reason);
+      return false;
+    }
+    if (std::fmod(value, factor) != Number{0}) {
+      here.report(IssueKind::violated_constraint, multiple.rounded_reason);
+      return false;
+    }
+  } else if (value % factor != 0) {
+    here.report(IssueKind::violated_constraint, multiple.reason);
+    return false;
+  }
+  return true;
+}
+
+template <std::meta::info Constraint>
+[[nodiscard]] bool meets_size(const std::size_t size, const decode_cursor& here) {
+  constexpr checked_size limits = checked_size_of(Constraint);
+  if constexpr (limits.min != 0U) {
+    if (size < limits.min) {
+      here.report(IssueKind::violated_constraint, limits.min_reason);
+      return false;
+    }
+  }
+  if constexpr (limits.max != std::numeric_limits<std::size_t>::max()) {
+    if (size > limits.max) {
+      here.report(IssueKind::violated_constraint, limits.max_reason);
+      return false;
+    }
+  }
+  return true;
+}
+
+// `view` is the JSON value that `value` decoded from.
+template <std::meta::info Constraint, typename Value>
+[[nodiscard]] bool meets(const Value& value, const JsonView& view,
+                         const decode_cursor& here) {
+  if constexpr (annotation_matches(Constraint, ^^range)) {
+    return meets_range<Constraint>(value, view, here);
+  } else if constexpr (annotation_matches(Constraint, ^^multiple_of)) {
+    return meets_multiple<Constraint>(value, view, here);
+  } else if constexpr (annotation_matches(Constraint, ^^length)) {
+    return meets_size<Constraint>(code_points(value), here);
+  } else {
+    return meets_size<Constraint>(value.size(), here);
+  }
+}
+
+// Reports each constraint of `Member` that `value`, the member's value decoded
+// from `view`, misses, in declaration order, and returns false if there was one.
+// A range has one end a value can miss, since the checks admit no empty range.
+// It sees through an optional and an indirect as constrained_type() does; a
+// decoded indirect always owns a value.
+template <std::meta::info Member, typename Value>
+[[nodiscard]] bool meets_constraints(const Value& value, const JsonView& view,
+                                     const decode_cursor& here) {
+  if constexpr (kind_of(^^Value) == value_kind::optional) {
+    return !value.has_value() || meets_constraints<Member>(*value, view, here);
+  } else if constexpr (kind_of(^^Value) == value_kind::indirect) {
+    return meets_constraints<Member>(*value, view, here);
+  } else {
+    bool met = true;
+    template for (constexpr std::meta::info constraint :
+                  checked_constraints_v<Member>) {
+      if (!meets<constraint>(value, view, here)) {
+        met = false;
+      }
+    }
+    return met;
+  }
+}
+
 template <typename Type>
 [[nodiscard]] bool is_declared_key(const std::string_view key) {
   static constexpr auto keys = [] {
@@ -134,7 +356,9 @@ template <typename Type, bool Tagged>
 }
 
 // Reads one declared member of `object` from `view`, an object, and returns
-// false if the member failed or is required and absent.
+// false if the member failed, missed a constraint, or is required and absent. A
+// member that keeps its default is the program's own value, so its constraints
+// are not checked.
 template <typename Type, std::meta::info Member>
 [[nodiscard]] bool read_member(Type& object, const JsonView& view,
                                const decode_cursor& parent) {
@@ -146,6 +370,11 @@ template <typename Type, std::meta::info Member>
     auto decoded = read_value<Value>(*found, here);
     if (!decoded) {
       return false;
+    }
+    if constexpr (!checked_constraints_v<Member>.empty()) {
+      if (!meets_constraints<Member>(*decoded, *found, here)) {
+        return false;
+      }
     }
     object.[:Member:] = std::move(*decoded);
   } else if constexpr (field.omit_null) {

@@ -36,6 +36,10 @@ enum class IssueKind : std::uint8_t {
   unknown_tag,
   /// An array whose length is not its fixed-size type's.
   wrong_size,
+  /// A value outside a constraint that its member declares with
+  /// scrydantic::range, multiple_of, length, or items. The reason states the
+  /// bound as the schema's keyword means it, such as `must be at most 150`.
+  violated_constraint,
 };
 
 /// One step of the path from a decoded value to an issue in it: the key of an

@@ -133,6 +133,7 @@ set_tests_properties(
 add_executable(
   scrydantic_tests
   codec/codec_tests.cpp
+  codec/constraint_tests.cpp
   codec/number_spelling_tests.cpp
   tools/tool_binding_tests.cpp
 )
@@ -275,4 +276,94 @@ scrydantic_add_compile_fail_test(
   misplaced-context
   misplaced_context.cpp
   "greeting_tools::greet has parameter `session` of type Session; the context is only ever the leading parameter, as const Session&"
+)
+scrydantic_add_compile_fail_test(
+  misapplied-constraint
+  misapplied_constraint.cpp
+  "Profile::age: carries scrydantic::length, which applies to std::string members, not to int"
+)
+scrydantic_add_compile_fail_test(
+  fixed-size-items
+  fixed_size_items.cpp
+  "Grid::cells: carries scrydantic::items, which does not apply to std::array<bool, 3>, whose size is fixed"
+)
+scrydantic_add_compile_fail_test(
+  crossed-range
+  crossed_range.cpp
+  "does not satisfy scrydantic::Decodable: Volume::level: carries a scrydantic::range whose min, 10, exceeds its max, 1"
+)
+scrydantic_add_compile_fail_test(
+  empty-range
+  empty_range.cpp
+  "Slot::index: carries a scrydantic::range that no value of int satisfies"
+)
+scrydantic_add_compile_fail_test(
+  bound-outside-type
+  bound_outside_type.cpp
+  "does not satisfy scrydantic::Encodable: Counter::count: carries a scrydantic::range whose min, -1, is outside the range of unsigned int"
+)
+scrydantic_add_compile_fail_test(
+  fractional-bound
+  fractional_bound.cpp
+  "Rating::stars: carries a scrydantic::range whose max, 1.5, is not an integer"
+)
+scrydantic_add_compile_fail_test(
+  inexact-float-bound
+  inexact_float_bound.cpp
+  "Gain::value: carries a scrydantic::range whose max, 0.1, is not exactly a float"
+)
+scrydantic_add_compile_fail_test(
+  infinite-bound
+  infinite_bound.cpp
+  "Reading::value: carries a scrydantic::range whose max, infinity, is not finite"
+)
+scrydantic_add_compile_fail_test(
+  unbounded-range
+  unbounded_range.cpp
+  "Score::points: carries a scrydantic::range that sets no bound"
+)
+scrydantic_add_compile_fail_test(
+  two-lower-bounds
+  two_lower_bounds.cpp
+  "Score::points: carries a scrydantic::range that sets both min and exclusive_min"
+)
+scrydantic_add_compile_fail_test(
+  nonpositive-multiple
+  nonpositive_multiple.cpp
+  "Grid::step: carries a scrydantic::multiple_of whose value, 0, is not positive"
+)
+scrydantic_add_compile_fail_test(
+  decimal-multiple
+  decimal_multiple.cpp
+  "Price::amount: carries a scrydantic::multiple_of whose value, 0.1, is not exactly that decimal in binary"
+)
+scrydantic_add_compile_fail_test(
+  empty-multiple
+  empty_multiple.cpp
+  "Grid::step: carries a scrydantic::multiple_of that sets no value"
+)
+scrydantic_add_compile_fail_test(
+  crossed-length
+  crossed_length.cpp
+  "Account::password: carries a scrydantic::length whose min, 8, exceeds its max, 4"
+)
+scrydantic_add_compile_fail_test(
+  unbounded-items
+  unbounded_items.cpp
+  "Post::tags: carries a scrydantic::items that sets no bound"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-constraint
+  duplicate_constraint.cpp
+  "Volume::level: has more than one scrydantic::range annotation"
+)
+scrydantic_add_compile_fail_test(
+  constrained-class
+  constrained_class.cpp
+  "does not satisfy scrydantic::SupportedValue: Point carries scrydantic::range, which applies to data members"
+)
+scrydantic_add_compile_fail_test(
+  constrained-tool
+  constrained_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::range, which applies to data members"
 )

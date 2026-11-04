@@ -121,6 +121,25 @@ template <typename Integer> struct Tally {
 
 } // namespace tally_tools
 
+namespace mixer_tools {
+
+struct Channel {
+  [[= scrydantic::length{.min = 1, .max = 8}]] std::string name{};
+  [[= scrydantic::range{.min = 0, .max = 11}]] std::int32_t level{};
+};
+
+[[= scrydantic::tool{"Set a channel's level"}]] inline std::int32_t
+    set_level(Channel channel) {
+  return channel.level;
+}
+
+[[= scrydantic::tool{"Fade one channel into another"}]] inline std::string
+    crossfade(Channel from, Channel to) {
+  return from.name + ">" + to.name;
+}
+
+} // namespace mixer_tools
+
 namespace {
 
 class Counter {
@@ -428,4 +447,42 @@ TEST_CASE("descriptors describe tools at compile time without handlers") {
     CHECK(bound[index].description == grid[index].description);
     CHECK(bound[index].input_schema.text == grid[index].input_schema);
   }
+}
+
+TEST_CASE("a tool's argument constraints are in its schema and checked on each call") {
+  auto tools = scrydantic::bind<^^mixer_tools>();
+  REQUIRE(names_of(tools) == std::vector<std::string>{"set_level", "crossfade"});
+  const std::string channel =
+      R"({"additionalProperties":false,"properties":{"level":{"maximum":11,)"
+      R"("minimum":0,"type":"integer"},"name":{"maxLength":8,"minLength":1,)"
+      R"("type":"string"}},"required":[],"type":"object"})";
+  CHECK(tools[0].input_schema.text == channel);
+  CHECK(tools[1].input_schema.text ==
+        R"({"additionalProperties":false,"properties":{"from":)" + channel +
+            R"(,"to":)" + channel + R"(},"required":["from","to"],"type":"object"})");
+
+  const auto set = tools[0].invoke(json(R"({"level":11,"name":"bass"})"));
+  REQUIRE(set);
+  CHECK(set->text == "11");
+
+  const auto loud = tools[0].invoke(json(R"({"level":12,"name":""})"));
+  REQUIRE_FALSE(loud);
+  constexpr std::string_view listed = "$.name must have at least 1 character\n"
+                                      "$.level must be at most 11";
+  CHECK(loud.error().model_message == listed);
+  CHECK(loud.error().message == listed);
+  CHECK(loud.error().issues == std::vector<scrydantic::Issue>{
+                                   {.kind = scrydantic::IssueKind::violated_constraint,
+                                    .path = {"name"},
+                                    .reason = "must have at least 1 character"},
+                                   {.kind = scrydantic::IssueKind::violated_constraint,
+                                    .path = {"level"},
+                                    .reason = "must be at most 11"},
+                               });
+
+  const auto faded =
+      tools[1].invoke(json(R"({"from":{"level":-1},"to":{"name":"overlong!"}})"));
+  REQUIRE_FALSE(faded);
+  CHECK(faded.error().model_message == "$.from.level must be at least 0\n"
+                                       "$.to.name must have at most 8 characters");
 }

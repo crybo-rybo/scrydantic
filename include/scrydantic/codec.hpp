@@ -23,8 +23,9 @@ namespace scrydantic {
 ///
 /// This is the same value encoder used for reflected tool-handler results. The
 /// returned text is canonical within the current Scrydantic version but is not a
-/// versioned archival format. A type outside Encodable fails to compile with the
-/// offending member path and the reason.
+/// versioned archival format. The value is the program's own, so constraint
+/// annotations are not checked against it. A type outside Encodable fails to
+/// compile with the offending member path and the reason.
 /// @tparam Type Value from the Encodable family.
 /// @param value Value to encode without modifying it.
 /// @return Canonical JSON, or an Error whose `message` names the path of a
@@ -45,8 +46,9 @@ template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
 
 /// Decodes a parsed JSON value into a reflected value, strictly.
 ///
-/// The rules are the ones reflected tool arguments are decoded by. Decoding goes
-/// on past a failure, so one call reports every issue it finds, up to
+/// The rules are the ones reflected tool arguments are decoded by. Each member
+/// that the input supplies must also meet its constraint annotations. Decoding
+/// goes on past a failure, so one call reports every issue it finds, up to
 /// max_issues. A failure is an Error whose `issues` lists them, each with its
 /// kind, its path, and what the type required there, and whose `message` and
 /// `model_message` are both one `<path> <reason>` line per issue, such as

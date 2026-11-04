@@ -7,6 +7,7 @@
 #include <expected>
 #include <meta>
 #include <scrydantic/annotations.hpp>
+#include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
@@ -315,6 +316,13 @@ private:
       return problem(path, type,
                      "carries scrydantic::tool, which applies to functions");
     }
+    for (const auto annotation : std::meta::annotations_of(type)) {
+      if (is_constraint(annotation)) {
+        return problem(path, type,
+                       "carries " + owned_text(constraint_name(annotation)) +
+                           ", which applies to data members");
+      }
+    }
     return {};
   }
 
@@ -346,7 +354,17 @@ private:
     if (auto text = check_member_annotations(member, here); !text.empty()) {
       return text;
     }
-    return check(std::meta::type_of(member), here);
+    return check_member_value(member, here);
+  }
+
+  // The member's type, then its constraints, which bound a value of that type.
+  consteval std::string check_member_value(const std::meta::info member,
+                                           const std::string& here) {
+    if (auto text = check(std::meta::type_of(member), here); !text.empty()) {
+      return text;
+    }
+    const auto reason = constraint_problem(member);
+    return reason.empty() ? reason : at_path(here, reason);
   }
 
   static consteval std::string check_member_annotations(const std::meta::info member,
@@ -693,8 +711,10 @@ namespace scrydantic {
 /// `std::indirect`, when every such cycle passes through a `std::optional`, a
 /// `std::vector`, or a variant alternative after the first, so that
 /// default-constructing it ends; its schema refers to it with `$ref`. Every
-/// supported value has a generated schema, encodes, and decodes. Reflected entry
-/// points report the member path and the reason a type falls outside this family.
+/// supported value has a generated schema, encodes, and decodes. A member's
+/// constraint annotations must apply to its type and admit a value, in this
+/// family and in the others. Reflected entry points report the member path and
+/// the reason a type falls outside this family.
 template <typename Type>
 concept SupportedValue =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::supported)

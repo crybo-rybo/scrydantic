@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <meta>
 #include <scrydantic/annotations.hpp>
+#include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <string>
@@ -285,6 +286,12 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
     return "carries a codec annotation (description, tag, skip_null, emit_null, or "
            "ignore_unknown), which applies to data members or classes; a tool's "
            "description is its scrydantic::tool text";
+  }
+  for (const auto annotation : std::meta::annotations_of(function)) {
+    if (is_constraint(annotation)) {
+      return "carries " + owned_text(constraint_name(annotation)) +
+             ", which applies to data members";
+    }
   }
   if (!has_annotation(function, ^^name) && !std::meta::has_identifier(function)) {
     return "has no identifier to name the tool after; give it a "

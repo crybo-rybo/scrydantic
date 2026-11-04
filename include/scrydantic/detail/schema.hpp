@@ -1,15 +1,16 @@
 #pragma once
 
 #include <algorithm>
-#include <cstdint>
-#include <limits>
 #include <meta>
 #include <optional>
+#include <scrydantic/detail/constraints.hpp>
+#include <scrydantic/detail/json_number.hpp>
 #include <scrydantic/detail/json_string.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Schema generation is a consteval function of a type's reflection. It runs only
@@ -27,6 +28,11 @@ namespace scrydantic::detail {
 
 using schema_text = std::optional<std::string_view>;
 
+// The keywords a member's constraints give the schema of its value, which only
+// the leaf and array writers take: the checks admit no constraint on any other
+// value, so none reaches an aggregate, and so none reaches a "$ref".
+using schema_keywords = std::vector<schema_keyword>;
+
 // The nodes a schema refers to rather than writes in place. A root node is
 // written in place once, as the root, so meeting it again means recursion. Each
 // definition has a name of its own, which the SupportedValue check has ensured.
@@ -34,10 +40,6 @@ struct schema_references {
   std::optional<schema_node> root{};
   std::vector<schema_node> definitions{};
 };
-
-consteval void append_unsigned(std::vector<char>& output, const std::uint64_t value) {
-  append_json_literal(output, decimal(value));
-}
 
 // Schema keys are emitted in sorted order, so "description" comes first in most
 // schemas but after the "additionalProperties" of an aggregate and the "anyOf" of an
@@ -62,40 +64,60 @@ consteval void append_description_key(std::vector<char>& output,
   append_json_string(output, *description_text);
 }
 
+// Writes each keyword as `"key":value,`, in sorted order. Every keyword sorts
+// after "description" and before "type", so it goes between them. An array's
+// "items" goes before its keywords, which are only maxItems and minItems and sort
+// after it; exclusiveMaximum and exclusiveMinimum sort before "items", but bound
+// only numbers, whose schemas have no "items".
+consteval void append_keywords(std::vector<char>& output, schema_keywords keywords) {
+  std::ranges::sort(keywords, {}, &schema_keyword::key);
+  for (const auto& keyword : keywords) {
+    append_json_string(output, keyword.key);
+    output.push_back(':');
+    append_json_literal(output, keyword.value);
+    output.push_back(',');
+  }
+}
+
 consteval void append_schema(std::vector<char>& output, std::meta::info type,
                              schema_text description_text,
+                             const schema_keywords& keywords,
                              const schema_references& references);
 
 consteval void append_described_type(std::vector<char>& output,
                                      const schema_text description_text,
-                                     const std::string_view type) {
+                                     const std::string_view type,
+                                     const schema_keywords& keywords) {
   append_schema_prologue(output, description_text);
+  append_keywords(output, keywords);
   append_json_literal(output, "\"type\":");
   append_json_string(output, type);
   output.push_back('}');
 }
 
+// An integer has one lower and one upper bound: the constraints' where they set
+// one, which a valid constraint keeps within the type, and the type's own where
+// they do not.
 consteval void append_integer_schema(std::vector<char>& output,
                                      const std::meta::info type,
-                                     const schema_text description_text) {
-  const auto bits = std::meta::size_of(type) * 8U;
-  const bool is_signed = std::meta::is_signed_type(type);
-  const auto magnitude_bits = is_signed ? bits - 1U : bits;
-  const auto maximum = magnitude_bits == 64U
-                           ? std::numeric_limits<std::uint64_t>::max()
-                           : (std::uint64_t{1} << magnitude_bits) - 1U;
-  append_schema_prologue(output, description_text);
-  append_json_literal(output, "\"maximum\":");
-  append_unsigned(output, maximum);
-  append_json_literal(output, ",\"minimum\":");
-  if (is_signed) {
-    // The lowest value is -(maximum + 1), whose magnitude an unsigned holds.
-    output.push_back('-');
-    append_unsigned(output, maximum + 1U);
-  } else {
-    output.push_back('0');
+                                     const schema_text description_text,
+                                     schema_keywords keywords) {
+  const auto bounded = [&keywords](const std::string_view inclusive,
+                                   const std::string_view exclusive) {
+    return std::ranges::any_of(keywords, [&](const schema_keyword& keyword) {
+      return keyword.key == inclusive || keyword.key == exclusive;
+    });
+  };
+  const auto numeric = numeric_type_of(type);
+  if (!bounded("minimum", "exclusiveMinimum")) {
+    keywords.push_back(
+        {.key = "minimum",
+         .value = bound_text(integer_bound(true, numeric.lowest_magnitude))});
   }
-  append_json_literal(output, ",\"type\":\"integer\"}");
+  if (!bounded("maximum", "exclusiveMaximum")) {
+    keywords.push_back({.key = "maximum", .value = decimal(numeric.maximum)});
+  }
+  append_described_type(output, description_text, "integer", keywords);
 }
 
 consteval void append_enum_schema(std::vector<char>& output, const std::meta::info type,
@@ -113,21 +135,24 @@ consteval void append_enum_schema(std::vector<char>& output, const std::meta::in
   append_json_literal(output, "],\"type\":\"string\"}");
 }
 
+// A fixed-size array's size is its only item bound; the checks admit no items
+// constraint on one. The element's schema may be a "$ref"; the item bounds sit
+// beside "items", not inside it.
 consteval void append_sequence_schema(std::vector<char>& output,
                                       const std::meta::info type,
                                       const schema_text description_text,
+                                      schema_keywords keywords,
                                       const schema_references& references) {
   append_schema_prologue(output, description_text);
   append_json_literal(output, "\"items\":");
-  append_schema(output, element_of(type), std::nullopt, references);
+  append_schema(output, element_of(type), std::nullopt, {}, references);
+  output.push_back(',');
   if (kind_of(type) == value_kind::array) {
-    const auto size = array_size_of(type);
-    append_json_literal(output, ",\"maxItems\":");
-    append_unsigned(output, size);
-    append_json_literal(output, ",\"minItems\":");
-    append_unsigned(output, size);
+    const auto size = decimal(array_size_of(type));
+    keywords = {{.key = "maxItems", .value = size}, {.key = "minItems", .value = size}};
   }
-  append_json_literal(output, ",\"type\":\"array\"}");
+  append_keywords(output, std::move(keywords));
+  append_json_literal(output, "\"type\":\"array\"}");
 }
 
 // The "type" property a tagged alternative's schema gains.
@@ -173,7 +198,8 @@ consteval void append_object_keys(std::vector<char>& output, const std::meta::in
     if (!required_only) {
       output.push_back(':');
       append_schema(output, std::meta::type_of(field.member),
-                    annotated_text(field.member, ^^description), references);
+                    annotated_text(field.member, ^^description),
+                    constraint_keywords(field.member), references);
     }
   }
   flush_tag(true);
@@ -235,17 +261,19 @@ consteval void append_alternatives(std::vector<char>& output,
 }
 
 // An optional variant joins null to the variant's own anyOf rather than nesting one
-// anyOf inside another.
+// anyOf inside another. Constraints bound the engaged value, so their keywords go
+// to its schema, and null stays allowed.
 consteval void append_optional_schema(std::vector<char>& output,
                                       const std::meta::info type,
                                       const schema_text description_text,
+                                      const schema_keywords& keywords,
                                       const schema_references& references) {
   const auto element = owned_type(element_of(type));
   append_json_literal(output, "{\"anyOf\":[");
   if (kind_of(element) == value_kind::variant) {
     append_alternatives(output, element, references);
   } else {
-    append_schema(output, element, std::nullopt, references);
+    append_schema(output, element, std::nullopt, keywords, references);
   }
   append_json_literal(output, ",{\"type\":\"null\"}]");
   append_description_key(output, description_text);
@@ -263,28 +291,32 @@ consteval void append_variant_schema(std::vector<char>& output,
   output.push_back('}');
 }
 
+// An indirect is the value it owns, so its keywords, like its description, go
+// to that value's schema.
 consteval void append_schema(std::vector<char>& output, const std::meta::info reflected,
                              const schema_text description_text,
+                             const schema_keywords& keywords,
                              const schema_references& references) {
   const auto type = plain_type(reflected);
   switch (kind_of(type)) {
   case value_kind::boolean:
-    return append_described_type(output, description_text, "boolean");
+    return append_described_type(output, description_text, "boolean", keywords);
   case value_kind::integer:
-    return append_integer_schema(output, type, description_text);
+    return append_integer_schema(output, type, description_text, keywords);
   case value_kind::floating:
-    return append_described_type(output, description_text, "number");
+    return append_described_type(output, description_text, "number", keywords);
   case value_kind::string:
-    return append_described_type(output, description_text, "string");
+    return append_described_type(output, description_text, "string", keywords);
   case value_kind::enumeration:
     return append_enum_schema(output, type, description_text);
   case value_kind::optional:
-    return append_optional_schema(output, type, description_text, references);
+    return append_optional_schema(output, type, description_text, keywords, references);
   case value_kind::indirect:
-    return append_schema(output, element_of(type), description_text, references);
+    return append_schema(output, element_of(type), description_text, keywords,
+                         references);
   case value_kind::vector:
   case value_kind::array:
-    return append_sequence_schema(output, type, description_text, references);
+    return append_sequence_schema(output, type, description_text, keywords, references);
   case value_kind::variant:
     return append_variant_schema(output, type, description_text, references);
   case value_kind::aggregate:
@@ -328,7 +360,7 @@ consteval std::string_view make_schema(const std::meta::info type) {
   if (references.root.has_value()) {
     append_object_schema(root, *references.root, std::nullopt, references);
   } else {
-    append_schema(root, type, std::nullopt, references);
+    append_schema(root, type, std::nullopt, {}, references);
   }
   if (references.definitions.empty()) {
     return static_schema(root);
@@ -368,7 +400,8 @@ namespace scrydantic {
 ///
 /// Handler result types are supported roots too. A tool binding never sends a
 /// result schema to a model; it is here so a host can export its own tool
-/// contracts. A type outside
+/// contracts. A member's constraint annotations add their keywords to its schema,
+/// and decoding checks every one of them but `pattern`. A type outside
 /// SupportedValue fails to compile with the offending member path and the reason.
 /// @tparam Value Type satisfying SupportedValue.
 template <typename Value>
