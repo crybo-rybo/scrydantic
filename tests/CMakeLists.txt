@@ -131,6 +131,7 @@ set_tests_properties(
 # Catch2 alone.
 add_executable(
   scrydantic_tests
+  codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
   tools/tool_binding_tests.cpp
 )
@@ -243,4 +244,14 @@ scrydantic_add_compile_fail_test(
   misplaced-context
   misplaced_context.cpp
   "greeting_tools::greet has parameter `session` of type Session; the context is only ever the leading parameter, as const Session&"
+)
+scrydantic_add_compile_fail_test(
+  keys-of-non-object
+  keys_of_non_object.cpp
+  "std::variant<Circle> is not a plain aggregate, so it has no JSON object keys"
+)
+scrydantic_add_compile_fail_test(
+  tags-of-non-variant
+  tags_of_non_variant.cpp
+  "Circle is not a std::variant, so it has no tags"
 )

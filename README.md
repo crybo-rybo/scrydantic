@@ -66,8 +66,18 @@ int main() {
 `bind()` supplies each tool's name, description, input schema, and callable
 handler. `describe()` supplies compile-time contracts without handlers.
 `encode()`, `decode<T>()`, and `input_schema_v<T>` also work independently
-of tool binding. Fallible operations use `scrydantic::Result<T>` or `Status`;
-a tool can refuse a call with `scrydantic::tool_error()`.
+of tool binding. `encode_verbatim()` keeps spliced `Json` payloads byte for
+byte, where `encode()` canonicalizes them. `keys_v<T>` and `tags_v<V>` list the
+JSON keys of a type and the tags of a variant. For JSON built by hand,
+`is_valid_json()`, `escape_json_string()`, and `format_json_number()` check
+text and spell strings and numbers as the canonical writer does. Fallible
+operations use `scrydantic::Result<T>` or `Status`; a tool can refuse a call
+with `scrydantic::tool_error()`.
+
+A library that builds on Scrydantic can give its own users the same
+compile-time errors: each concept, such as `Encodable`, has a function in
+`<scrydantic/diagnostics.hpp>`, such as `encodable_diagnostic<T>()`, that
+returns why a type fails the check, or an empty string when it passes.
 
 See [the MCP tools example](examples/mcp_tools.cpp) for an MCP-style
 tool listing and calls; the example is not a complete MCP server.

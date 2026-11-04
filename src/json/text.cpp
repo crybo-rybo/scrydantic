@@ -5,14 +5,25 @@
 
 #include <cmath>
 #include <scrydantic/detail/json_text.hpp>
+#include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
 
-namespace scrydantic::detail {
+namespace scrydantic {
 
-bool validate_json(const std::string_view input) noexcept {
-  return json::validate(input);
+bool is_valid_json(const std::string_view text) noexcept {
+  return detail::json::validate(text);
 }
+
+std::string format_json_number(const double value) {
+  std::string text{};
+  detail::append_canonical_json_number(text, value);
+  return text;
+}
+
+} // namespace scrydantic
+
+namespace scrydantic::detail {
 
 json_validity check_json(const std::string_view input) noexcept {
   return json::check(input);
