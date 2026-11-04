@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 
-# clang-format over the C++ sources: --check (default) or --fix. Uses the
-# clang-format on PATH, or CLANG_FORMAT. CI uses clang-format 22.
+# clang-format over the C++ sources: --check (the default) reports unformatted
+# files, --fix rewrites them. Runs the pinned clang-format (scripts/lib/tools.sh),
+# or the command in CLANG_FORMAT.
 
 set -euo pipefail
 
-readonly formatter="${CLANG_FORMAT:-clang-format}"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# shellcheck source=scripts/lib/tools.sh
+source scripts/lib/tools.sh
+
 case "${1:---check}" in
   --check) format_args=(--dry-run --Werror) ;;
   --fix) format_args=(-i) ;;
@@ -15,14 +19,18 @@ case "${1:---check}" in
     ;;
 esac
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
-# Include new, untracked sources as well as tracked files. NUL delimiters keep
-# paths containing spaces intact, and --exclude-standard skips build outputs.
-git ls-files --cached --others --exclude-standard -z -- \
+resolve_tool "${CLANG_FORMAT:-}" "${CLANG_FORMAT_SPEC}" clang-format
+clang_format=("${TOOL[@]}")
+
+# New, untracked sources count as well as tracked ones; --exclude-standard skips
+# build outputs, and a file deleted from the working tree is skipped too.
+sources=()
+while IFS= read -r -d '' source; do
+  if [[ -f "${source}" ]]; then
+    sources+=("${source}")
+  fi
+done < <(git ls-files --cached --others --exclude-standard -z -- \
   'examples/*.cpp' 'include/*.hpp' 'src/*.cpp' 'src/*.hpp' \
-  'tests/*.cpp' 'tests/*.hpp' |
-  while IFS= read -r -d '' source; do
-    if [[ -f "${source}" ]]; then
-      printf '%s\0' "${source}"
-    fi
-  done | xargs -0 "${formatter}" "${format_args[@]}"
+  'tests/*.cpp' 'tests/*.hpp')
+
+"${clang_format[@]}" "${format_args[@]}" "${sources[@]}"

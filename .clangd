@@ -1,3 +1,6 @@
-# Tells clangd-based editors to use the compile commands from `cmake --preset dev`.
+# Tells clangd-based editors to use the compile commands from the dev preset
+# (`cmake --preset dev`). Clang cannot parse C++26 reflection yet, so clangd
+# reports errors in the reflected headers and their tests; GCC is the compiler
+# of record. The C++23 JSON core under src/json/ is analyzed cleanly.
 CompileFlags:
   CompilationDatabase: build/dev
