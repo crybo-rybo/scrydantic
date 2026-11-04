@@ -157,64 +157,77 @@ template <typename Type, std::meta::info Member>
   return true;
 }
 
+// Reads `view` into `object` and returns false if it failed.
 template <typename Type, bool Tagged>
-[[nodiscard]] decode_result<Type> read_object(const JsonView& view,
-                                              const decode_cursor& here) {
+[[nodiscard]] bool read_object(Type& object, const JsonView& view,
+                               const decode_cursor& here) {
   if (view.kind() != JsonKind::object) {
-    return here.fail(IssueKind::wrong_type, "must be an object");
+    here.report(IssueKind::wrong_type, "must be an object");
+    return false;
   }
   bool valid = true;
   if constexpr (!ignores_unknown(^^Type)) {
     valid = report_unknown_keys<Type, Tagged>(view, here);
   }
-
-  // Value-initialized, as is_storable checks, rather than list-initialized:
-  // `Type object{}` would copy-initialize a member without an initializer from
-  // `{}`, which std::indirect's explicit default constructor does not allow.
-  Type object = Type();
   template for (constexpr std::meta::info member : declared_members_v<Type>) {
     if (here.stopped()) {
-      return std::unexpected(decode_failure::reported);
+      return false;
     }
     if (!read_member<Type, member>(object, view, here)) {
       valid = false;
     }
   }
-  if (!valid) {
-    return std::unexpected(decode_failure::reported);
+  return valid;
+}
+
+// An aggregate is read in place, so this is the one place that builds its
+// result. The value is value-initialized, as is_storable checks: `Type value{}`
+// would copy-initialize a member without an initializer from `{}`, which
+// std::indirect's explicit default constructor does not allow.
+template <typename Type, bool Tagged>
+[[nodiscard]] decode_result<Type> read_in_place(const JsonView& view,
+                                                const decode_cursor& here) {
+  Type value = Type();
+  if (!read_object<Type, Tagged>(value, view, here)) {
+    return decode_failed<Type>();
   }
-  return object;
+  return value;
 }
 
 // A missing or unknown tag leaves no alternative to check the object against, so
-// it is the variant's only issue.
+// it is the variant's only issue. The variant is built from the alternative its
+// tag selects rather than read in place, which would default-construct its
+// first alternative only to replace it, so it builds its failures itself.
 template <typename Variant>
 [[nodiscard]] decode_result<Variant> read_variant(const JsonView& view,
                                                   const decode_cursor& here) {
   static constexpr std::string_view tags = tag_names(^^Variant);
   if (view.kind() != JsonKind::object) {
-    return here.fail(IssueKind::wrong_type, "must be an object");
+    here.report(IssueKind::wrong_type, "must be an object");
+    return decode_failed<Variant>();
   }
   const decode_cursor tag = here.member(tag_key);
   const auto discriminator = view.find(tag_key);
   if (!discriminator.has_value()) {
-    return tag.fail(IssueKind::missing_tag,
-                    std::string{"is a required member; must be one of: "} +
-                        std::string{tags});
+    tag.report(IssueKind::missing_tag,
+               std::string{"is a required member; must be one of: "} +
+                   std::string{tags});
+    return decode_failed<Variant>();
   }
 
   const auto selected = discriminator->string();
   template for (constexpr std::meta::info alternative : alternatives_v<Variant>) {
     using Alternative = typename[:alternative:];
     if (selected == *tag_of(alternative)) {
-      return read_object<Alternative, true>(view, here)
+      return read_in_place<Alternative, true>(view, here)
           .transform([](Alternative&& value) {
             return Variant{std::in_place_type<Alternative>, std::move(value)};
           });
     }
   }
-  return tag.fail(IssueKind::unknown_tag,
-                  std::string{"must be one of: "} + std::string{tags});
+  tag.report(IssueKind::unknown_tag,
+             std::string{"must be one of: "} + std::string{tags});
+  return decode_failed<Variant>();
 }
 
 template <typename Optional>
@@ -265,7 +278,7 @@ template <typename Array>
 [[nodiscard]] decode_result<Array> read_array(const JsonView& view,
                                               const decode_cursor& here) {
   constexpr std::string_view reason = "must be an array of the declared fixed size";
-  // Value-initialized for the reason read_object's object is.
+  // Value-initialized for the reason read_in_place's value is.
   Array values = Array();
   if (view.kind() != JsonKind::array) {
     return here.fail(IssueKind::wrong_type, reason);
@@ -327,7 +340,7 @@ decode_result<Type> read_value(const JsonView& view, const decode_cursor& here) 
   } else if constexpr (kind == value_kind::variant) {
     return read_variant<Type>(view, here);
   } else if constexpr (kind == value_kind::aggregate) {
-    return read_object<Type, false>(view, here);
+    return read_in_place<Type, false>(view, here);
   } else {
     return read_plain_leaf<Type>(view, here);
   }
@@ -342,13 +355,15 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
           [&report](decode_failure) { return decode_error(std::move(report)); });
 }
 
+// Composed from std::expected's monadic operations, which build their failure
+// with std::unexpect: see decode_failed().
 template <ToolArguments Args>
 [[nodiscard]] Result<Args> decode_arguments(const Json& input) {
-  auto parsed = JsonView::parse(input);
-  if (!parsed) {
-    return std::unexpected(invalid_json_error("tool arguments are not valid JSON"));
-  }
-  return detail::decode<Args>(*parsed);
+  return JsonView::parse(input)
+      .transform_error([](const Error&) {
+        return invalid_json_error("tool arguments are not valid JSON");
+      })
+      .and_then([](const JsonView& view) { return detail::decode<Args>(view); });
 }
 
 } // namespace scrydantic::detail

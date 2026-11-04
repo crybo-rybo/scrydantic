@@ -1441,3 +1441,588 @@ TEST_CASE("encoding reports a std::indirect left valueless by a move") {
   CHECK(encoded.error().model_message.empty());
   CHECK(taken->zed == "z");
 }
+
+// ---- Recursive models --------------------------------------------------------
+
+// Named rather than anonymous, so the schema definition names below read as a
+// program's own would.
+namespace recursive {
+
+// A tree: std::vector allows an incomplete element type.
+struct Category {
+  std::vector<Category> children;
+  std::string name;
+};
+
+// A linked list, which ends where its optional is disengaged.
+struct Chain {
+  [[= scrydantic::skip_null]] std::optional<std::indirect<Chain>> next;
+  int value{};
+};
+
+struct Employee;
+
+struct Team {
+  std::vector<Employee> members;
+  std::string name;
+};
+
+struct Employee {
+  std::optional<std::indirect<Team>> leads;
+  std::string name;
+};
+
+// A variant alternative of the shape Chain has, which makes the variant's own
+// conversions ask what Chain's do (decode_failed()).
+struct[[= scrydantic::tag{"link"}]] Link {
+  std::optional<std::indirect<Link>> next;
+};
+
+struct[[= scrydantic::tag{"end"}]] End {};
+
+using Linked = std::variant<End, Link>;
+
+// A recursive type below a root that is not.
+struct Catalog {
+  [[= scrydantic::description{"The top category"}]] Category root;
+  std::string title;
+};
+
+// An expression tree. The leaf comes first, so a default-constructed Expression
+// holds no further Expression.
+struct Negate;
+struct Sum;
+
+struct[[= scrydantic::tag{"literal"}]] Literal {
+  double value{};
+};
+
+using Expression = std::variant<Literal, Negate, Sum>;
+
+struct[[= scrydantic::tag{"negate"}]] Negate {
+  std::indirect<Expression> operand;
+};
+
+struct[[= scrydantic::tag{"sum"}]] Sum {
+  std::vector<Expression> terms;
+};
+
+template <typename Value> struct Node {
+  std::vector<Node> children;
+  Value value{};
+};
+
+struct Forest {
+  std::vector<Node<int>> numbers;
+  std::optional<Node<std::string>> words;
+};
+
+// One identifier in two namespaces.
+namespace other {
+struct Category {
+  std::vector<Category> children;
+};
+} // namespace other
+
+struct Shelves {
+  Category mine;
+  other::Category theirs;
+};
+
+// A tagged class that recurses both as a variant alternative and as a plain
+// value, so its schema needs both of its forms as definitions.
+struct Folder;
+
+struct[[= scrydantic::tag{"file"}]] File {
+  std::string name;
+};
+
+using Entry = std::variant<File, Folder>;
+
+struct[[= scrydantic::tag{"folder"}]] Folder {
+  std::vector<Entry> entries;
+  std::vector<Folder> folders;
+};
+
+struct Drive {
+  Folder top;
+};
+
+// Cycles that hold no std::optional, std::vector, or later alternative.
+struct Endless {
+  std::indirect<Endless> next;
+};
+
+struct Pong;
+
+struct Ping {
+  std::indirect<Pong> pong;
+};
+
+struct Pong {
+  Ping ping;
+};
+
+struct Halves {
+  std::array<std::indirect<Halves>, 2> halves;
+};
+
+struct Wrapped;
+
+using WrappedFirst = std::variant<Wrapped, Literal>;
+
+struct[[= scrydantic::tag{"wrapped"}]] Wrapped {
+  std::indirect<WrappedFirst> inner;
+};
+
+// A reference always binds to something, so a chain of them closes on itself.
+struct Ring {
+  const Ring& next;
+};
+
+// Cycles that end: an empty std::array holds nothing, and a vector may be empty.
+struct NoHalves {
+  std::array<std::indirect<NoHalves>, 0> none;
+};
+
+struct Rows {
+  std::array<std::vector<Rows>, 2> rows;
+};
+
+// Spin<1> and Spin<-1> contain each other, and the sign tells their names apart.
+template <int Sign> struct Spin {
+  std::vector<Spin<-Sign>> flipped;
+};
+
+struct Spins {
+  Spin<1> up;
+};
+
+// Every kind of template argument that a definition name spells.
+enum class Axis : std::uint8_t {
+  rows,
+  columns,
+};
+
+template <typename Element, int Offset, Axis Along, bool Dense, char Mark> struct Grid {
+  std::vector<Grid> cells;
+};
+
+template <typename... Tags> struct Marked {
+  std::vector<Marked> marks;
+};
+
+template <typename Value> struct Outer {
+  struct Inner {
+    std::vector<Inner> more;
+  };
+};
+
+template <std::int64_t Low, std::uint64_t High> struct Range {
+  std::vector<Range> parts;
+};
+
+struct Spelled {
+  Grid<std::array<std::optional<std::uint8_t>, 2>, -2, Axis::columns, true, 'x'> grid;
+  Marked<std::variant<Literal, Sum>, std::indirect<double>, std::vector<char>,
+         std::string, long>
+      marked;
+  Outer<float>::Inner inner;
+  Range<std::numeric_limits<std::int64_t>::min(),
+        std::numeric_limits<std::uint64_t>::max()>
+      range;
+};
+
+// long and long long have one width, and so one name.
+template <typename Integer> struct Tally {
+  std::vector<Tally> parts;
+  Integer count{};
+};
+
+struct Tallies {
+  Tally<long> wide;
+  Tally<long long> wider;
+};
+
+// Recursive types whose names cannot be spelled.
+template <typename Tag> struct Tagged {
+  std::vector<Tagged> children;
+};
+
+struct Pointed {
+  Tagged<int*> tagged;
+};
+
+template <double Scale> struct Scaled {
+  std::vector<Scaled> parts;
+};
+
+struct Scales {
+  Scaled<0.5> half;
+};
+
+struct Größe {
+  std::vector<Größe> parts;
+};
+
+struct Sizes {
+  Größe size;
+};
+
+} // namespace recursive
+
+namespace {
+
+// An anonymous namespace is part of the qualified name a definition derives.
+struct Outline {
+  std::vector<Outline> sections;
+};
+
+struct Report {
+  Outline outline;
+};
+
+// A class local to a function has no stable name.
+consteval std::string_view local_definition_diagnostic() {
+  struct Local {
+    std::vector<Local> more;
+  };
+  struct Holder {
+    Local local;
+  };
+  return scrydantic::detail::supported_diagnostic<Holder>();
+}
+
+// A chain of `length` links, valued from `length - 1` at its head down to 0.
+[[nodiscard]] recursive::Chain chain_of(const std::size_t length) {
+  recursive::Chain head{.next = std::nullopt, .value = 0};
+  for (int value = 1; std::cmp_less(value, length); ++value) {
+    recursive::Chain link{.next = std::indirect<recursive::Chain>(std::move(head)),
+                          .value = value};
+    head = std::move(link);
+  }
+  return head;
+}
+
+// The canonical text of chain_of(length), with `last` as its last link.
+[[nodiscard]] std::string chain_text(const std::size_t length,
+                                     const std::string_view last = R"({"value":0})") {
+  std::string text{};
+  for (std::size_t link = 1; link < length; ++link) {
+    text += R"({"next":)";
+  }
+  text += last;
+  for (std::size_t value = 1; value < length; ++value) {
+    text += R"(,"value":)" + std::to_string(value) + "}";
+  }
+  return text;
+}
+
+} // namespace
+
+static_assert(scrydantic::SupportedValue<recursive::Category>);
+static_assert(scrydantic::ToolArguments<recursive::Category>);
+static_assert(scrydantic::SupportedValue<recursive::Chain>);
+static_assert(scrydantic::SupportedValue<recursive::Team>);
+static_assert(scrydantic::SupportedValue<recursive::Employee>);
+static_assert(scrydantic::SupportedValue<recursive::Catalog>);
+static_assert(scrydantic::SupportedValue<recursive::Expression>);
+static_assert(scrydantic::SupportedValue<recursive::Forest>);
+static_assert(scrydantic::SupportedValue<recursive::Shelves>);
+static_assert(scrydantic::SupportedValue<recursive::Drive>);
+static_assert(scrydantic::SupportedValue<recursive::NoHalves>);
+static_assert(scrydantic::SupportedValue<recursive::Rows>);
+static_assert(scrydantic::SupportedValue<std::indirect<recursive::Chain>>);
+
+static_assert(!scrydantic::SupportedValue<recursive::Endless>);
+static_assert(!scrydantic::Encodable<recursive::Endless>);
+static_assert(!scrydantic::SupportedValue<recursive::Ping>);
+static_assert(!scrydantic::SupportedValue<recursive::Halves>);
+// Encoding builds nothing, so a variant to encode may hold its later alternative.
+static_assert(!scrydantic::Decodable<recursive::WrappedFirst>);
+static_assert(scrydantic::Encodable<recursive::WrappedFirst>);
+static_assert(!scrydantic::Encodable<recursive::Ring>);
+static_assert(scrydantic::SupportedValue<recursive::Spins>);
+static_assert(scrydantic::SupportedValue<recursive::Spelled>);
+// Only a schema needs names: the rest of the codec takes these types.
+static_assert(sizeof(long) == sizeof(long long));
+static_assert(!scrydantic::SupportedValue<recursive::Tallies>);
+static_assert(scrydantic::Decodable<recursive::Tallies>);
+static_assert(!scrydantic::SupportedValue<recursive::Pointed>);
+static_assert(scrydantic::Decodable<recursive::Pointed>);
+static_assert(!scrydantic::SupportedValue<recursive::Scales>);
+static_assert(!scrydantic::SupportedValue<recursive::Sizes>);
+// A recursive root needs no name of its own.
+static_assert(scrydantic::SupportedValue<recursive::Tagged<int*>>);
+
+static_assert(
+    mentions(scrydantic::detail::supported_diagnostic<recursive::Endless>(),
+             "recursive::Endless::next: recursive::Endless contains itself through no "
+             "std::optional, std::vector, or variant alternative after the first, so "
+             "default-constructing it, as decoding does, never ends"));
+static_assert(mentions(
+    scrydantic::detail::encodable_diagnostic<recursive::Endless>(),
+    "recursive::Endless::next: recursive::Endless contains itself through no "
+    "std::optional, std::vector, or variant, so every value of it is infinite or "
+    "cyclic and cannot be JSON"));
+static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Ping>(),
+                       "recursive::Ping::pong.ping: recursive::Ping contains itself"));
+static_assert(
+    mentions(scrydantic::detail::supported_diagnostic<recursive::Halves>(),
+             "recursive::Halves::halves[]: recursive::Halves contains itself"));
+static_assert(
+    mentions(scrydantic::detail::decodable_diagnostic<recursive::WrappedFirst>(),
+             "recursive::Wrapped::inner<recursive::Wrapped>: recursive::Wrapped "
+             "contains itself through no std::optional, std::vector, or variant "
+             "alternative after the first"));
+static_assert(mentions(scrydantic::detail::encodable_diagnostic<recursive::Ring>(),
+                       "recursive::Ring::next: recursive::Ring contains itself through "
+                       "no std::optional, std::vector, or variant"));
+static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Tallies>(),
+                       "recursive::Tallies has the recursive types recursive::Tally<"));
+static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Tallies>(),
+                       ", which both map to the schema definition name "
+                       "\"recursive.Tally-int64\""));
+static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Pointed>(),
+                       "recursive::Pointed has the recursive type "
+                       "recursive::Tagged<int*>, which no schema definition name can "
+                       "spell: int* is not a type that a definition name spells"));
+static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Scales>(),
+                       ", which no schema definition name can spell: "));
+static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Scales>(),
+                       " is not a constant that a definition name spells; an argument "
+                       "constant must be an integer, a bool, or an enumerator"));
+static_assert(
+    mentions(scrydantic::detail::supported_diagnostic<recursive::Sizes>(),
+             "recursive::Sizes has the recursive type recursive::Größe, which "
+             "no schema definition name can spell: recursive::Größe has a "
+             "name that is not ASCII letters, digits, and '_'"));
+static_assert(mentions(local_definition_diagnostic(),
+                       "Local is local to a function; declare it in a namespace"));
+
+// A recursive root refers to itself as "#", and keeps "type":"object" at the top.
+static_assert(
+    scrydantic::schema_v<recursive::Category> ==
+    R"({"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#"},"type":"array"},"name":{"type":"string"}},"required":["children","name"],"type":"object"})");
+static_assert(scrydantic::input_schema_v<recursive::Category> ==
+              scrydantic::schema_v<recursive::Category>);
+static_assert(scrydantic::schema_v<std::indirect<recursive::Category>> ==
+              scrydantic::schema_v<recursive::Category>);
+
+static_assert(
+    scrydantic::schema_v<recursive::Chain> ==
+    R"({"additionalProperties":false,"properties":{"next":{"anyOf":[{"$ref":"#"},{"type":"null"}]},"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"})");
+
+// Below a root that is not recursive, the same type is a definition.
+static_assert(
+    scrydantic::schema_v<std::vector<recursive::Chain>> ==
+    R"({"$defs":{"recursive.Chain":{"additionalProperties":false,"properties":{"next":{"anyOf":[{"$ref":"#/$defs/recursive.Chain"},{"type":"null"}]},"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"}},"items":{"$ref":"#/$defs/recursive.Chain"},"type":"array"})");
+
+static_assert(
+    scrydantic::schema_v<recursive::Team> ==
+    R"({"$defs":{"recursive.Employee":{"additionalProperties":false,"properties":{"leads":{"anyOf":[{"$ref":"#"},{"type":"null"}]},"name":{"type":"string"}},"required":["leads","name"],"type":"object"}},"additionalProperties":false,"properties":{"members":{"items":{"$ref":"#/$defs/recursive.Employee"},"type":"array"},"name":{"type":"string"}},"required":["members","name"],"type":"object"})");
+
+// A description stays beside the reference it describes.
+static_assert(
+    scrydantic::schema_v<recursive::Catalog> ==
+    R"({"$defs":{"recursive.Category":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Category"},"type":"array"},"name":{"type":"string"}},"required":["children","name"],"type":"object"}},"additionalProperties":false,"properties":{"root":{"$ref":"#/$defs/recursive.Category","description":"The top category"},"title":{"type":"string"}},"required":["root","title"],"type":"object"})");
+
+// Only the alternatives that recurse are definitions; the leaf stays in place.
+static_assert(
+    scrydantic::schema_v<recursive::Expression> ==
+    R"({"$defs":{"recursive.Negate":{"additionalProperties":false,"properties":{"operand":{"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]},"type":{"enum":["negate"],"type":"string"}},"required":["operand","type"],"type":"object"},"recursive.Sum":{"additionalProperties":false,"properties":{"terms":{"items":{"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]},"type":"array"},"type":{"enum":["sum"],"type":"string"}},"required":["terms","type"],"type":"object"}},"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]})");
+
+static_assert(
+    scrydantic::schema_v<recursive::Forest> ==
+    R"({"$defs":{"recursive.Node-int32":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Node-int32"},"type":"array"},"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["children"],"type":"object"},"recursive.Node-string":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Node-string"},"type":"array"},"value":{"type":"string"}},"required":["children"],"type":"object"}},"additionalProperties":false,"properties":{"numbers":{"items":{"$ref":"#/$defs/recursive.Node-int32"},"type":"array"},"words":{"anyOf":[{"$ref":"#/$defs/recursive.Node-string"},{"type":"null"}]}},"required":["numbers","words"],"type":"object"})");
+
+static_assert(
+    scrydantic::schema_v<recursive::Shelves> ==
+    R"({"$defs":{"recursive.Category":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Category"},"type":"array"},"name":{"type":"string"}},"required":["children","name"],"type":"object"},"recursive.other.Category":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.other.Category"},"type":"array"}},"required":["children"],"type":"object"}},"additionalProperties":false,"properties":{"mine":{"$ref":"#/$defs/recursive.Category"},"theirs":{"$ref":"#/$defs/recursive.other.Category"}},"required":["mine","theirs"],"type":"object"})");
+
+static_assert(
+    scrydantic::schema_v<recursive::Drive> ==
+    R"({"$defs":{"recursive.Folder":{"additionalProperties":false,"properties":{"entries":{"items":{"anyOf":[{"additionalProperties":false,"properties":{"name":{"type":"string"},"type":{"enum":["file"],"type":"string"}},"required":["name","type"],"type":"object"},{"$ref":"#/$defs/recursive.Folder"}]},"type":"array"},"folders":{"items":{"$ref":"#/$defs/recursive.Folder-untagged"},"type":"array"},"type":{"enum":["folder"],"type":"string"}},"required":["entries","folders","type"],"type":"object"},"recursive.Folder-untagged":{"additionalProperties":false,"properties":{"entries":{"items":{"anyOf":[{"additionalProperties":false,"properties":{"name":{"type":"string"},"type":{"enum":["file"],"type":"string"}},"required":["name","type"],"type":"object"},{"$ref":"#/$defs/recursive.Folder"}]},"type":"array"},"folders":{"items":{"$ref":"#/$defs/recursive.Folder-untagged"},"type":"array"}},"required":["entries","folders"],"type":"object"}},"additionalProperties":false,"properties":{"top":{"$ref":"#/$defs/recursive.Folder-untagged"}},"required":["top"],"type":"object"})");
+
+static_assert(
+    scrydantic::schema_v<Report> ==
+    R"({"$defs":{"anonymous.Outline":{"additionalProperties":false,"properties":{"sections":{"items":{"$ref":"#/$defs/anonymous.Outline"},"type":"array"}},"required":["sections"],"type":"object"}},"additionalProperties":false,"properties":{"outline":{"$ref":"#/$defs/anonymous.Outline"}},"required":["outline"],"type":"object"})");
+
+// The sign marker keeps Spin<1> and Spin<-1> apart.
+static_assert(
+    scrydantic::schema_v<recursive::Spins> ==
+    R"({"$defs":{"recursive.Spin-1":{"additionalProperties":false,"properties":{"flipped":{"items":{"$ref":"#/$defs/recursive.Spin-minus1"},"type":"array"}},"required":["flipped"],"type":"object"},"recursive.Spin-minus1":{"additionalProperties":false,"properties":{"flipped":{"items":{"$ref":"#/$defs/recursive.Spin-1"},"type":"array"}},"required":["flipped"],"type":"object"}},"additionalProperties":false,"properties":{"up":{"$ref":"#/$defs/recursive.Spin-1"}},"required":["up"],"type":"object"})");
+
+static_assert(mentions(scrydantic::schema_v<recursive::Spelled>,
+                       R"("$ref":"#/$defs/recursive.Grid-array-optional-uint8-2-)"
+                       R"(minus2-columns-true-120")"));
+static_assert(mentions(scrydantic::schema_v<recursive::Spelled>,
+                       R"("$ref":"#/$defs/recursive.Marked-variant-recursive.Literal-)"
+                       R"(recursive.Sum-indirect-double-vector-char-string-int64")"));
+static_assert(mentions(scrydantic::schema_v<recursive::Spelled>,
+                       R"("$ref":"#/$defs/recursive.Outer-float.Inner")"));
+static_assert(mentions(scrydantic::schema_v<recursive::Spelled>,
+                       R"("$ref":"#/$defs/recursive.Range-minus9223372036854775808-)"
+                       R"(18446744073709551615")"));
+
+TEST_CASE("a recursive tree round trips and reports failures deep inside it") {
+  const auto text = std::string{
+      R"({"children":[{"children":[{"children":[],"name":"c"}],"name":"b"}],"name":"a"})"};
+  const auto decoded = decode_text<recursive::Category>(text);
+  REQUIRE(decoded);
+  REQUIRE(decoded->children.size() == 1);
+  CHECK(decoded->children[0].children[0].name == "c");
+  CHECK(scrydantic::encode(*decoded)->text == text);
+
+  auto failed = decode_text<recursive::Category>(
+      R"({"children":[{"children":[{"children":[],"name":7}],"name":"b"}],"name":"a"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.children[0].children[0].name must be a string");
+  failed =
+      decode_text<recursive::Category>(R"({"children":[{"name":"b"}],"name":"a"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message == "$.children[0].children is a required member");
+}
+
+TEST_CASE("issues deep in a recursive tree are each reported at their path") {
+  const auto failed = decode_text<recursive::Category>(
+      R"({"children":[{"children":[],"name":1},{"children":[],"name":2}],"name":3})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().issues.size() == 3);
+  CHECK(failed.error().model_message == "$.children[0].name must be a string\n"
+                                        "$.children[1].name must be a string\n"
+                                        "$.name must be a string");
+}
+
+TEST_CASE("results of recursive types fail without asking how a failure converts") {
+  const auto linked =
+      decode_text<recursive::Linked>(R"({"next":{"next":null},"type":"link"})");
+  REQUIRE(linked);
+  CHECK(std::get<recursive::Link>(*linked).next.has_value());
+  const auto bad_link =
+      decode_text<recursive::Linked>(R"({"next":{"next":7},"type":"link"})");
+  REQUIRE_FALSE(bad_link);
+  CHECK(bad_link.error().model_message == "$.next.next must be an object");
+
+  const auto bad_optional =
+      decode_text<std::optional<recursive::Chain>>(R"({"value":"one"})");
+  REQUIRE_FALSE(bad_optional);
+  CHECK(bad_optional.error().model_message == "$.value must be an integer");
+  const auto bad_array = decode_text<std::array<recursive::Chain, 1>>(R"([[]])");
+  REQUIRE_FALSE(bad_array);
+  CHECK(bad_array.error().model_message == "$[0] must be an object");
+  const auto bad_vector = decode_text<std::vector<recursive::Chain>>("{}");
+  REQUIRE_FALSE(bad_vector);
+  CHECK(bad_vector.error().model_message == "$ must be an array");
+}
+
+TEST_CASE("a linked list ends at a disengaged optional, which skip_null omits") {
+  const recursive::Chain chain{
+      .next = std::indirect<recursive::Chain>(
+          recursive::Chain{.next = std::nullopt, .value = 2}),
+      .value = 1,
+  };
+  const auto text = std::string{R"({"next":{"value":2},"value":1})"};
+  CHECK(scrydantic::encode(chain)->text == text);
+
+  const auto decoded = decode_text<recursive::Chain>(text);
+  REQUIRE(decoded);
+  REQUIRE(decoded->next.has_value());
+  CHECK((*decoded->next)->value == 2);
+  CHECK_FALSE((*decoded->next)->next.has_value());
+  CHECK(decode_text<recursive::Chain>(R"({"next":null,"value":1})"));
+
+  const auto failed =
+      decode_text<recursive::Chain>(R"({"next":{"next":{"value":"x"}},"value":1})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message == "$.next.next.value must be an integer");
+}
+
+TEST_CASE("mutually recursive aggregates round trip") {
+  const auto text =
+      std::string{R"({"members":[{"leads":{"members":[{"leads":null,)"
+                  R"("name":"b"}],"name":"inner"},"name":"a"}],"name":"outer"})"};
+  const auto decoded = decode_text<recursive::Team>(text);
+  REQUIRE(decoded);
+  REQUIRE(decoded->members[0].leads.has_value());
+  CHECK((*decoded->members[0].leads)->members[0].name == "b");
+  CHECK(scrydantic::encode(*decoded)->text == text);
+
+  const auto failed = decode_text<recursive::Team>(
+      R"({"members":[{"leads":{"members":[{"leads":null,"name":1}],"name":"t"},)"
+      R"("name":"e"}],"name":"x"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.members[0].leads.members[0].name must be a string");
+}
+
+TEST_CASE("a recursive tagged variant decodes by tag at every depth") {
+  const auto text = std::string{
+      R"({"operand":{"terms":[{"type":"literal","value":1},{"operand":)"
+      R"({"type":"literal","value":2},"type":"negate"}],"type":"sum"},"type":"negate"})"};
+  const auto decoded = decode_text<recursive::Expression>(text);
+  REQUIRE(decoded);
+  const auto& sum =
+      std::get<recursive::Sum>(*std::get<recursive::Negate>(*decoded).operand);
+  REQUIRE(sum.terms.size() == 2);
+  CHECK(std::get<recursive::Literal>(sum.terms[0]).value == 1.0);
+  CHECK(std::get<recursive::Literal>(*std::get<recursive::Negate>(sum.terms[1]).operand)
+            .value == 2.0);
+  CHECK(scrydantic::encode(*decoded)->text == text);
+
+  auto failed = decode_text<recursive::Expression>(
+      R"({"operand":{"terms":[{"type":"literal"},{"type":"product"}],"type":"sum"},)"
+      R"("type":"negate"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.operand.terms[1].type must be one of: literal, negate, sum");
+  failed = decode_text<recursive::Expression>(R"({"type":"negate"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message == "$.operand is a required member");
+}
+
+TEST_CASE("each specialization of a recursive template recurses on its own") {
+  const auto text =
+      std::string{R"({"numbers":[{"children":[{"children":[],"value":2}],)"
+                  R"("value":1}],"words":{"children":[],"value":"w"}})"};
+  const auto decoded = decode_text<recursive::Forest>(text);
+  REQUIRE(decoded);
+  CHECK(decoded->numbers[0].children[0].value == 2);
+  CHECK(decoded->words->value == "w");
+  CHECK(scrydantic::encode(*decoded)->text == text);
+
+  const auto failed = decode_text<recursive::Forest>(
+      R"({"numbers":[{"children":[{"children":[],"value":"2"}],"value":1}],"words":null})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.numbers[0].children[0].value must be an integer");
+}
+
+TEST_CASE("recursion nests as deep as the parser reads and no deeper") {
+  // 256 links nest 256 objects, the parser's limit.
+  const auto deepest = chain_text(256);
+  const auto decoded = decode_text<recursive::Chain>(deepest);
+  REQUIRE(decoded);
+  CHECK(scrydantic::encode(*decoded)->text == deepest);
+  CHECK(scrydantic::encode(chain_of(256))->text == deepest);
+
+  std::string path = "$";
+  for (std::size_t link = 1; link < 256; ++link) {
+    path += ".next";
+  }
+  const auto failed =
+      decode_text<recursive::Chain>(chain_text(256, R"({"value":"0"})"));
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message == path + ".value must be an integer");
+
+  // One link more is past the parser's limit, and the writer stops there too.
+  const auto too_deep = decode_text<recursive::Chain>(chain_text(257));
+  REQUIRE_FALSE(too_deep);
+  CHECK(too_deep.error().message == "JSON text is not valid JSON");
+  const auto encoded = scrydantic::encode(chain_of(257));
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message ==
+        path + ".next is an array or object nested more than 256 deep, so the value "
+               "cannot be JSON");
+}

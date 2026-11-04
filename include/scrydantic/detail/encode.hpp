@@ -42,8 +42,20 @@ enum class spelling : std::uint8_t {
   canonical,
 };
 
+// `depth` counts the arrays and objects open around `value`.
 template <typename Type, spelling Spelling = spelling::verbatim>
-[[nodiscard]] encode_result<void> write_value(std::string& output, const Type& value);
+[[nodiscard]] encode_result<void> write_value(std::string& output, const Type& value,
+                                              std::size_t depth);
+
+// A recursive value can nest without bound, so the writer refuses the array or
+// object that the parser would refuse, before its own recursion can exhaust the
+// stack. The writers test the depth themselves and call this only to fail: an
+// encode_result<void> built and tested for every container cost 2% of an encode.
+[[nodiscard]] inline std::unexpected<encode_failure> nested_too_deep() {
+  return encode_fail("is an array or object nested more than " +
+                     std::to_string(json_max_depth) +
+                     " deep, so the value cannot be JSON");
+}
 
 // Whether the parser reads `text`, std::to_chars' spelling of a finite number,
 // as an integer: digits alone, after at most a '-', that fit uint64 when not
@@ -139,15 +151,18 @@ template <spelling Spelling>
 }
 
 template <spelling Spelling, typename Sequence>
-[[nodiscard]] encode_result<void> write_sequence(std::string& output,
-                                                 const Sequence& value) {
+[[nodiscard]] encode_result<void>
+write_sequence(std::string& output, const Sequence& value, const std::size_t depth) {
+  if (depth == json_max_depth) [[unlikely]] {
+    return nested_too_deep();
+  }
   output.push_back('[');
   for (std::size_t index = 0; index < value.size(); ++index) {
     if (index != 0) {
       output.push_back(',');
     }
-    if (auto status =
-            write_value<typename Sequence::value_type, Spelling>(output, value[index]);
+    if (auto status = write_value<typename Sequence::value_type, Spelling>(
+            output, value[index], depth + 1);
         !status) {
       return std::unexpected(at_element(std::move(status.error()), index));
     }
@@ -160,7 +175,11 @@ template <spelling Spelling, typename Sequence>
 // its members at its lexical position: before the first key that sorts after it,
 // or last.
 template <typename Type, bool Tagged, spelling Spelling>
-[[nodiscard]] encode_result<void> write_object(std::string& output, const Type& value) {
+[[nodiscard]] encode_result<void> write_object(std::string& output, const Type& value,
+                                               const std::size_t depth) {
+  if (depth == json_max_depth) [[unlikely]] {
+    return nested_too_deep();
+  }
   output.push_back('{');
   bool first = true;
   const auto separate = [&output, &first] {
@@ -194,7 +213,8 @@ template <typename Type, bool Tagged, spelling Spelling>
       separate();
       output.append(member_prefix(key));
       using Member = std::remove_cvref_t<decltype(value.[:member:])>;
-      if (auto status = write_value<Member, Spelling>(output, value.[:member:]);
+      if (auto status =
+              write_value<Member, Spelling>(output, value.[:member:], depth + 1);
           !status) {
         return std::unexpected(at_member(std::move(status.error()), key));
       }
@@ -208,30 +228,31 @@ template <typename Type, bool Tagged, spelling Spelling>
 }
 
 template <spelling Spelling, typename Variant>
-[[nodiscard]] encode_result<void> write_variant(std::string& output,
-                                                const Variant& value) {
+[[nodiscard]] encode_result<void>
+write_variant(std::string& output, const Variant& value, const std::size_t depth) {
   if (value.valueless_by_exception()) {
     return encode_fail("is a variant left valueless by an exception");
   }
   return std::visit(
-      [&output]<typename Alternative>(const Alternative& alternative) {
-        return write_object<Alternative, true, Spelling>(output, alternative);
+      [&output, depth]<typename Alternative>(const Alternative& alternative) {
+        return write_object<Alternative, true, Spelling>(output, alternative, depth);
       },
       value);
 }
 
 // An indirect is written as the value it owns, which a move leaves it without.
 template <spelling Spelling, typename Indirect>
-[[nodiscard]] encode_result<void> write_indirect(std::string& output,
-                                                 const Indirect& value) {
+[[nodiscard]] encode_result<void>
+write_indirect(std::string& output, const Indirect& value, const std::size_t depth) {
   if (value.valueless_after_move()) {
     return encode_fail("is a std::indirect left valueless by a move");
   }
-  return write_value<typename Indirect::value_type, Spelling>(output, *value);
+  return write_value<typename Indirect::value_type, Spelling>(output, *value, depth);
 }
 
 template <typename Type, spelling Spelling>
-encode_result<void> write_value(std::string& output, const Type& value) {
+encode_result<void> write_value(std::string& output, const Type& value,
+                                const std::size_t depth) {
   constexpr auto kind = kind_of(^^Type);
   if constexpr (kind == value_kind::boolean) {
     output.append(value ? "true" : "false");
@@ -250,15 +271,15 @@ encode_result<void> write_value(std::string& output, const Type& value) {
       output.append("null");
       return {};
     }
-    return write_value<typename Type::value_type, Spelling>(output, *value);
+    return write_value<typename Type::value_type, Spelling>(output, *value, depth);
   } else if constexpr (kind == value_kind::indirect) {
-    return write_indirect<Spelling>(output, value);
+    return write_indirect<Spelling>(output, value, depth);
   } else if constexpr (kind == value_kind::vector || kind == value_kind::array) {
-    return write_sequence<Spelling>(output, value);
+    return write_sequence<Spelling>(output, value, depth);
   } else if constexpr (kind == value_kind::variant) {
-    return write_variant<Spelling>(output, value);
+    return write_variant<Spelling>(output, value, depth);
   } else {
-    return write_object<Type, false, Spelling>(output, value);
+    return write_object<Type, false, Spelling>(output, value, depth);
   }
 }
 
@@ -273,7 +294,7 @@ encode_result<void> write_value(std::string& output, const Type& value) {
 template <typename Type, spelling Spelling = spelling::verbatim>
 [[nodiscard]] Result<Json> encode_value(const Type& value) {
   std::string output{};
-  if (auto status = write_value<std::remove_cvref_t<Type>, Spelling>(output, value);
+  if (auto status = write_value<std::remove_cvref_t<Type>, Spelling>(output, value, 0);
       !status) {
     return std::unexpected(encode_failure_error(std::move(status.error())));
   }
@@ -282,11 +303,11 @@ template <typename Type, spelling Spelling = spelling::verbatim>
 
 // The check every encoding ends with. It builds no document, so a host can
 // still bound an oversized tool result before paying for a canonicalizing parse.
-// The writer escapes every control character, rejects non-finite numbers, and
-// checks spliced Json payloads itself, so its text can fail here only by nesting
-// too deep or by holding a string, key, or tag that is not valid UTF-8. Both
-// failures are host-only diagnostics: the value is the program's own, not the
-// model's.
+// The writer escapes every control character, rejects non-finite numbers, checks
+// each spliced Json payload, and bounds its own nesting, so its text can fail
+// here only by a payload that nests too deep within what encloses it, or by
+// holding a string, key, or tag that is not valid UTF-8. Both failures are
+// host-only diagnostics: the value is the program's own, not the model's.
 [[nodiscard]] inline Result<Json> validate_encoded_json(Json&& json) {
   switch (check_json(json.text)) {
   case json_validity::valid:

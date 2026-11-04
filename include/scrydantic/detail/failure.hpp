@@ -79,6 +79,27 @@ enum class decode_failure : std::uint8_t {
 
 template <typename Type> using decode_result = std::expected<Type, decode_failure>;
 
+// A failed decode_result of `Type`, built with std::unexpect rather than
+// converted from a std::unexpected. libstdc++ 16's converting constructor of
+// std::expected asks whether `Type` is constructible from its argument before it
+// rules out a std::unexpected. For an aggregate whose first member is
+// std::optional<std::indirect<Self>>, that question asks itself, through the
+// constraints of the forwarding constructors of std::optional and std::indirect,
+// which is a hard error. A variant with such an alternative asks it too, through
+// the copy-list-initialization that selects its converting constructor's
+// alternative. Aggregates are therefore read in place, reporting through the
+// cursor, and read_in_place() builds every failed result of one with this, as
+// the variant reader builds its own. The readers of optionals and indirects
+// build their results with transform(), and the decode entry points with
+// transform_error() and and_then(), which use std::unexpect themselves. The
+// other readers return fail()'s result, which cannot ask the question: a scalar
+// or a string has no first member, std::vector has no forwarding constructor,
+// and a std::array copy-initializes its element, which does not
+// aggregate-initialize.
+template <typename Type> [[nodiscard]] decode_result<Type> decode_failed() {
+  return decode_result<Type>{std::unexpect, decode_failure::reported};
+}
+
 // Where the decoder is: the path from the root to the value being read, and the
 // report its issues go to. Each cursor lives in the call that descends through
 // its step and points at its parent's, so the path is a chain through the

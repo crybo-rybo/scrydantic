@@ -418,7 +418,16 @@ consteval std::string arguments_problem(const std::meta::info function,
       return "has " + label + ": " + reason;
     }
   }
-  return {};
+  // Each parameter passed the check alone, as its own schema's root. In the
+  // synthesized object a recursive parameter type is a definition instead, and
+  // all the parameters' definitions share one $defs, so their names are checked
+  // together.
+  std::vector<schema_node> held{};
+  for (const auto value : values) {
+    append_held_nodes(held, std::meta::type_of(value));
+  }
+  const auto reason = definition_names_problem(recursive_nodes(std::move(held), {}));
+  return reason.empty() ? std::string{} : "has, among its parameters, " + reason;
 }
 
 // Why a function cannot be bound as a tool, prefixed with its name; empty when

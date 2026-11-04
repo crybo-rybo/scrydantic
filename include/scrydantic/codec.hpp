@@ -59,7 +59,9 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
   constexpr std::string_view problem = detail::decodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
   if constexpr (!problem.empty()) {
-    return std::unexpected(Error{});
+    // Built with std::unexpect, as detail::decode_failed() explains, so that a
+    // rejected type of that shape prints the static_assert and nothing more.
+    return Result<Type>{std::unexpect};
   } else {
     return detail::decode<Type>(view);
   }
@@ -74,11 +76,13 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 /// @param json JSON text to parse and decode.
 /// @return The decoded value, or the parse or decode failure.
 template <typename Type> [[nodiscard]] Result<Type> decode(const Json& json) {
-  auto parsed = JsonView::parse(json);
-  if (!parsed) {
-    return std::unexpected(detail::invalid_json_error("JSON text is not valid JSON"));
-  }
-  return decode<Type>(*parsed);
+  // Composed from std::expected's monadic operations, which build their failure
+  // with std::unexpect: see detail::decode_failed().
+  return JsonView::parse(json)
+      .transform_error([](const Error&) {
+        return detail::invalid_json_error("JSON text is not valid JSON");
+      })
+      .and_then([](const JsonView& view) { return decode<Type>(view); });
 }
 
 } // namespace scrydantic

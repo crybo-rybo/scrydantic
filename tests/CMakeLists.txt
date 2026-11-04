@@ -231,6 +231,36 @@ scrydantic_add_compile_fail_test(
   "does not satisfy scrydantic::Encodable: Limits has members limit and max_tokens that both map to the JSON key"
 )
 scrydantic_add_compile_fail_test(
+  endless-recursion
+  endless_recursion.cpp
+  "Node::next: Node contains itself through no std::optional, std::vector, or variant alternative after the first, so default-constructing it, as decoding does, never ends"
+)
+scrydantic_add_compile_fail_test(
+  definition-name-collision
+  definition_name_collision.cpp
+  "Tallies has the recursive types Tally<long long int> and Tally<long int>, which both map to the schema definition name \"Tally-int64\""
+)
+scrydantic_add_compile_fail_test(
+  local-definition
+  local_definition.cpp
+  "outline_schema()::Report has the recursive type outline_schema()::Outline, which no schema definition name can spell: outline_schema()::Outline is local to a function; declare it in a namespace"
+)
+scrydantic_add_compile_fail_test(
+  non-ascii-definition
+  non_ascii_definition.cpp
+  "Sizes has the recursive type Größe, which no schema definition name can spell: Größe has a name that is not ASCII letters, digits, and '_'"
+)
+scrydantic_add_compile_fail_test(
+  unspelled-definition-argument
+  unspelled_definition_argument.cpp
+  "Pointed has the recursive type Tagged<int*>, which no schema definition name can spell: int* is not a type that a definition name spells"
+)
+scrydantic_add_compile_fail_test(
+  tool-parameter-definitions
+  tool_parameter_definitions.cpp
+  "tally_tools::compare has, among its parameters, the recursive types Tally<long long int> and Tally<long int>, which both map to the schema definition name \"Tally-int64\""
+)
+scrydantic_add_compile_fail_test(
   bind-misplaced-tool
   bind_misplaced_tool.cpp
   "scrydantic::bind<^^lamp_tools>(): lamp_tools::brightness carries scrydantic::tool, which applies to functions"

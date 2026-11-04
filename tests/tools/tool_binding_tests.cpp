@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <string_view>
@@ -74,6 +75,52 @@ struct Note {
 
 } // namespace bad_text_tools
 
+namespace outline_tools {
+
+// The optional member comes first, so decoding a Step as a whole argument object
+// is the case that read_in_place() and decode_failed() exist for.
+struct Step {
+  std::optional<std::indirect<Step>> next;
+  std::string text;
+};
+
+struct Section {
+  std::vector<Section> sections;
+  std::string title;
+};
+
+[[= scrydantic::tool{"Count the steps of a plan"}]] inline std::int32_t
+    count_steps(Step first) {
+  std::int32_t count = 1;
+  for (const Step* step = &first; step->next.has_value(); step = &**step->next) {
+    ++count;
+  }
+  return count;
+}
+
+[[= scrydantic::tool{"Nest a section under a new title"}]] inline Section
+    nest(Section section, std::string title) {
+  return Section{.sections = {std::move(section)}, .title = std::move(title)};
+}
+
+} // namespace outline_tools
+
+namespace tally_tools {
+
+template <typename Integer> struct Tally {
+  std::vector<Tally> parts;
+  Integer count{};
+};
+
+// Each parameter has a schema alone, but the synthesized argument object defines
+// both, and long and long long spell one name. Never bound.
+[[= scrydantic::tool{"Compare two tallies"}]] inline bool
+    compare(Tally<long> left, Tally<long long> right) {
+  return left.count == right.count;
+}
+
+} // namespace tally_tools
+
 namespace {
 
 class Counter {
@@ -115,6 +162,14 @@ static_assert(scrydantic::Toolbox<Counter, Session>);
 static_assert(scrydantic::Toolbox<Counter>);
 // bump is not const.
 static_assert(!scrydantic::Toolbox<const Counter, Session>);
+
+static_assert(
+    scrydantic::detail::entity_tools_diagnostic<^^tally_tools, void>(
+        "scrydantic::bind") ==
+    "scrydantic::bind<^^tally_tools>(): tally_tools::compare has, among its "
+    "parameters, the recursive types tally_tools::Tally<long long int> and "
+    "tally_tools::Tally<long int>, which both map to the schema definition name "
+    "\"tally_tools.Tally-int64\"");
 
 TEST_CASE("a namespace binds its tools in declaration order") {
   auto tools = scrydantic::bind<^^grid_tools>();
@@ -251,6 +306,34 @@ TEST_CASE("bound handlers pass well-formed multi-byte text through") {
   const auto result = handler(json(R"({"x":0,"y":0})"));
   REQUIRE(result);
   CHECK(result->text == "\"caf\xc3\xa9\"");
+}
+
+TEST_CASE("recursive arguments bind as a whole object and as a parameter") {
+  auto tools = scrydantic::bind<^^outline_tools>();
+  REQUIRE(names_of(tools) == std::vector<std::string>{"count_steps", "nest"});
+  CHECK(tools[0].input_schema.text == scrydantic::input_schema_v<outline_tools::Step>);
+  CHECK(tools[1].input_schema.text ==
+        R"({"$defs":{"outline_tools.Section":{"additionalProperties":false,)"
+        R"("properties":{"sections":{"items":{"$ref":"#/$defs/outline_tools.Section"},)"
+        R"("type":"array"},"title":{"type":"string"}},"required":["sections","title"],)"
+        R"("type":"object"}},"additionalProperties":false,"properties":{"section":)"
+        R"({"$ref":"#/$defs/outline_tools.Section"},"title":{"type":"string"}},)"
+        R"("required":["section","title"],"type":"object"})");
+
+  const auto counted = tools[0].invoke(
+      json(R"({"next":{"next":{"next":null,"text":"c"},"text":"b"},"text":"a"})"));
+  REQUIRE(counted);
+  CHECK(counted->text == "3");
+  const auto missing =
+      tools[0].invoke(json(R"({"next":{"next":{"text":"c"},"text":"b"},"text":"a"})"));
+  REQUIRE_FALSE(missing);
+  CHECK(missing.error().model_message == "$.next.next.next is a required member");
+
+  const auto nested = tools[1].invoke(
+      json(R"({"section":{"sections":[],"title":"inner"},"title":"outer"})"));
+  REQUIRE(nested);
+  CHECK(nested->text ==
+        R"({"sections":[{"sections":[],"title":"inner"}],"title":"outer"})");
 }
 
 TEST_CASE("one function binds alone") {
