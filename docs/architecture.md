@@ -39,6 +39,7 @@ operations in `detail/json_text.hpp`. The document type remains private in
 | `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown` (plain C++23 types) |
 | `codec.hpp` | `encode()`, `encode_verbatim()`, and `decode()`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
 | `tools.hpp` | `bind()`, `bind_handler()`, `describe()`, `tools_of()`, `toolbox_tools_of()`, `Toolbox` |
+| `diagnostics.hpp` | The reason text behind each check: `supported_value_diagnostic()`, `encodable_diagnostic()`, `decodable_diagnostic()`, `tool_arguments_diagnostic()`, `tool_handler_diagnostic()`, `toolbox_diagnostic()`, and `tools_diagnostic()` |
 | `detail/model.hpp` | The reflected type model: `kind_of`, annotations, field layouts, and static text |
 | `detail/meta.hpp` | The value families, their diagnostics, and the handler rules |
 | `detail/schema.hpp` | The consteval schema generator |
@@ -59,7 +60,10 @@ returns why the type is outside a family: `SupportedValue`, `Encodable`,
 family. Each entry point puts that text in a `static_assert`, and then uses
 `if constexpr` to skip the body. As a result, a rejected type produces one
 diagnostic that names the member path and the reason, not a cascade of errors.
-The concepts are the SFINAE-friendly form of the same checks.
+The concepts are the SFINAE-friendly form of the same checks, and
+`diagnostics.hpp` gives the text itself. A library that wraps an entry point
+uses that text to reject a type at its own call site in the same way. Only
+whether the text is empty is part of the API; its wording is not.
 
 **Schemas** are consteval strings in `define_static_string` storage.
 `schema_v<T>` and `input_schema_v<T>` are constant expressions.

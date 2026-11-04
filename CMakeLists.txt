@@ -135,6 +135,7 @@ set(
   SCRYDANTIC_PUBLIC_HEADERS
   include/scrydantic/annotations.hpp
   include/scrydantic/codec.hpp
+  include/scrydantic/diagnostics.hpp
   include/scrydantic/detail/binding.hpp
   include/scrydantic/detail/decode.hpp
   include/scrydantic/detail/encode.hpp

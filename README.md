@@ -69,6 +69,11 @@ handler. `describe()` supplies compile-time contracts without handlers.
 of tool binding. Fallible operations use `scrydantic::Result<T>` or `Status`;
 a tool can refuse a call with `scrydantic::tool_error()`.
 
+A library that builds on Scrydantic can give its own users the same
+compile-time errors: each concept, such as `Encodable`, has a function in
+`<scrydantic/diagnostics.hpp>`, such as `encodable_diagnostic<T>()`, that
+returns why a type fails the check, or an empty string when it passes.
+
 See [the MCP tools example](examples/mcp_tools.cpp) for an MCP-style
 tool listing and calls; the example is not a complete MCP server.
 [docs/architecture.md](docs/architecture.md) describes the design and its open

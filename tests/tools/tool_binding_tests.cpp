@@ -3,6 +3,7 @@
 // context of the caller's choosing.
 
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <scrydantic/scrydantic.hpp>
@@ -115,6 +116,59 @@ static_assert(scrydantic::Toolbox<Counter, Session>);
 static_assert(scrydantic::Toolbox<Counter>);
 // bump is not const.
 static_assert(!scrydantic::Toolbox<const Counter, Session>);
+
+// ---- Diagnostics -------------------------------------------------------------
+
+namespace {
+
+// Index-based rather than string_view::find: under AddressSanitizer GCC 16 cannot
+// constant-fold find's null check on an interior pointer of a static string.
+[[nodiscard]] consteval bool mentions(const std::string_view text,
+                                      const std::string_view fragment) {
+  for (std::size_t start = 0; start + fragment.size() <= text.size(); ++start) {
+    bool matched = true;
+    for (std::size_t index = 0; index < fragment.size() && matched; ++index) {
+      matched = text[start + index] == fragment[index];
+    }
+    if (matched) {
+      return true;
+    }
+  }
+  return false;
+}
+
+struct Area {
+  int operator()(const Position& position) const { return position.x * position.y; }
+};
+
+struct TakesText {
+  int operator()(const std::string& text) const {
+    return static_cast<int>(text.size());
+  }
+};
+
+} // namespace
+
+// Each diagnostic is empty exactly when its concept holds.
+static_assert(scrydantic::toolbox_diagnostic<Counter, Session>().empty());
+static_assert(mentions(scrydantic::toolbox_diagnostic<const Counter, Session>(),
+                       "does not satisfy scrydantic::Toolbox: "));
+static_assert(mentions(scrydantic::toolbox_diagnostic<const Counter, Session>(),
+                       "bump"));
+static_assert(scrydantic::tool_handler_diagnostic<Area, Position>().empty());
+static_assert(mentions(scrydantic::tool_handler_diagnostic<TakesText, Position>(),
+                       "is not invocable as"));
+// An argument type that is not ToolArguments is the reason, as for the concept.
+static_assert(!scrydantic::ToolHandlerFor<TakesText, std::string>);
+static_assert(mentions(scrydantic::tool_handler_diagnostic<TakesText, std::string>(),
+                       "does not satisfy scrydantic::ToolArguments: "));
+static_assert(scrydantic::tools_diagnostic<^^grid_tools>().empty());
+static_assert(scrydantic::tools_diagnostic<^^session_tools, Session>().empty());
+// A function without a tool annotation does not bind, and the text names the
+// call the user wrote.
+static_assert(mentions(scrydantic::tools_diagnostic<^^json>(), "scrydantic::bind<^^"));
+static_assert(mentions(scrydantic::tools_diagnostic<^^json>("mylib::add"),
+                       "mylib::add<^^"));
 
 TEST_CASE("a namespace binds its tools in declaration order") {
   auto tools = scrydantic::bind<^^grid_tools>();

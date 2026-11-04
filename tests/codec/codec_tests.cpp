@@ -10,6 +10,7 @@
 #include <random>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
+#include <scrydantic/diagnostics.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
@@ -316,55 +317,66 @@ namespace {
 
 } // namespace
 
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Outer>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Outer>(),
                        "does not satisfy scrydantic::SupportedValue: "));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Outer>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Outer>(),
                        "Outer::nested.letters[]: wchar_t is a character type"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<HoldsBad>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsBad>(),
                        "HoldsBad::items[]<"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<HoldsBad>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsBad>(),
                        "BadAlternative>.letter: char is a character type"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<std::variant<Unannotated>>(),
+    mentions(scrydantic::supported_value_diagnostic<std::variant<Unannotated>>(),
              "without a scrydantic::tag annotation"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<std::variant<Left, int>>(),
+    mentions(scrydantic::supported_value_diagnostic<std::variant<Left, int>>(),
              "has the alternative int, which is not a plain aggregate"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<std::variant<Left, AlsoLeft>>(),
+    mentions(scrydantic::supported_value_diagnostic<std::variant<Left, AlsoLeft>>(),
              "that share the tag \"left\""));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<std::variant<TypedAlternative>>(),
+    mentions(scrydantic::supported_value_diagnostic<std::variant<TypedAlternative>>(),
              "TypedAlternative::kind: has the JSON key \"type\""));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Colliding>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Colliding>(),
                        "has members first and second that both map to the JSON key "
                        "\"key\""));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<MisplacedSkip>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<MisplacedSkip>(),
                        "MisplacedSkip::value: is not a std::optional"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<HoldsView>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsView>(),
                        "HoldsView::text: "));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<HoldsView>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsView>(),
                        " is encode-only borrowed text; decoding and schemas take "
                        "std::string"));
-static_assert(mentions(scrydantic::detail::decodable_diagnostic<ConstView>(),
+static_assert(mentions(scrydantic::decodable_diagnostic<ConstView>(),
                        "ConstView::value: is a const member"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Document>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Document>(),
                        "scrydantic::Json is raw JSON, which has no schema"));
-static_assert(mentions(scrydantic::detail::tool_arguments_diagnostic<Shape>(),
+static_assert(mentions(scrydantic::tool_arguments_diagnostic<Shape>(),
                        "is not a plain aggregate; tool arguments decode from one "
                        "JSON object"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Bytes>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Bytes>(),
                        "Bytes::data[]: unsigned char is a character type, as "
                        "std::int8_t and std::uint8_t are; use std::int16_t or "
                        "std::uint16_t for a number"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Flags>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Flags>(),
                        "Flags::flags: std::vector<bool> is std::vector<bool>, whose "
                        "elements are not addressable; use std::vector<std::uint16_t>, "
                        "or std::array<bool, N> for a fixed size"));
 // Each replacement the diagnostics suggest is itself supported.
 static_assert(scrydantic::SupportedValue<Words>);
 static_assert(scrydantic::SupportedValue<FlagsFixed>);
-static_assert(scrydantic::detail::supported_diagnostic<Drawing>().empty());
+static_assert(scrydantic::supported_value_diagnostic<Drawing>().empty());
+// Each family's diagnostic agrees with its concept, and an entry point's
+// diagnostic is the one the concept's diagnostic gives.
+static_assert(scrydantic::encodable_diagnostic<BorrowedRequest>().empty());
+static_assert(mentions(scrydantic::encodable_diagnostic<Bytes>(),
+                       "does not satisfy scrydantic::Encodable: "));
+static_assert(scrydantic::decodable_diagnostic<Payload>().empty());
+static_assert(mentions(scrydantic::decodable_diagnostic<const Payload>(),
+                       "is cv-qualified or a reference"));
+static_assert(scrydantic::tool_arguments_diagnostic<Drawing>().empty());
+static_assert(scrydantic::encodable_diagnostic<Bytes>() ==
+              scrydantic::detail::encodable_diagnostic<Bytes>());
 
 // ---- Schemas -----------------------------------------------------------------
 
