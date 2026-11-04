@@ -11,7 +11,6 @@
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
 #include <scrydantic/detail/encode.hpp>
-#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
@@ -731,7 +730,7 @@ TEST_CASE("encode() canonicalizes spliced payloads as a whole-text pass would") 
        }) {
     INFO(payload);
     const Payload value{.body = {.text = std::string{payload}}};
-    if (!scrydantic::detail::validate_json(payload)) {
+    if (!scrydantic::is_valid_json(payload)) {
       CHECK_FALSE(scrydantic::encode(value));
       continue;
     }

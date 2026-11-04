@@ -14,8 +14,9 @@ namespace scrydantic {
 ///
 /// Constructing this value does not parse or validate its text. Each consuming
 /// operation validates the JSON and reports its own documented error. Use
-/// JsonView to read one, JsonView::to_json() for its canonical form, and
-/// escape_json_string() to quote strings for hand-built JSON.
+/// JsonView to read one, JsonView::to_json() for its canonical form,
+/// is_valid_json() to check one without parsing it into a document, and
+/// escape_json_string() and format_json_number() for hand-built JSON.
 struct Json {
   /// UTF-8 JSON text.
   std::string text{};
@@ -126,5 +127,30 @@ private:
 /// @param value Raw UTF-8 text. Non-ASCII bytes pass through unescaped.
 /// @return The value as a quoted JSON string with every required escape applied.
 [[nodiscard]] std::string escape_json_string(std::string_view value);
+
+/// Spells a double as Scrydantic's canonical JSON spells it, for hosts that
+/// assemble small JSON results by hand.
+///
+/// The text is the one JsonView::to_json() and encode() write: the shortest
+/// digits that read back as the value, positional for decimal exponents from -4
+/// to 15 and otherwise in exponent form with an uppercase `E`, such as `1`, `-0`,
+/// `0.0001`, `1E-7`, and `1.5E300`. JSON cannot spell a non-finite number, so
+/// infinities and NaN are written as `null`, as JavaScript's JSON.stringify()
+/// writes them. Integers need no special form: their decimal digits are already
+/// canonical.
+/// @param value Number to spell.
+/// @return The number as JSON text.
+[[nodiscard]] std::string format_json_number(double value);
+
+/// Checks that text is exactly one JSON value, without building a document.
+///
+/// The check is one pass that allocates nothing, and it accepts exactly the text
+/// JsonView::parse() accepts: strict RFC 8259 JSON in valid UTF-8, nested at most
+/// 256 arrays and objects deep, with nothing but whitespace around the value.
+/// Use it to check a Json before storing or forwarding it when nothing needs to
+/// read the value.
+/// @param text Text to check.
+/// @return Whether JsonView::parse() would accept the text.
+[[nodiscard]] bool is_valid_json(std::string_view text) noexcept;
 
 } // namespace scrydantic

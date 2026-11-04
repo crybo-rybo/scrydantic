@@ -35,7 +35,7 @@ operations in `detail/json_text.hpp`. The document type remains private in
 |---|---|
 | `scrydantic.hpp` | An umbrella header that includes every other public header |
 | `error.hpp` | `Error { message, model_message }`, `Result<T>`, `Status`, `tool_error()` |
-| `json.hpp` | `Json`, `JsonKind`, `JsonView`, `escape_json_string()` |
+| `json.hpp` | `Json`, `JsonKind`, `JsonView`, `is_valid_json()`, `escape_json_string()`, `format_json_number()` |
 | `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown` (plain C++23 types) |
 | `codec.hpp` | `encode()` and `decode()`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
 | `tools.hpp` | `bind()`, `bind_handler()`, `describe()`, `tools_of()`, `toolbox_tools_of()`, `Toolbox` |
@@ -44,7 +44,7 @@ operations in `detail/json_text.hpp`. The document type remains private in
 | `detail/schema.hpp` | The consteval schema generator |
 | `detail/decode.hpp`, `detail/encode.hpp`, `detail/failure.hpp` | The codec and its failure paths |
 | `detail/tools.hpp`, `detail/binding.hpp` | Tool discovery and diagnostics, and handler generation |
-| `detail/json_text.hpp`, `detail/json_string.hpp` | The core operations the codec calls (validate, canonicalize, spell a number) and the codec's string escaping |
+| `detail/json_text.hpp`, `detail/json_string.hpp` | The core operations the codec calls besides `is_valid_json()` (check with a reason, canonicalize, append a number) and the codec's string escaping |
 
 ## The codec
 
@@ -191,7 +191,7 @@ are the baseline for changes to the hot paths:
 
 | Operation | Time per 25 KB document (one machine) |
 |---|---|
-| `validate_json` | about 20 µs |
+| `is_valid_json` | about 20 µs |
 | `JsonView::parse` | about 80 µs |
 | `encode()` | about 75 µs (151 µs before the canonical writer) |
 | `decode()` from a parsed view | about 70 µs |

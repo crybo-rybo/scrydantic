@@ -16,7 +16,6 @@
 #include <cstdint>
 #include <optional>
 #include <scrydantic/detail/encode.hpp>
-#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <variant>
@@ -124,7 +123,7 @@ constexpr std::size_t message_count = 100;
 TEST_CASE("JSON core", "[json]") {
   const auto& text = conversation_text();
   BENCHMARK("JsonView::parse") { return scrydantic::JsonView::parse(text); };
-  BENCHMARK("validate_json") { return scrydantic::detail::validate_json(text.text); };
+  BENCHMARK("is_valid_json") { return scrydantic::is_valid_json(text.text); };
   BENCHMARK("JsonView::parse and to_json") {
     return scrydantic::JsonView::parse(text)->to_json();
   };
