@@ -35,7 +35,7 @@ scripts/coverage.sh             # line coverage of the library by its tests
 [CONTRIBUTING.md](CONTRIBUTING.md) describes the presets, every check and its
 thresholds, the test layout, and the benchmarks.
 
-## Use the installed package
+## Use the package
 
 Add the installation prefix to `CMAKE_PREFIX_PATH`, then:
 
@@ -43,6 +43,22 @@ Add the installation prefix to `CMAKE_PREFIX_PATH`, then:
 find_package(scrydantic 0.1 CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE scrydantic::scrydantic)
 ```
+
+Or build Scrydantic as part of your project from a release tag:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+  scrydantic
+  GIT_REPOSITORY https://github.com/crybo-rybo/scrydantic.git
+  GIT_TAG v0.1.0
+)
+FetchContent_MakeAvailable(scrydantic)
+target_link_libraries(my_app PRIVATE scrydantic::scrydantic)
+```
+
+As a subproject, Scrydantic builds no tests or examples, and it does not turn
+its warnings into errors.
 
 The target enables C++26 and reflection and links the compiled JSON core.
 `scrydantic::json` exposes only that C++23 core without enabling reflection.
@@ -73,6 +89,16 @@ See [the MCP tools example](examples/mcp_tools.cpp) for an MCP-style
 tool listing and calls; the example is not a complete MCP server.
 [docs/architecture.md](docs/architecture.md) describes the design and its open
 questions.
+
+## Versioning
+
+Scrydantic follows [Semantic Versioning](https://semver.org/). Before 1.0, a
+minor release may break the public API; headers under `scrydantic/detail/` may
+change in any release. `<scrydantic/version.hpp>` defines
+`SCRYDANTIC_VERSION_MAJOR`, `_MINOR`, `_PATCH`, `SCRYDANTIC_VERSION`
+(`major * 10000 + minor * 100 + patch`), and `SCRYDANTIC_VERSION_STRING`.
+[CHANGELOG.md](CHANGELOG.md) lists the changes in each release, and
+[SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 ## License
 
