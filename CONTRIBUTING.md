@@ -96,8 +96,8 @@ case:
 - **A new rejection** needs a `scrydantic_add_compile_fail_test()` in
   `tests/CMakeLists.txt`, with a substring of the diagnostic that names the
   type, member, or function and the reason. Also add `static_assert`s on the
-  `detail::*_diagnostic` text for the rejection, as `tests/codec/codec_tests.cpp`
-  does.
+  text that the matching function in `diagnostics.hpp` gives for the
+  rejection, as `tests/codec/codec_tests.cpp` does.
 - **A change to what the parser accepts or writes** needs an update to the
   golden fixtures. See [tests/fixtures/json/README.md](tests/fixtures/json/README.md)
   for how to update them.

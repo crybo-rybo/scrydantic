@@ -3,8 +3,10 @@
 // context of the caller's choosing.
 
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <scrydantic/detail/binding.hpp>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <string_view>
@@ -115,6 +117,59 @@ static_assert(scrydantic::Toolbox<Counter, Session>);
 static_assert(scrydantic::Toolbox<Counter>);
 // bump is not const.
 static_assert(!scrydantic::Toolbox<const Counter, Session>);
+
+// ---- Diagnostics -------------------------------------------------------------
+
+namespace {
+
+// Index-based rather than string_view::find: under AddressSanitizer GCC 16 cannot
+// constant-fold find's null check on an interior pointer of a static string.
+[[nodiscard]] consteval bool mentions(const std::string_view text,
+                                      const std::string_view fragment) {
+  for (std::size_t start = 0; start + fragment.size() <= text.size(); ++start) {
+    bool matched = true;
+    for (std::size_t index = 0; index < fragment.size() && matched; ++index) {
+      matched = text[start + index] == fragment[index];
+    }
+    if (matched) {
+      return true;
+    }
+  }
+  return false;
+}
+
+struct Area {
+  int operator()(const Position& position) const { return position.x * position.y; }
+};
+
+struct TakesText {
+  int operator()(const std::string& text) const {
+    return static_cast<int>(text.size());
+  }
+};
+
+} // namespace
+
+// Each diagnostic is empty exactly when its concept holds.
+static_assert(scrydantic::toolbox_diagnostic<Counter, Session>().empty());
+static_assert(mentions(scrydantic::toolbox_diagnostic<const Counter, Session>(),
+                       "does not satisfy scrydantic::Toolbox: "));
+static_assert(mentions(scrydantic::toolbox_diagnostic<const Counter, Session>(),
+                       "bump"));
+static_assert(scrydantic::tool_handler_diagnostic<Area, Position>().empty());
+static_assert(mentions(scrydantic::tool_handler_diagnostic<TakesText, Position>(),
+                       "is not invocable as"));
+// An argument type that is not ToolArguments is the reason, as for the concept.
+static_assert(!scrydantic::ToolHandlerFor<TakesText, std::string>);
+static_assert(mentions(scrydantic::tool_handler_diagnostic<TakesText, std::string>(),
+                       "does not satisfy scrydantic::ToolArguments: "));
+static_assert(scrydantic::tools_diagnostic<^^grid_tools>().empty());
+static_assert(scrydantic::tools_diagnostic<^^session_tools, Session>().empty());
+// A function without a tool annotation does not bind, and the text names the
+// call the user wrote.
+static_assert(mentions(scrydantic::tools_diagnostic<^^json>(), "scrydantic::bind<^^"));
+static_assert(mentions(scrydantic::tools_diagnostic<^^json>("mylib::add"),
+                       "mylib::add<^^"));
 
 TEST_CASE("a namespace binds its tools in declaration order") {
   auto tools = scrydantic::bind<^^grid_tools>();
@@ -276,6 +331,81 @@ TEST_CASE("typed handlers bind with and without a context") {
   REQUIRE_FALSE(rejected);
   CHECK(rejected.error().model_message == "sign in first");
   CHECK(rejected.error().message == "sign in first");
+}
+
+// ---- Results -----------------------------------------------------------------
+
+namespace {
+
+// Copyable but not movable: the destructor suppresses the implicit move
+// constructor, and the class is still an aggregate. Each destruction is counted,
+// so a test sees every copy that encoding a result makes.
+struct CopyOnlyResult {
+  static inline int destructions = 0;
+  std::vector<int> values;
+
+  // NOLINTNEXTLINE(cppcoreguidelines-special-member-functions): the point.
+  ~CopyOnlyResult() { ++destructions; }
+};
+
+} // namespace
+
+TEST_CASE("a handler's result is encoded where it lands, without a copy") {
+  CopyOnlyResult::destructions = 0;
+  const auto run = [](auto body) {
+    auto handler = scrydantic::bind_handler<Position>(std::move(body));
+    return handler(json(R"({"x":0,"y":0})"));
+  };
+
+  scrydantic::Result<scrydantic::Json> result{};
+  SECTION("a bare value") {
+    result = run([](Position) { return CopyOnlyResult{.values = {1, 2, 3}}; });
+  }
+  SECTION("a Result") {
+    result = run([](Position) -> scrydantic::Result<CopyOnlyResult> {
+      return scrydantic::Result<CopyOnlyResult>{std::in_place,
+                                                std::vector<int>{1, 2, 3}};
+    });
+  }
+  REQUIRE(result);
+  CHECK(result->text == R"({"values":[1,2,3]})");
+  // The one value the handler returned, and no copy of it.
+  CHECK(CopyOnlyResult::destructions == 1);
+}
+
+TEST_CASE("encoding a named result reads it in place") {
+  CopyOnlyResult::destructions = 0;
+  SECTION("a bare value") {
+    const CopyOnlyResult value{.values = {1, 2, 3}};
+    const auto encoded = scrydantic::detail::encode_handler_result(value);
+    REQUIRE(encoded);
+    CHECK(encoded->text == R"({"values":[1,2,3]})");
+    CHECK(CopyOnlyResult::destructions == 0);
+  }
+  SECTION("a Result passed as an rvalue") {
+    scrydantic::Result<CopyOnlyResult> value{std::in_place, std::vector<int>{1, 2, 3}};
+    const auto encoded = scrydantic::detail::encode_handler_result(std::move(value));
+    REQUIRE(encoded);
+    CHECK(encoded->text == R"({"values":[1,2,3]})");
+    CHECK(CopyOnlyResult::destructions == 0);
+  }
+  CHECK(CopyOnlyResult::destructions == 1);
+}
+
+TEST_CASE("encoding a named failed Result leaves the caller's error in place") {
+  // Mutable, so that moving from the caller's error, rather than copying it,
+  // would empty the strings checked below.
+  scrydantic::Result<CopyOnlyResult> value = std::unexpected(scrydantic::Error{
+      .message = "application rejected arguments",
+      .model_message = "rejected",
+  });
+  const auto encoded = scrydantic::detail::encode_handler_result(value);
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message == "application rejected arguments");
+  CHECK(encoded.error().model_message == "rejected");
+  REQUIRE_FALSE(value);
+  CHECK(value.error().message == "application rejected arguments");
+  CHECK(value.error().model_message == "rejected");
 }
 
 TEST_CASE("descriptors describe tools at compile time without handlers") {

@@ -7,17 +7,11 @@
 #include <string_view>
 
 // The JSON core's text operations that the header-only reflected codec calls
-// across the compiled boundary. They are not part of the stable API. The
-// document type behind them stays inside src/json/document.hpp, which states what
-// is accepted and how canonical text is written; outside the core, parsed JSON is
-// read through the public JsonView.
+// across the compiled boundary, besides the public is_valid_json(). They are not part
+// of the stable API. The document type behind them stays inside src/json/document.hpp,
+// which states what is accepted and how canonical text is written; outside the core,
+// parsed JSON is read through the public JsonView.
 namespace scrydantic::detail {
-
-// Validates JSON text without materializing a document: one allocation-free pass
-// that accepts exactly what the parser accepts, rejecting malformed interiors,
-// truncation, trailing garbage, and a second document. Surrounding whitespace is
-// accepted, as any parser would.
-[[nodiscard]] bool validate_json(std::string_view input) noexcept;
 
 // The deepest nesting of arrays and objects the parser accepts, counting an
 // empty one.
@@ -31,7 +25,7 @@ enum class json_validity : std::uint8_t {
   invalid,
 };
 
-// validate_json() that also says why it rejects text, in the same single pass.
+// is_valid_json() that also says why it rejects text, in the same single pass.
 [[nodiscard]] json_validity check_json(std::string_view input) noexcept;
 
 // Appends the canonical form of `text` to `output`: object keys in lexical
@@ -40,7 +34,7 @@ enum class json_validity : std::uint8_t {
 // unchanged, when the text is not one JSON document.
 [[nodiscard]] bool append_canonical_json(std::string& output, std::string_view text);
 
-// Appends a double as the canonical writer spells it: the shortest round-trip
+// format_json_number(), appended to `output` in place: the shortest round-trip
 // digits, as std::to_chars writes them, but laid out positionally for decimal
 // exponents from -4 to 15 and otherwise as `1E-7`, where std::to_chars chooses by
 // length and writes `1e-07`. A non-finite value, which JSON cannot spell, is

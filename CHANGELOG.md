@@ -30,15 +30,23 @@ This is the first release.
     invalid UTF-8, unpaired surrogate escapes, and numbers that overflow or
     underflow. It also rejects a byte order mark, NUL bytes, and data after
     the value. For a duplicate object key, the last value is used.
-  - A validator that accepts the same input as the parser. The validator does
-    not allocate memory.
+  - `is_valid_json()` is a validator that accepts the same input as the
+    parser. The validator does not allocate memory.
   - A canonical writer. It writes no insignificant whitespace and sorts
     object keys by byte value. It writes only the string escapes that JSON
     requires, and the shortest number text that gives the same value.
-  - `Json`, `JsonKind`, `JsonView`, and `escape_json_string()`.
+  - `Json`, `JsonKind`, `JsonView`, `escape_json_string()`, and
+    `format_json_number()`. Use `escape_json_string()` and
+    `format_json_number()` to write strings and numbers as the canonical
+    writer does.
 - **Codec** (`scrydantic/codec.hpp`).
   - `encode()` writes a C++ value as canonical JSON. `decode<T>()` reads JSON
     into a C++ value. Each function returns `Result<T>`.
+  - `encode_verbatim()` writes each `Json` payload with its own bytes.
+    `encode()` writes each `Json` payload in canonical form.
+  - `keys_v<T>` gives the JSON keys of an object type, in the order that
+    `encode()` writes them. `tags_v<V>` gives the tags of a tagged variant, in
+    alternative order.
   - Supported types: `bool`, integers of 64 bits or less, `float`, `double`,
     `std::string`, `std::string_view` (encode only), enumerations,
     `std::optional`, `std::vector`, `std::array`, tagged `std::variant`,
@@ -66,6 +74,13 @@ This is the first release.
   - A tool can refuse a call with `tool_error()`.
   - Each translation unit gets the tool set that it sees, because the tool
     name, the description, and the parameter names are template arguments.
+- **Diagnostics** (`scrydantic/diagnostics.hpp`). Each concept has a function
+  that gives the reason that a type fails the check, or an empty string when
+  the type passes: `supported_value_diagnostic()`, `encodable_diagnostic()`,
+  `decodable_diagnostic()`, `tool_arguments_diagnostic()`,
+  `tool_handler_diagnostic()`, `toolbox_diagnostic()`, and
+  `tools_diagnostic()`. A library that uses Scrydantic can give the same
+  compile-time errors to its users.
 - **Errors** (`scrydantic/error.hpp`): `Error`, `Result<T>`, `Status`, and
   `tool_error()`. `Error::model_message` contains only text that the model
   already has.

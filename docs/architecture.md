@@ -35,24 +35,27 @@ operations in `detail/json_text.hpp`. The document type remains private in
 |---|---|
 | `scrydantic.hpp` | An umbrella header that includes every other public header |
 | `error.hpp` | `Error { message, model_message }`, `Result<T>`, `Status`, `tool_error()` |
-| `json.hpp` | `Json`, `JsonKind`, `JsonView`, `escape_json_string()` |
+| `json.hpp` | `Json`, `JsonKind`, `JsonView`, `is_valid_json()`, `escape_json_string()`, `format_json_number()` |
 | `version.hpp` | The version macros. CMake reads the project version from this header. |
 | `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown` (plain C++23 types) |
-| `codec.hpp` | `encode()` and `decode()`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
+| `codec.hpp` | `encode()`, `encode_verbatim()`, `decode()`, and the wire names of a type: `keys_v` and `tags_v`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
 | `tools.hpp` | `bind()`, `bind_handler()`, `describe()`, `tools_of()`, `toolbox_tools_of()`, `Toolbox` |
+| `diagnostics.hpp` | The reason text behind each check: `supported_value_diagnostic()`, `encodable_diagnostic()`, `decodable_diagnostic()`, `tool_arguments_diagnostic()`, `tool_handler_diagnostic()`, `toolbox_diagnostic()`, and `tools_diagnostic()` |
 | `detail/model.hpp` | The reflected type model: `kind_of`, annotations, field layouts, and static text |
 | `detail/meta.hpp` | The value families, their diagnostics, and the handler rules |
 | `detail/schema.hpp` | The consteval schema generator |
 | `detail/decode.hpp`, `detail/encode.hpp`, `detail/failure.hpp` | The codec and its failure paths |
 | `detail/tools.hpp`, `detail/binding.hpp` | Tool discovery and diagnostics, and handler generation |
-| `detail/json_text.hpp`, `detail/json_string.hpp` | The core operations the codec calls (validate, canonicalize, spell a number) and the codec's string escaping |
+| `detail/json_text.hpp`, `detail/json_string.hpp` | The core operations the codec calls besides `is_valid_json()` (check with a reason, canonicalize, append a number) and the codec's string escaping |
 
 ## The codec
 
 Every reflected operation asks the same type model, `detail/model.hpp`,
 questions about a type: its shape (`kind_of`), each member's JSON key, whether
 a member is required, and whether a member omits null. The schema, the encoder,
-and the decoder therefore cannot disagree about a type.
+and the decoder therefore cannot disagree about a type. `keys_v` and `tags_v`
+give a host the same keys and tags, so a check that the codec does not make,
+such as requiring a member that has a default, uses the codec's own names.
 
 **Family checks.** `value_checker` (in `detail/meta.hpp`) walks a type and
 returns why the type is outside a family: `SupportedValue`, `Encodable`,
@@ -60,7 +63,10 @@ returns why the type is outside a family: `SupportedValue`, `Encodable`,
 family. Each entry point puts that text in a `static_assert`, and then uses
 `if constexpr` to skip the body. As a result, a rejected type produces one
 diagnostic that names the member path and the reason, not a cascade of errors.
-The concepts are the SFINAE-friendly form of the same checks.
+The concepts are the SFINAE-friendly form of the same checks, and
+`diagnostics.hpp` gives the text itself. A library that wraps an entry point
+uses that text to reject a type at its own call site in the same way. Only
+whether the text is empty is part of the API; its wording is not.
 
 **Schemas** are consteval strings in `define_static_string` storage.
 `schema_v<T>` and `input_schema_v<T>` are constant expressions.
@@ -76,9 +82,10 @@ and spliced `Json` payloads. The `spelling` template argument makes this choice:
 
 - `verbatim` writes the shortest text that `std::to_chars` produces for a
   number, and splices a payload byte for byte after the writer checks that the
-  payload is JSON. Bound tool results use this spelling, so a host can bound
-  a result's size before paying for a canonicalizing parse. It is the default
-  of `detail::encode_value()`.
+  payload is JSON. `encode_verbatim()` and bound tool results use this
+  spelling. A payload keeps the exact text that it was stored with, including
+  numbers that neither a 64-bit integer nor a double holds exactly, and a host
+  can bound a result's size before paying for a canonicalizing parse.
 - `canonical` writes the text that canonicalizing the verbatim text would
   produce. `encode()` uses this spelling, followed by one validating pass that
   allocates nothing. Thus, `encode()` does not need to re-parse its own output.
@@ -192,7 +199,7 @@ are the baseline for changes to the hot paths:
 
 | Operation | Time per 25 KB document (one machine) |
 |---|---|
-| `validate_json` | about 20 µs |
+| `is_valid_json` | about 20 µs |
 | `JsonView::parse` | about 80 µs |
 | `encode()` | about 75 µs (151 µs before the canonical writer) |
 | `decode()` from a parsed view | about 70 µs |
