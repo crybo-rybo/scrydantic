@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # The release workflow (release.yml) runs every job here on the tag first.
+  workflow_call:
 
 permissions:
   contents: read
@@ -63,24 +65,34 @@ jobs:
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
-  # Install the package without tests or examples, then build and run a
-  # consumer that knows only find_package(scrydantic).
+  # Build and run a consumer that knows only find_package(scrydantic) against
+  # the installed package (without tests or examples), and the same consumer
+  # with Scrydantic as a subdirectory, as FetchContent adds it.
   package:
+    name: package (${{ matrix.mode }})
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [install, subdirectory]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-gcc16
       - name: Build and install
+        if: matrix.mode == 'install'
         run: |
           cmake -S . -B build/package -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=g++-16 \
             -DSCRYDANTIC_BUILD_TESTS=OFF -DSCRYDANTIC_BUILD_EXAMPLES=OFF
           cmake --build build/package
           cmake --install build/package --prefix "${RUNNER_TEMP}/stage"
+          echo "CONSUMER_ARGS=-DCMAKE_PREFIX_PATH=${RUNNER_TEMP}/stage" >> "${GITHUB_ENV}"
+      - name: Use the source tree
+        if: matrix.mode == 'subdirectory'
+        run: echo "CONSUMER_ARGS=-DSCRYDANTIC_SOURCE_DIR=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
       - name: Build and run the consumer
         run: |
           cmake -S tests/package -B build/consumer -G Ninja \
-            -DCMAKE_CXX_COMPILER=g++-16 \
-            -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/stage"
+            -DCMAKE_CXX_COMPILER=g++-16 "${CONSUMER_ARGS}"
           cmake --build build/consumer
           build/consumer/scrydantic_package_consumer

@@ -19,7 +19,7 @@ consequences are as follows:
 
 - clang-tidy can analyze the core (`scripts/lint.sh`).
 - A consumer that does not enable reflection can link the core.
-- The core's public headers (`error.hpp`, `json.hpp`, and
+- The core's public headers (`error.hpp`, `json.hpp`, `version.hpp`, and
   `detail/json_text.hpp`) are compiled as C++23 by the header checks.
   Reflection syntax in these headers therefore fails the build.
 - `src/json/core.hpp` makes the build fail if a core source is compiled with
@@ -36,6 +36,7 @@ operations in `detail/json_text.hpp`. The document type remains private in
 | `scrydantic.hpp` | An umbrella header that includes every other public header |
 | `error.hpp` | `Error { message, model_message }`, `Result<T>`, `Status`, `tool_error()` |
 | `json.hpp` | `Json`, `JsonKind`, `JsonView`, `is_valid_json()`, `escape_json_string()`, `format_json_number()` |
+| `version.hpp` | The version macros. CMake reads the project version from this header. |
 | `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown` (plain C++23 types) |
 | `codec.hpp` | `encode()`, `encode_verbatim()`, `decode()`, and the wire names of a type: `keys_v` and `tags_v`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
 | `tools.hpp` | `bind()`, `bind_handler()`, `describe()`, `tools_of()`, `toolbox_tools_of()`, `Toolbox` |
@@ -226,4 +227,3 @@ remains the only way to read a document.
   `schema_v<T, Dialect>` parameter is the natural extension point.
 - **Error categories.** `Error` has no kind. If users need to distinguish
   failures, a small `enum class` is the obvious addition.
-- **Package name.** Check `scrydantic` for name collisions before publishing.

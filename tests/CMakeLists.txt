@@ -56,13 +56,15 @@ scrydantic_add_header_checks(
 )
 
 # The JSON core's own tests, compiled as C++23 like the core itself. They reach
-# the document type behind JsonView through the private src/ headers.
+# the document type behind JsonView through the private src/ headers. The
+# version test is here too, because version.hpp is one of the core's headers.
 add_executable(
   scrydantic_json_tests
   json/json_entry_point_tests.cpp
   json/json_document_tests.cpp
   json/json_fixture_tests.cpp
   json/json_view_tests.cpp
+  version/version_tests.cpp
 )
 target_compile_features(scrydantic_json_tests PRIVATE cxx_std_23)
 target_include_directories(scrydantic_json_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -89,6 +91,7 @@ target_compile_definitions(
   PRIVATE
     "SCRYDANTIC_JSON_FIXTURE_DIR=\"${SCRYDANTIC_JSON_FIXTURE_DIR}\""
     "SCRYDANTIC_FUZZ_CORPUS_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus\""
+    "SCRYDANTIC_EXPECTED_VERSION=\"${PROJECT_VERSION}\""
 )
 target_link_libraries(
   scrydantic_json_tests
