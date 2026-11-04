@@ -3,9 +3,9 @@
 Scrydantic uses C++26 static reflection to generate JSON Schema, strictly
 encode and decode C++ values, and bind annotated C++ functions as tools that a
 model or any other JSON client can call. Declare plain structs and functions,
-annotate them, and get a schema, a strict decoder with path-based errors, a
-canonical encoder, and a type-erased handler, with no code generation step and
-no dependency beyond the standard library.
+annotate them, and get a schema, a strict decoder that reports every issue with
+its path, a canonical encoder, and a type-erased handler, with no code
+generation step and no dependency beyond the standard library.
 
 ## Build and test
 
@@ -67,7 +67,11 @@ int main() {
 handler. `describe()` supplies compile-time contracts without handlers.
 `encode()`, `decode<T>()`, and `input_schema_v<T>` also work independently
 of tool binding. Fallible operations use `scrydantic::Result<T>` or `Status`;
-a tool can refuse a call with `scrydantic::tool_error()`.
+a tool can refuse a call with `scrydantic::tool_error()`. A decode failure
+lists each issue that it found in `Error::issues`, with an `IssueKind` and a
+path, and its messages hold one line for each, such as
+`$.shapes[0].radius must be a number`. A bound tool returns those lines to the
+model in `model_message`.
 
 See [the MCP tools example](examples/mcp_tools.cpp) for an MCP-style
 tool listing and calls; the example is not a complete MCP server.

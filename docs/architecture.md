@@ -11,7 +11,7 @@ library.
 
 | Target | What it is | Language |
 |---|---|---|
-| `scrydantic::json` | A static library: the strict JSON parser, the allocation-free validator, the canonical writer, and `JsonView`. The sources are in `src/json/`. | C++23 without reflection |
+| `scrydantic::json` | A static library: the strict JSON parser, the allocation-free validator, the canonical writer, `JsonView`, and `json_path()`. The sources are in `src/json/`. | C++23 without reflection |
 | `scrydantic::scrydantic` | A header-only INTERFACE library that links `scrydantic::json`. It contains the reflected type model, the family checks, schema generation, the codec, and tool binding. | C++26 with `-freflection` |
 
 The JSON core parses untrusted bytes, so it stays plain C++23. The
@@ -34,7 +34,7 @@ operations in `detail/json_text.hpp`. The document type remains private in
 | Header | Contents |
 |---|---|
 | `scrydantic.hpp` | An umbrella header that includes every other public header |
-| `error.hpp` | `Error { message, model_message }`, `Result<T>`, `Status`, `tool_error()` |
+| `error.hpp` | `Error { message, model_message, issues }`, `Issue`, `IssueKind`, `PathSegment`, `json_path()`, `max_issues`, `Result<T>`, `Status`, `tool_error()` |
 | `json.hpp` | `Json`, `JsonKind`, `JsonView`, `escape_json_string()` |
 | `annotations.hpp` | `description`, `description_of`, `name`, `tag`, `tool`, `skip_null`, `emit_null`, `ignore_unknown` (plain C++23 types) |
 | `codec.hpp` | `encode()` and `decode()`. Through the detail headers, it also provides the concepts, `schema_v`, and `input_schema_v`. |
@@ -64,10 +64,15 @@ The concepts are the SFINAE-friendly form of the same checks.
 **Schemas** are consteval strings in `define_static_string` storage.
 `schema_v<T>` and `input_schema_v<T>` are constant expressions.
 
-**Decoding** reads a `JsonView`. A failure carries a path relative to the value
-that failed (`codec_failure`). The path grows at the front as the failure
-returns through each enclosing member or element. Thus, a successful decode
-does not build any path text.
+**Decoding** reads a `JsonView`, and a failure does not stop it. Each read
+function takes a `decode_cursor`, which holds the path to its value as a chain
+of cursors: one in each call that descends into a member or element, holding a
+key borrowed from `fields_v` or an index. A failure reports an `Issue` to the
+decode's `decode_report`, which copies the chain into an owned path, and the
+decoder goes on to the siblings of the value that failed. Thus, a successful
+decode builds no path and allocates nothing for one. The report keeps
+`max_issues` issues, and the first issue past them stops the decode, so the work
+that hostile input causes ends at its 65th issue.
 
 **Encoding** writes keys in canonical order and escapes strings in the
 canonical way. Only two parts of the output have a choice of spelling: numbers
@@ -115,14 +120,47 @@ layer passes the context as a reflection, with `^^void` meaning "no context".
 
 ## Errors
 
-`Error` carries `message` for the host and `model_message` for a model.
-`model_message` is set only when every word of it comes from text that the
-model already has. Strict decode failures use the words of the schema, so they
-set both to the same `<path> <reason>` text, such as
-`$.shapes[0].radius must be a number`. `tool_error()` sets `model_message` for
-a tool's own refusals. Encode failures describe the program's own values, so
-they carry only `message`. Scrydantic does not classify failures; the caller
-knows where the input came from.
+`Error` carries `message` for the host, `model_message` for a model, and
+`issues` for a program. `model_message` is set only when every word of it comes
+from text that the model already has. `tool_error()` sets it for a tool's own
+refusals.
+
+**Decode failures** list every issue that strict decoding found, in the order
+that it visits them: an object's unknown members in key order, then its
+declared members in declaration order, and an array's elements in index order.
+Each `Issue` has an `IssueKind`, a path from the decoded root as
+`PathSegment`s, and a reason in the words of the schema, such as
+`must be a number`. Both messages are the same text: one `<path> <reason>` line
+for each issue, such as `$.shapes[0].radius must be a number`, joined by
+newlines.
+
+A failure that leaves nothing to read inside a value is that value's only
+issue: a value of the wrong JSON type, a fixed-size array of the wrong length,
+and a tagged variant whose tag is missing or unknown, which chooses no
+alternative to check the object against. Text that is not JSON is one
+`invalid_json` issue at `$`, with messages that name the input:
+`JSON text is not valid JSON` from `decode()` and
+`tool arguments are not valid JSON` from a bound tool.
+
+A decode keeps at most `max_issues` (64) issues: more than a model or a person
+acts on at once, and few enough that hostile input cannot make a decode do much
+work or write much text. The first issue past them stops the decode, and both
+messages end with the line
+`further issues past the first 64 were not reported`. That line is text only,
+not an issue, so every `Issue` is a failure of the input.
+
+`json_path()` spells a path as JSONPath: `.key` for a key that is an ASCII
+identifier, `["key"]` with any other key as a JSON string literal, so that a
+key such as `a.b` cannot be read as two steps, and `[index]` for an element.
+
+**Encode failures** describe the program's own values, so they carry only
+`message`, and `issues` stays empty. Encoding stops at the first one: there is
+no input to correct, only a value to fix. Its path is collected as the failure
+returns through each enclosing member or element, and spelled by
+`json_path()`.
+
+`IssueKind` says what kind of failure each issue is. Whether the input came
+from a user, a model, or a peer is left to the caller, which knows.
 
 ## Boundaries
 
@@ -175,7 +213,19 @@ workaround is also commented where it is applied.
 - **`annotations_of` throws** for templates and namespace aliases.
   `annotations_or_none()` catches the exception.
 - **`return` and `break` work inside `template for`.** The codec uses them to
-  stop at the first match or the first failure.
+  stop at the first match, at an encode failure, or when a decode stops.
+- **`-Wshadow` and `template for`.** In a function that is not a template, GCC
+  warns that each expansion of a `template for` shadows the one before it. The
+  test helper `enumerator_name()` is a function template for this reason.
+- **Empty error types in `std::expected`.** At `-O2`, GCC warns
+  (`-Wmaybe-uninitialized`) that `std::expected` copies the byte of an empty
+  error type, which nothing writes. `decode_failure` is therefore an
+  enumeration, not an empty struct.
+- **Inlining and `std::variant`.** GCC does not inline a small function that
+  constructs a `std::variant` into a large caller, such as the unrolled
+  `read_object` of a class with many members. `decode_cursor` therefore keeps
+  its step as a key and an index, not as a variant; the calls cost 4% of a
+  decode.
 - **ADL.** In `scrydantic::detail`, an unqualified call whose name matches a
   public function that takes a Scrydantic type can also find the public
   overload. For example, `decode` finds `scrydantic::decode` through
@@ -217,6 +267,4 @@ remains the only way to read a document.
   consumers need another shape; OpenAI's strict structured outputs, for
   example, require every property to be in `required`. A
   `schema_v<T, Dialect>` parameter is the natural extension point.
-- **Error categories.** `Error` has no kind. If users need to distinguish
-  failures, a small `enum class` is the obvious addition.
 - **Package name.** Check `scrydantic` for name collisions before publishing.
