@@ -33,12 +33,15 @@ jobs:
       - run: ./scripts/format.sh --check
       - run: ./scripts/lint.sh
 
+  # No plain dev job: asan, tsan, and coverage each inherit the dev preset (a
+  # Debug build with libstdc++ assertions) and run every test, so a dev job
+  # would only repeat one of their builds without the instrumentation.
   test:
     name: test (${{ matrix.preset }})
     strategy:
       fail-fast: false
       matrix:
-        preset: [dev, release, asan, tsan]
+        preset: [release, asan, tsan]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
