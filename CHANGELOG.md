@@ -44,6 +44,44 @@ The entries use ASD-STE100 Simplified Technical English.
   not ASCII, or a template argument such as a pointer. The message gives the
   cause. The parameters of a tool share one `$defs`, so `bind()` checks their
   names together.
+- **Constraints** (`scrydantic/annotations.hpp`). Five annotations bound a
+  data member. `range` and `multiple_of` apply to integer and floating-point
+  members, `length` and `pattern` to `std::string` members, and `items` to
+  `std::vector` members. Each adds its JSON Schema keyword to the schema, for
+  example `"maximum":150`. A bound of a range replaces the same bound of the
+  integer type. The schema writes a floating-point bound as
+  `format_json_number()` writes it. A decode checks each constraint except
+  `pattern` on the value that the input gives. A value past a constraint is an
+  `IssueKind::violated_constraint` issue, and its reason uses the words of the
+  keyword, for example `must be at most 150`. A decode checks a
+  floating-point number as the parser read it and again after the conversion
+  to the type of the member. A constraint on a `std::optional` member bounds
+  the value that it holds. Constraints apply through `std::indirect` and at
+  each level of a recursive model. A member that keeps its default value is
+  not checked, and an encode checks no constraint. `pattern` is only in the
+  schema. A constraint that cannot apply or that no value can meet fails to
+  compile, and the message gives the member and the cause: the wrong type of
+  member, two constraints of one kind, an empty or crossed range, a bound that
+  is not exactly a value of the type of the member, or a floating-point
+  `multiple_of` that is not exact in binary. A constraint on a class or on a
+  tool function also fails to compile.
+- **Validators** (`check<&fn>`). `check` names a validator function. On a
+  data member, the function takes the value of the member as `const T&`. On a
+  class, it takes the object. In both cases it returns `Status`. A decode
+  runs the validators of a member after the member decodes and meets its
+  constraints, in their order, until one rejects the value. It runs the
+  validators of a class after all members of the object are valid. A
+  rejection is an `IssueKind::failed_check` issue at the path of the value.
+  The reason of the issue, and the line in `model_message`, is the
+  `model_message` of the validator, or `is not valid` if it is empty. The line
+  in `message` gives the `message` of the validator if it has one, so the
+  model does not see the text for the host. Validators are not in the schema,
+  and an encode runs none. A validator must return a rejection and not throw
+  it: an exception from a validator goes out of the decode, and the call that
+  decoded fails. A validator with the wrong signature, an argument that is not
+  a function pointer, a null function pointer, or one validator two times on
+  one value fails to compile. `check` on a tool function also fails to
+  compile.
 
 ### Changed
 
@@ -57,6 +95,13 @@ The entries use ASD-STE100 Simplified Technical English.
 - **Paths.** In decode and encode failures, a key that is not an ASCII
   identifier is a JSON string in brackets, for example `$["a.b"]`. Before,
   the key followed a `.`, so a key such as `a.b` looked like two steps.
+- **Tool parameters.** A parameter that the model gives cannot have an
+  annotation from namespace `scrydantic`, for example a `description`, a
+  constraint, or `check`. `bind()`, `describe()`, and the other tool functions
+  fail to compile for such a tool, and the message gives the parameter.
+  Before, the binding ignored the annotation, so the schema did not show a
+  `description` on a parameter. Put the annotation on a member of an argument
+  aggregate.
 - **Requirements.** GCC 16.1 or newer. CMake, `find_package(scrydantic)`, and
   the scripts reject GCC 16.0.x, which are development snapshots. CI now
   builds and tests with the released GCC 16.2.0.
