@@ -6,10 +6,11 @@ pass. The library's design is described in
 
 ## Toolchain
 
-- GCC 16.1 or newer, the only compiler that implements C++26 reflection.
-  GCC 16.0.x versions are development snapshots, and CMake rejects them. The
-  scripts use `CXX` when it is set. Otherwise they use `g++` or `g++-16`,
-  whichever is first to be GCC 16.1 or newer.
+- GCC 16.2 or newer, the only compiler that implements C++26 reflection.
+  CMake rejects older versions: GCC 16.1 has reflection bugs that 16.2 fixes,
+  and GCC 16.0.x versions are development snapshots. The scripts use `CXX`
+  when it is set. Otherwise they use `g++` or `g++-16`, whichever is first to
+  be GCC 16.2 or newer.
 - Ubuntu packages only GCC 16 snapshots (`g++-16` in 26.04 and in the
   toolchain PPA). On Ubuntu, use the official GCC image that CI uses. The
   digest is in `.github/workflows/ci.yml`:
