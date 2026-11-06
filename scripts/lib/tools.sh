@@ -42,9 +42,8 @@ resolve_tool() {
   fi
 }
 
-# The oldest GCC that CMakeLists.txt accepts: the first GCC 16 release. GCC
-# 16.0.x versions are development snapshots.
-readonly MINIMUM_GCC_VERSION=16.1
+# The oldest GCC that CMakeLists.txt accepts, and the one that CI tests.
+readonly MINIMUM_GCC_VERSION=16.2
 
 # is_supported_gcc <command>
 #
@@ -59,7 +58,7 @@ is_supported_gcc() {
 # resolve_compiler
 #
 # Sets COMPILER to the C++ compiler to configure with: CXX when it is set, else
-# g++ or g++-16, whichever is first to be GCC 16.1 or newer.
+# g++ or g++-16, whichever is first to be GCC 16.2 or newer.
 resolve_compiler() {
   if [[ -n "${CXX:-}" ]]; then
     COMPILER="${CXX}"
