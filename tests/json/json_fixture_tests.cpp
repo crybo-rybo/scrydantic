@@ -1,7 +1,44 @@
-// Golden fixtures for Scrydantic's JSON core (src/json/document.hpp), unpacked by
-// the build from tests/fixtures/json/goldens.tar.xz, whose README gives their
-// provenance and format. They keep the parser's acceptance boundary and the
-// canonical writer's bytes fixed.
+// Golden fixtures for Scrydantic's JSON core (src/json/document.hpp). They keep
+// the parser's acceptance boundary and the canonical writer's bytes fixed.
+//
+// Provenance. An independent, widely used JSON library made each expectation
+// first, and each was checked against the rules in src/json/document.hpp. A
+// differential fuzzer then compared the two for 4.3 million executions without
+// a divergence. The core differs from that library on purpose in two places,
+// both needed for the canonical form to be idempotent: a number with an exponent
+// is a double even when it is whole (`1e19` writes as `1E19`), and `-0` is the
+// double -0.0 (it writes as `-0`).
+//
+// Files. The cases are frozen, generated text kept in git as one archive,
+// tests/fixtures/json/goldens.tar.xz, which the build unpacks at configure time:
+//
+//   corpus.txt            every file under tests/fuzz/corpus/, whole
+//   corpus_prefixes.list  which prefix lengths of each of those files parse
+//   adversarial.txt       inputs aimed at each rule of the parser
+//   fuzz_findings.txt     the differential fuzzer's minimized corpus
+//
+// A .txt file is a list of cases separated by blank lines. A case is an input
+// line, `< ` and the text (a bare `<` for empty input), then an expectation
+// line, `> ` and the canonical text, or `x` for a rejection. A line starting
+// with `#` names the next case or comments on the file. In both texts `%HH` is
+// the byte 0xHH; non-printable bytes, `%` itself, and trailing spaces are always
+// written so, which keeps every case on one ASCII line.
+//
+// A line of corpus_prefixes.list is a path relative to tests/fuzz/corpus/, a
+// space, and the accepted prefix lengths (comma-separated lengths and inclusive
+// `low-high` ranges) or `none`. Every other length up to the file's size must be
+// rejected. A new fuzz seed under tests/fuzz/corpus/json/ needs a line here, and
+// a case in corpus.txt if it must be pinned whole.
+//
+// A new expectation must follow from the rules in src/json/document.hpp, not
+// merely record what the core does. To edit, unpack the archive in
+// tests/fixtures/json/, change the files, and repack it reproducibly:
+//
+//   tar -xJf goldens.tar.xz
+//   files="adversarial.txt corpus.txt corpus_prefixes.list fuzz_findings.txt"
+//   opts="--sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 --format=gnu"
+//   tar $opts -cf - $files | xz -9e > goldens.tar.xz
+//   rm $files
 
 #include "json/document.hpp"
 

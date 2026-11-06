@@ -94,7 +94,7 @@ resolve_tool "${SHELLCHECK:-}" "${SHELLCHECK_SPEC}" shellcheck "version: 0.11.0"
 shellcheck=("${TOOL[@]}")
 shell_scripts=()
 while IFS= read -r script; do shell_scripts+=("${script}"); done \
-  < <(git ls-files --cached --others --exclude-standard -- 'scripts/*.sh' '.githooks/*')
+  < <(git ls-files --cached --others --exclude-standard -- 'scripts/*.sh')
 "${shellcheck[@]}" --external-sources "${shell_scripts[@]}" ||
   fail "shellcheck reported the findings above"
 

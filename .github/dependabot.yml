@@ -1,7 +1,0 @@
-# Keeps the GitHub Actions the workflows use (actions/checkout) current.
-version: 2
-updates:
-  - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: monthly
