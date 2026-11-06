@@ -217,8 +217,10 @@ static_assert(scrydantic::tools_diagnostic<^^session_tools, Session>().empty());
 static_assert(mentions(scrydantic::tools_diagnostic<^^json>(), "scrydantic::bind<^^"));
 static_assert(mentions(scrydantic::tools_diagnostic<^^json>("mylib::add"),
                        "mylib::add<^^"));
-// Parameters whose recursive types share one definition name do not bind,
-// because they share the synthesized object's $defs.
+// Recursive argument types bind. Parameters whose recursive types share one
+// definition name do not, because they share the synthesized object's $defs.
+static_assert(scrydantic::tool_arguments_diagnostic<outline_tools::Step>().empty());
+static_assert(scrydantic::tools_diagnostic<^^outline_tools>().empty());
 static_assert(
     scrydantic::tools_diagnostic<^^tally_tools>() ==
     "scrydantic::bind<^^tally_tools>(): tally_tools::compare has, among its "

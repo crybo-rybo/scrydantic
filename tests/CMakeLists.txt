@@ -289,3 +289,8 @@ scrydantic_add_compile_fail_test(
   tags_of_non_variant.cpp
   "Circle is not a std::variant, so it has no tags"
 )
+scrydantic_add_compile_fail_test(
+  keys-of-endless-recursion
+  keys_of_endless_recursion.cpp
+  "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)

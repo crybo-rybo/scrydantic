@@ -1807,6 +1807,12 @@ struct Sizes {
   Größe size;
 };
 
+// A recursive value that splices raw JSON, which only encoding takes.
+struct Noted {
+  [[= scrydantic::skip_null]] std::optional<std::indirect<Noted>> next;
+  scrydantic::Json note;
+};
+
 } // namespace recursive
 
 namespace {
@@ -1856,6 +1862,18 @@ consteval std::string_view local_definition_diagnostic() {
   return text;
 }
 
+// A Noted chain of `length` links. Each note is 0, except the last link's, which is
+// `last`.
+[[nodiscard]] recursive::Noted noted_chain(const std::size_t length, std::string last) {
+  recursive::Noted head{.next = std::nullopt, .note = {.text = std::move(last)}};
+  for (std::size_t link = 1; link < length; ++link) {
+    recursive::Noted outer{.next = std::indirect<recursive::Noted>(std::move(head)),
+                           .note = {.text = "0"}};
+    head = std::move(outer);
+  }
+  return head;
+}
+
 } // namespace
 
 static_assert(scrydantic::SupportedValue<recursive::Category>);
@@ -1892,6 +1910,23 @@ static_assert(!scrydantic::SupportedValue<recursive::Scales>);
 static_assert(!scrydantic::SupportedValue<recursive::Sizes>);
 // A recursive root needs no name of its own.
 static_assert(scrydantic::SupportedValue<recursive::Tagged<int*>>);
+// Encoding reads a Json payload, which has no schema.
+static_assert(scrydantic::Encodable<recursive::Noted>);
+static_assert(!scrydantic::SupportedValue<recursive::Noted>);
+
+// The diagnostics agree with the concepts for recursive types too.
+static_assert(scrydantic::supported_value_diagnostic<recursive::Category>().empty());
+static_assert(scrydantic::tool_arguments_diagnostic<recursive::Category>().empty());
+static_assert(scrydantic::decodable_diagnostic<recursive::Expression>().empty());
+static_assert(scrydantic::encodable_diagnostic<recursive::WrappedFirst>().empty());
+static_assert(scrydantic::encodable_diagnostic<recursive::Noted>().empty());
+
+// keys_v and tags_v list the wire names of a recursive type as of any other type.
+static_assert(keys_are<recursive::Category>({"children", "name"}));
+static_assert(keys_are<recursive::Chain>({"next", "value"}));
+static_assert(keys_are<recursive::Folder>({"entries", "folders"}));
+static_assert(tags_are<recursive::Expression>({"literal", "negate", "sum"}));
+static_assert(tags_are<recursive::Entry>({"file", "folder"}));
 
 static_assert(
     mentions(scrydantic::supported_value_diagnostic<recursive::Endless>(),
@@ -2163,4 +2198,53 @@ TEST_CASE("recursion nests as deep as the parser reads and no deeper") {
   CHECK(encoded.error().message ==
         path + ".next is an array or object nested more than 256 deep, so the value "
                "cannot be JSON");
+}
+
+TEST_CASE("encode_verbatim() writes a recursive value as encode() does") {
+  // A literal deep in the tree takes the number spelling of each writer.
+  const recursive::Expression expression{recursive::Negate{
+      .operand = std::indirect<recursive::Expression>(recursive::Expression{
+          recursive::Sum{.terms = {recursive::Literal{.value = 1e-7}}}}),
+  }};
+  CHECK(scrydantic::encode_verbatim(expression)->text ==
+        R"({"operand":{"terms":[{"type":"literal","value":1e-07}],"type":"sum"},)"
+        R"("type":"negate"})");
+  CHECK(scrydantic::encode(expression)->text ==
+        R"({"operand":{"terms":[{"type":"literal","value":1E-7}],"type":"sum"},)"
+        R"("type":"negate"})");
+  CHECK(spelling_mismatch(expression) == std::nullopt);
+
+  // Both spellings stop at the same depth, with the same failure.
+  CHECK(scrydantic::encode_verbatim(chain_of(256))->text == chain_text(256));
+  const auto encoded = scrydantic::encode(chain_of(257));
+  const auto verbatim = scrydantic::encode_verbatim(chain_of(257));
+  REQUIRE_FALSE(encoded);
+  REQUIRE_FALSE(verbatim);
+  CHECK(verbatim.error().message == encoded.error().message);
+  CHECK(verbatim.error().model_message.empty());
+}
+
+TEST_CASE("payloads in a recursive value count toward its nesting") {
+  const recursive::Noted noted{
+      .next = std::indirect<recursive::Noted>(recursive::Noted{
+          .next = std::nullopt, .note = {.text = R"({"b": 2, "a": 1.50})"}}),
+      .note = {.text = "[ 1 ]"},
+  };
+  CHECK(scrydantic::encode_verbatim(noted)->text ==
+        R"({"next":{"note":{"b": 2, "a": 1.50}},"note":[ 1 ]})");
+  CHECK(scrydantic::encode(noted)->text ==
+        R"({"next":{"note":{"a":1.5,"b":2}},"note":[1]})");
+
+  // 256 links nest 256 objects, which the writer accepts. A payload that is an
+  // array in the last link is one level more, which only the final check sees.
+  CHECK(scrydantic::encode(noted_chain(256, "0")));
+  CHECK(scrydantic::encode_verbatim(noted_chain(256, "0")));
+  constexpr std::string_view reason =
+      "the value nests arrays and objects more than 256 deep, so it cannot be JSON";
+  const auto encoded = scrydantic::encode(noted_chain(256, "[0]"));
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message == reason);
+  const auto verbatim = scrydantic::encode_verbatim(noted_chain(256, "[0]"));
+  REQUIRE_FALSE(verbatim);
+  CHECK(verbatim.error().message == reason);
 }
