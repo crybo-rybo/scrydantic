@@ -410,6 +410,12 @@ workaround is also commented where it is applied.
 - **`define_static_array` of consteval-only class elements** rejects an array
   that is equal to an array it already made. `declared_members_v` is therefore
   an array of member reflections, not a second array of `field_layout`.
+- **Odr-used inline variables of consteval-only type.** GCC 16.1 rejects one as
+  "not defined", although it is (PR c++/124770, fixed in 16.2). A table of
+  reflections that consteval functions iterate, such as
+  `constraint_annotations()`, is therefore a consteval function, not an
+  `inline constexpr` variable. Without `inline`, the variable would have
+  internal linkage, and the inline functions that use it would break the ODR.
 - **Generic lambdas** instantiate both branches of an `if constexpr` that
   depends on a template parameter of the enclosing function. Use a function
   template instead, as `call_tool_function` does.
