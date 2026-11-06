@@ -1,7 +1,7 @@
 #pragma once
 
 #if !defined(__cpp_impl_reflection)
-#error "Scrydantic requires a compiler implementing P2996 (GCC 16.1 or newer)"
+#error "Scrydantic requires a compiler implementing P2996 (GCC 16.2 or newer)"
 #endif
 
 #include <array>
@@ -84,15 +84,16 @@ namespace scrydantic {
 /// each number in a payload as a 64-bit integer or a double, so a number that
 /// neither holds exactly loses digits; encode_verbatim() keeps a payload's own
 /// text. The returned text is canonical within the current Scrydantic version but
-/// is not a versioned archival format. A type outside Encodable fails to compile
-/// with the offending member path and the reason.
+/// is not a versioned archival format. The value is the program's own, so its
+/// constraint annotations and validators are not checked. A type outside
+/// Encodable fails to compile with the offending member path and the reason.
 /// @tparam Type Value from the Encodable family.
 /// @param value Value to encode without modifying it.
 /// @return Canonical JSON, or an Error whose `message` names the path of a
-/// non-finite number, an undeclared enumerator value, or an invalid Json, or
-/// says that a string is not valid UTF-8 or that the value nests arrays and
-/// objects deeper than JsonView::parse accepts, and whose `model_message` is
-/// empty.
+/// non-finite number, an undeclared enumerator value, an invalid Json, or a
+/// valueless variant or std::indirect, or says that a string is not valid UTF-8
+/// or that the value nests arrays and objects deeper than JsonView::parse
+/// accepts, and whose `model_message` is empty.
 template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
   constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
@@ -112,7 +113,8 @@ template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
 /// document or a number wider than a double reaches the output unchanged. A
 /// float or double is written as std::to_chars' shortest text, such as `1e-07`
 /// where encode() writes `1E-7`. Keys are still in canonical order, strings still
-/// use the canonical escapes, and the whole text is checked as encode()'s is.
+/// use the canonical escapes, and the whole text is checked as encode()'s is. As
+/// with encode(), constraint annotations and validators are not checked.
 /// Reflected tool handlers encode their results this way.
 ///
 /// The check reads this function's own output, so encode() succeeding does not
@@ -136,19 +138,27 @@ template <typename Type> [[nodiscard]] Result<Json> encode_verbatim(const Type& 
 
 /// Decodes a parsed JSON value into a reflected value, strictly.
 ///
-/// The rules are the ones reflected tool arguments are decoded by. A failure is an
-/// Error whose `message` and `model_message` are both the JSON path of the
-/// offending value followed by what the type required there, such as
-/// `$.shapes[0].radius must be a number`. A type outside Decodable fails to
-/// compile with the offending member path and the reason.
+/// The rules are the ones reflected tool arguments are decoded by. Each member
+/// that the input supplies must also meet its constraint annotations, and each
+/// value that check annotations name a validator for must pass it. Decoding
+/// goes on past a failure, so one call reports every issue it finds, up to
+/// max_issues. A failure is an Error whose `issues` lists them, each with its
+/// kind, its path, and what the type required there, and whose `message` and
+/// `model_message` are both one `<path> <reason>` line per issue, such as
+/// `$.shapes[0].radius must be a number`, except that in `message` the line of a
+/// failed check gives the validator's own `message`, where it has one. A type
+/// outside Decodable fails to compile with the offending member path and the
+/// reason.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param view Parsed JSON value to decode.
-/// @return The decoded value, or the first decode failure.
+/// @return The decoded value, or every issue that kept it from decoding.
 template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view) {
   constexpr std::string_view problem = detail::decodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
   if constexpr (!problem.empty()) {
-    return std::unexpected(Error{});
+    // Built with std::unexpect, as detail::decode_failed() explains, so that a
+    // rejected type of that shape prints the static_assert and nothing more.
+    return Result<Type>{std::unexpect};
   } else {
     return detail::decode<Type>(view);
   }
@@ -157,20 +167,19 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 /// Parses JSON text and decodes it into a reflected value, strictly.
 ///
 /// Text that is not JSON fails with `JSON text is not valid JSON` as both
-/// messages; every other failure is reported as decode(const JsonView&) reports
-/// it.
+/// messages, and one IssueKind::invalid_json issue at `$`; every other failure
+/// is reported as decode(const JsonView&) reports it.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param json JSON text to parse and decode.
 /// @return The decoded value, or the parse or decode failure.
 template <typename Type> [[nodiscard]] Result<Type> decode(const Json& json) {
-  auto parsed = JsonView::parse(json);
-  if (!parsed) {
-    return std::unexpected(Error{
-        .message = "JSON text is not valid JSON",
-        .model_message = "JSON text is not valid JSON",
-    });
-  }
-  return decode<Type>(*parsed);
+  // Composed from std::expected's monadic operations, which build their failure
+  // with std::unexpect: see detail::decode_failed().
+  return JsonView::parse(json)
+      .transform_error([](const Error&) {
+        return detail::invalid_json_error("JSON text is not valid JSON");
+      })
+      .and_then([](const JsonView& view) { return decode<Type>(view); });
 }
 
 /// The JSON keys of a reflected object type, in the order encode() writes them.

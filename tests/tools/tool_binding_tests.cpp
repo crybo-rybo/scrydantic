@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <scrydantic/detail/binding.hpp>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
@@ -75,6 +76,123 @@ struct Note {
 }
 
 } // namespace bad_text_tools
+
+namespace outline_tools {
+
+// The optional member comes first, so decoding a Step as a whole argument object
+// is the case that read_in_place() and decode_failed() exist for.
+struct Step {
+  std::optional<std::indirect<Step>> next;
+  std::string text;
+};
+
+struct Section {
+  std::vector<Section> sections;
+  std::string title;
+};
+
+[[= scrydantic::tool{"Count the steps of a plan"}]] inline std::int32_t
+    count_steps(Step first) {
+  std::int32_t count = 1;
+  for (const Step* step = &first; step->next.has_value(); step = &**step->next) {
+    ++count;
+  }
+  return count;
+}
+
+[[= scrydantic::tool{"Nest a section under a new title"}]] inline Section
+    nest(Section section, std::string title) {
+  return Section{.sections = {std::move(section)}, .title = std::move(title)};
+}
+
+} // namespace outline_tools
+
+namespace tally_tools {
+
+template <typename Integer> struct Tally {
+  std::vector<Tally> parts;
+  Integer count{};
+};
+
+// Each parameter has a schema alone, but the synthesized argument object defines
+// both, and long and long long spell one name. Never bound.
+[[= scrydantic::tool{"Compare two tallies"}]] inline bool
+    compare(Tally<long> left, Tally<long long> right) {
+  return left.count == right.count;
+}
+
+} // namespace tally_tools
+
+namespace mixer_tools {
+
+struct Channel {
+  [[= scrydantic::length{.min = 1, .max = 8}]] std::string name{};
+  [[= scrydantic::range{.min = 0, .max = 11}]] std::int32_t level{};
+};
+
+[[= scrydantic::tool{"Set a channel's level"}]] inline std::int32_t
+    set_level(Channel channel) {
+  return channel.level;
+}
+
+[[= scrydantic::tool{"Fade one channel into another"}]] inline std::string
+    crossfade(Channel from, Channel to) {
+  return from.name + ">" + to.name;
+}
+
+} // namespace mixer_tools
+
+namespace louder_tools {
+
+// The result is the handler's own value, so its constraints are not checked.
+[[= scrydantic::tool{"Raise a channel's level by one"}]] inline mixer_tools::Channel
+    louder(mixer_tools::Channel channel) {
+  ++channel.level;
+  return channel;
+}
+
+} // namespace louder_tools
+
+namespace booking_tools {
+
+inline scrydantic::Status is_open_city(const std::string& city) {
+  if (city == "Oslo") {
+    return {};
+  }
+  return std::unexpected(scrydantic::tool_error("must be a city with open bookings",
+                                                "has no row in bookings.cities"));
+}
+
+struct Booking;
+scrydantic::Status has_room(const Booking& booking);
+
+struct[[= scrydantic::check<&has_room>]] Booking {
+  [[= scrydantic::check<&is_open_city>]] std::string city{};
+  [[= scrydantic::range{.min = 1}]] std::int32_t guests{};
+};
+
+inline scrydantic::Status has_room(const Booking& booking) {
+  if (booking.guests <= 4) {
+    return {};
+  }
+  return std::unexpected(scrydantic::Error{.message = "hotel 17 is full"});
+}
+
+[[= scrydantic::tool{"Book a stay"}]] inline std::string book(Booking booking) {
+  return booking.city;
+}
+
+} // namespace booking_tools
+
+namespace described_tools {
+
+// A description on a parameter would be lost as surely as a constraint.
+[[= scrydantic::tool{"Move one tile west"}]] inline Position
+    step_west([[= scrydantic::description{"Where to start"}]] Position from) {
+  return Position{.x = from.x - 1, .y = from.y};
+}
+
+} // namespace described_tools
 
 namespace {
 
@@ -170,6 +288,21 @@ static_assert(scrydantic::tools_diagnostic<^^session_tools, Session>().empty());
 static_assert(mentions(scrydantic::tools_diagnostic<^^json>(), "scrydantic::bind<^^"));
 static_assert(mentions(scrydantic::tools_diagnostic<^^json>("mylib::add"),
                        "mylib::add<^^"));
+// Recursive argument types bind. Parameters whose recursive types share one
+// definition name do not, because they share the synthesized object's $defs.
+static_assert(scrydantic::tool_arguments_diagnostic<outline_tools::Step>().empty());
+static_assert(scrydantic::tools_diagnostic<^^outline_tools>().empty());
+static_assert(
+    scrydantic::tools_diagnostic<^^tally_tools>() ==
+    "scrydantic::bind<^^tally_tools>(): tally_tools::compare has, among its "
+    "parameters, the recursive types tally_tools::Tally<long long int> and "
+    "tally_tools::Tally<long int>, which both map to the schema definition name "
+    "\"tally_tools.Tally-int64\"");
+
+static_assert(scrydantic::tools_diagnostic<^^described_tools>() ==
+              "scrydantic::bind<^^described_tools>(): described_tools::step_west has "
+              "parameter `from` carrying a Scrydantic annotation, which a parameter "
+              "cannot hold; take an argument aggregate and annotate its member");
 
 TEST_CASE("a namespace binds its tools in declaration order") {
   auto tools = scrydantic::bind<^^grid_tools>();
@@ -213,6 +346,51 @@ TEST_CASE("bound handlers report decode and handler failures as Errors") {
   REQUIRE_FALSE(refused);
   CHECK(refused.error().message == "refused a call");
   CHECK(refused.error().model_message == "not today");
+}
+
+TEST_CASE("bound handlers give the model every issue in their arguments") {
+  auto tools = scrydantic::bind<^^grid_tools>();
+  REQUIRE(tools.size() == 3);
+
+  const auto sum = tools[1].invoke(json(R"({"extra":true,"left":"two"})"));
+  REQUIRE_FALSE(sum);
+  constexpr std::string_view listed = "$ contains unknown member \"extra\"\n"
+                                      "$.left must be an integer\n"
+                                      "$.right is a required member";
+  CHECK(sum.error().model_message == listed);
+  CHECK(sum.error().message == listed);
+  CHECK(sum.error().issues == std::vector<scrydantic::Issue>{
+                                  {.kind = scrydantic::IssueKind::unknown_member,
+                                   .reason = R"(contains unknown member "extra")"},
+                                  {.kind = scrydantic::IssueKind::wrong_type,
+                                   .path = {"left"},
+                                   .reason = "must be an integer"},
+                                  {.kind = scrydantic::IssueKind::missing_member,
+                                   .path = {"right"},
+                                   .reason = "is a required member"},
+                              });
+
+  // A typed handler's argument object reports the same way.
+  auto handler = scrydantic::bind_handler<Position>([](Position) { return 0; });
+  const auto stepped = handler(json(R"({"x":1.5,"y":null})"));
+  REQUIRE_FALSE(stepped);
+  CHECK(stepped.error().model_message ==
+        "$.x must be an integer\n$.y must be an integer");
+
+  // Arguments that are not JSON are one issue; the handler's own failures,
+  // whether refusals or results that cannot be JSON, are none.
+  const auto malformed = tools[1].invoke(json("{"));
+  REQUIRE_FALSE(malformed);
+  CHECK(malformed.error().issues ==
+        std::vector<scrydantic::Issue>{{.kind = scrydantic::IssueKind::invalid_json,
+                                        .reason = "is not valid JSON"}});
+  const auto refused = tools[2].invoke(json("{}"));
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().issues.empty());
+  const auto unencodable =
+      scrydantic::bind<^^bad_text_tools>().front().invoke(json("{}"));
+  REQUIRE_FALSE(unencodable);
+  CHECK(unencodable.error().issues.empty());
 }
 
 TEST_CASE("bound handlers refuse a result that is not valid JSON") {
@@ -261,6 +439,34 @@ TEST_CASE("bound handlers pass well-formed multi-byte text through") {
   const auto result = handler(json(R"({"x":0,"y":0})"));
   REQUIRE(result);
   CHECK(result->text == "\"caf\xc3\xa9\"");
+}
+
+TEST_CASE("recursive arguments bind as a whole object and as a parameter") {
+  auto tools = scrydantic::bind<^^outline_tools>();
+  REQUIRE(names_of(tools) == std::vector<std::string>{"count_steps", "nest"});
+  CHECK(tools[0].input_schema.text == scrydantic::input_schema_v<outline_tools::Step>);
+  CHECK(tools[1].input_schema.text ==
+        R"({"$defs":{"outline_tools.Section":{"additionalProperties":false,)"
+        R"("properties":{"sections":{"items":{"$ref":"#/$defs/outline_tools.Section"},)"
+        R"("type":"array"},"title":{"type":"string"}},"required":["sections","title"],)"
+        R"("type":"object"}},"additionalProperties":false,"properties":{"section":)"
+        R"({"$ref":"#/$defs/outline_tools.Section"},"title":{"type":"string"}},)"
+        R"("required":["section","title"],"type":"object"})");
+
+  const auto counted = tools[0].invoke(
+      json(R"({"next":{"next":{"next":null,"text":"c"},"text":"b"},"text":"a"})"));
+  REQUIRE(counted);
+  CHECK(counted->text == "3");
+  const auto missing =
+      tools[0].invoke(json(R"({"next":{"next":{"text":"c"},"text":"b"},"text":"a"})"));
+  REQUIRE_FALSE(missing);
+  CHECK(missing.error().model_message == "$.next.next.next is a required member");
+
+  const auto nested = tools[1].invoke(
+      json(R"({"section":{"sections":[],"title":"inner"},"title":"outer"})"));
+  REQUIRE(nested);
+  CHECK(nested->text ==
+        R"({"sections":[{"sections":[],"title":"inner"}],"title":"outer"})");
 }
 
 TEST_CASE("one function binds alone") {
@@ -430,4 +636,89 @@ TEST_CASE("descriptors describe tools at compile time without handlers") {
     CHECK(bound[index].description == grid[index].description);
     CHECK(bound[index].input_schema.text == grid[index].input_schema);
   }
+}
+
+TEST_CASE("a tool's argument constraints are in its schema and checked on each call") {
+  auto tools = scrydantic::bind<^^mixer_tools>();
+  REQUIRE(names_of(tools) == std::vector<std::string>{"set_level", "crossfade"});
+  const std::string channel =
+      R"({"additionalProperties":false,"properties":{"level":{"maximum":11,)"
+      R"("minimum":0,"type":"integer"},"name":{"maxLength":8,"minLength":1,)"
+      R"("type":"string"}},"required":[],"type":"object"})";
+  CHECK(tools[0].input_schema.text == channel);
+  CHECK(tools[1].input_schema.text ==
+        R"({"additionalProperties":false,"properties":{"from":)" + channel +
+            R"(,"to":)" + channel + R"(},"required":["from","to"],"type":"object"})");
+
+  const auto set = tools[0].invoke(json(R"({"level":11,"name":"bass"})"));
+  REQUIRE(set);
+  CHECK(set->text == "11");
+
+  const auto loud = tools[0].invoke(json(R"({"level":12,"name":""})"));
+  REQUIRE_FALSE(loud);
+  constexpr std::string_view listed = "$.name must have at least 1 character\n"
+                                      "$.level must be at most 11";
+  CHECK(loud.error().model_message == listed);
+  CHECK(loud.error().message == listed);
+  CHECK(loud.error().issues == std::vector<scrydantic::Issue>{
+                                   {.kind = scrydantic::IssueKind::violated_constraint,
+                                    .path = {"name"},
+                                    .reason = "must have at least 1 character"},
+                                   {.kind = scrydantic::IssueKind::violated_constraint,
+                                    .path = {"level"},
+                                    .reason = "must be at most 11"},
+                               });
+
+  const auto faded =
+      tools[1].invoke(json(R"({"from":{"level":-1},"to":{"name":"overlong!"}})"));
+  REQUIRE_FALSE(faded);
+  CHECK(faded.error().model_message == "$.from.level must be at least 0\n"
+                                       "$.to.name must have at most 8 characters");
+}
+
+TEST_CASE("a tool checks its arguments' constraints but not its result's") {
+  auto tools = scrydantic::bind<^^louder_tools>();
+  REQUIRE(tools.size() == 1);
+
+  const auto louder = tools[0].invoke(json(R"({"level":11,"name":"bass"})"));
+  REQUIRE(louder);
+  CHECK(louder->text == R"({"level":12,"name":"bass"})");
+
+  const auto loudest = tools[0].invoke(json(R"({"level":12,"name":"bass"})"));
+  REQUIRE_FALSE(loudest);
+  CHECK(loudest.error().issues ==
+        std::vector<scrydantic::Issue>{
+            {.kind = scrydantic::IssueKind::violated_constraint,
+             .path = {"level"},
+             .reason = "must be at most 11"}});
+}
+
+TEST_CASE("a tool's validators reject arguments without telling the model the "
+          "host's text") {
+  auto tools = scrydantic::bind<^^booking_tools>();
+  REQUIRE(tools.size() == 1);
+  // A validator states nothing in the schema.
+  CHECK(tools[0].input_schema.text ==
+        R"({"additionalProperties":false,"properties":{"city":{"type":"string"},)"
+        R"("guests":{"maximum":2147483647,"minimum":1,"type":"integer"}},)"
+        R"("required":[],"type":"object"})");
+
+  const auto booked = tools[0].invoke(json(R"({"city":"Oslo","guests":2})"));
+  REQUIRE(booked);
+  CHECK(booked->text == R"("Oslo")");
+
+  const auto closed = tools[0].invoke(json(R"({"city":"Bergen","guests":0})"));
+  REQUIRE_FALSE(closed);
+  CHECK(closed.error().model_message == "$.city must be a city with open bookings\n"
+                                        "$.guests must be at least 1");
+  CHECK(closed.error().message == "$.city has no row in bookings.cities\n"
+                                  "$.guests must be at least 1");
+
+  const auto full = tools[0].invoke(json(R"({"city":"Oslo","guests":9})"));
+  REQUIRE_FALSE(full);
+  CHECK(full.error().model_message == "$ is not valid");
+  CHECK(full.error().message == "$ hotel 17 is full");
+  CHECK(full.error().issues ==
+        std::vector<scrydantic::Issue>{
+            {.kind = scrydantic::IssueKind::failed_check, .reason = "is not valid"}});
 }

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <meta>
 #include <scrydantic/annotations.hpp>
+#include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <string>
@@ -286,6 +287,15 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
            "ignore_unknown), which applies to data members or classes; a tool's "
            "description is its scrydantic::tool text";
   }
+  for (const auto annotation : std::meta::annotations_of(function)) {
+    if (is_constraint(annotation)) {
+      return "carries " + owned_text(constraint_name(annotation)) +
+             ", which applies to data members";
+    }
+    if (annotation_matches(annotation, ^^check_t)) {
+      return "carries scrydantic::check, which applies to data members and classes";
+    }
+  }
   if (!has_annotation(function, ^^name) && !std::meta::has_identifier(function)) {
     return "has no identifier to name the tool after; give it a "
            "scrydantic::name annotation";
@@ -395,6 +405,29 @@ consteval std::string passing_problem(const std::meta::info function,
   return {};
 }
 
+// Rejects a Scrydantic annotation on a parameter the model supplies, which no
+// binding reads: an argument object is synthesized from the parameters' types
+// and names alone, the facts that bound_tool keys, and annotations, which
+// accumulate across redeclarations, would be one more fact that two translation
+// units can see differently. Unread, a constraint or a check there would be
+// silently lost, so a constrained argument is a member of an argument aggregate.
+consteval std::string parameter_annotation_problem(const std::meta::info function,
+                                                   const std::meta::info context) {
+  const auto parameters = std::meta::parameters_of(function);
+  for (std::size_t index = first_value_index(function, context);
+       index < parameters.size(); ++index) {
+    for (const auto annotation : std::meta::annotations_of(parameters[index])) {
+      if (std::meta::parent_of(plain_type(std::meta::type_of(annotation))) ==
+          (^^::scrydantic)) {
+        return "has " + parameter_label(parameters[index], index) +
+               " carrying a Scrydantic annotation, which a parameter cannot hold; "
+               "take an argument aggregate and annotate its member";
+      }
+    }
+  }
+  return {};
+}
+
 consteval std::string arguments_problem(const std::meta::info function,
                                         const std::meta::info context) {
   const auto values = value_parameters_of(function, context);
@@ -418,7 +451,16 @@ consteval std::string arguments_problem(const std::meta::info function,
       return "has " + label + ": " + reason;
     }
   }
-  return {};
+  // Each parameter passed the check alone, as its own schema's root. In the
+  // synthesized object a recursive parameter type is a definition instead, and
+  // all the parameters' definitions share one $defs, so their names are checked
+  // together.
+  std::vector<schema_node> held{};
+  for (const auto value : values) {
+    append_held_nodes(held, std::meta::type_of(value));
+  }
+  const auto reason = definition_names_problem(recursive_nodes(std::move(held), {}));
+  return reason.empty() ? std::string{} : "has, among its parameters, " + reason;
 }
 
 // Why a function cannot be bound as a tool, prefixed with its name; empty when
@@ -433,6 +475,9 @@ consteval std::string tool_function_problem(const std::meta::info function,
   }
   if (reason.empty()) {
     reason = passing_problem(function, context);
+  }
+  if (reason.empty()) {
+    reason = parameter_annotation_problem(function, context);
   }
   if (reason.empty()) {
     reason = arguments_problem(function, context);

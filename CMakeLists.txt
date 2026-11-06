@@ -80,18 +80,18 @@ set_property(
 )
 
 # The reflected codec uses C++26 reflection (P2996), which only GCC 16+ compiles.
-# GCC 16.1 is the first release; 16.0.x versions are development snapshots,
-# which CI does not test.
+# GCC 16.2 is the oldest release that CI tests. GCC 16.1 has reflection bugs
+# that 16.2 fixes, and 16.0.x versions are development snapshots.
 if(
   NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
-  OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16.1
+  OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16.2
 )
   message(
     FATAL_ERROR
-    "Scrydantic requires GCC 16.1 or newer (C++26 reflection), but the C++ "
+    "Scrydantic requires GCC 16.2 or newer (C++26 reflection), but the C++ "
     "compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} "
-    "(${CMAKE_CXX_COMPILER}). GCC 16.0.x is a development snapshot. Configure "
-    "a fresh build directory with CXX set to GCC 16.1 or newer, or with "
+    "(${CMAKE_CXX_COMPILER}). Configure a fresh build directory with CXX set "
+    "to GCC 16.2 or newer, or with "
     "-DCMAKE_CXX_COMPILER."
   )
 endif()
@@ -106,6 +106,7 @@ add_library(
   scrydantic_json
   STATIC
     src/json/document.cpp
+    src/json/error.cpp
     src/json/number.cpp
     src/json/text.cpp
     src/json/view.cpp
@@ -164,9 +165,11 @@ set(
   include/scrydantic/codec.hpp
   include/scrydantic/diagnostics.hpp
   include/scrydantic/detail/binding.hpp
+  include/scrydantic/detail/constraints.hpp
   include/scrydantic/detail/decode.hpp
   include/scrydantic/detail/encode.hpp
   include/scrydantic/detail/failure.hpp
+  include/scrydantic/detail/json_number.hpp
   include/scrydantic/detail/json_string.hpp
   include/scrydantic/detail/meta.hpp
   include/scrydantic/detail/model.hpp

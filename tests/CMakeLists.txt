@@ -62,6 +62,7 @@ add_executable(
   scrydantic_json_tests
   json/json_entry_point_tests.cpp
   json/json_document_tests.cpp
+  json/json_error_tests.cpp
   json/json_fixture_tests.cpp
   json/json_view_tests.cpp
   version/version_tests.cpp
@@ -136,6 +137,9 @@ add_executable(
   scrydantic_tests
   codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
+  codec/constraint_tests.cpp
+  codec/number_spelling_tests.cpp
+  codec/validator_tests.cpp
   tools/tool_binding_tests.cpp
 )
 target_link_libraries(
@@ -234,6 +238,36 @@ scrydantic_add_compile_fail_test(
   "does not satisfy scrydantic::Encodable: Limits has members limit and max_tokens that both map to the JSON key"
 )
 scrydantic_add_compile_fail_test(
+  endless-recursion
+  endless_recursion.cpp
+  "Node::next: Node contains itself through no std::optional, std::vector, or variant alternative after the first, so default-constructing it, as decoding does, never ends"
+)
+scrydantic_add_compile_fail_test(
+  definition-name-collision
+  definition_name_collision.cpp
+  "Tallies has the recursive types Tally<long long int> and Tally<long int>, which both map to the schema definition name \"Tally-int64\""
+)
+scrydantic_add_compile_fail_test(
+  local-definition
+  local_definition.cpp
+  "outline_schema()::Report has the recursive type outline_schema()::Outline, which no schema definition name can spell: outline_schema()::Outline is local to a function; declare it in a namespace"
+)
+scrydantic_add_compile_fail_test(
+  non-ascii-definition
+  non_ascii_definition.cpp
+  "Sizes has the recursive type Größe, which no schema definition name can spell: Größe has a name that is not ASCII letters, digits, and '_'"
+)
+scrydantic_add_compile_fail_test(
+  unspelled-definition-argument
+  unspelled_definition_argument.cpp
+  "Pointed has the recursive type Tagged<int*>, which no schema definition name can spell: int* is not a type that a definition name spells"
+)
+scrydantic_add_compile_fail_test(
+  tool-parameter-definitions
+  tool_parameter_definitions.cpp
+  "tally_tools::compare has, among its parameters, the recursive types Tally<long long int> and Tally<long int>, which both map to the schema definition name \"Tally-int64\""
+)
+scrydantic_add_compile_fail_test(
   bind-misplaced-tool
   bind_misplaced_tool.cpp
   "scrydantic::bind<^^lamp_tools>(): lamp_tools::brightness carries scrydantic::tool, which applies to functions"
@@ -249,6 +283,131 @@ scrydantic_add_compile_fail_test(
   "greeting_tools::greet has parameter `session` of type Session; the context is only ever the leading parameter, as const Session&"
 )
 scrydantic_add_compile_fail_test(
+  misapplied-constraint
+  misapplied_constraint.cpp
+  "Profile::age: carries scrydantic::length, which applies to std::string members, not to int"
+)
+scrydantic_add_compile_fail_test(
+  fixed-size-items
+  fixed_size_items.cpp
+  "Grid::cells: carries scrydantic::items, which does not apply to std::array<bool, 3>, whose size is fixed"
+)
+scrydantic_add_compile_fail_test(
+  crossed-range
+  crossed_range.cpp
+  "does not satisfy scrydantic::Decodable: Volume::level: carries a scrydantic::range whose min, 10, exceeds its max, 1"
+)
+scrydantic_add_compile_fail_test(
+  empty-range
+  empty_range.cpp
+  "Slot::index: carries a scrydantic::range that no value of int satisfies"
+)
+scrydantic_add_compile_fail_test(
+  bound-outside-type
+  bound_outside_type.cpp
+  "does not satisfy scrydantic::Encodable: Counter::count: carries a scrydantic::range whose min, -1, is outside the range of unsigned int"
+)
+scrydantic_add_compile_fail_test(
+  fractional-bound
+  fractional_bound.cpp
+  "Rating::stars: carries a scrydantic::range whose max, 1.5, is not an integer"
+)
+scrydantic_add_compile_fail_test(
+  inexact-float-bound
+  inexact_float_bound.cpp
+  "Gain::value: carries a scrydantic::range whose max, 0.1, is not exactly a float"
+)
+scrydantic_add_compile_fail_test(
+  infinite-bound
+  infinite_bound.cpp
+  "Reading::value: carries a scrydantic::range whose max, infinity, is not finite"
+)
+scrydantic_add_compile_fail_test(
+  unbounded-range
+  unbounded_range.cpp
+  "Score::points: carries a scrydantic::range that sets no bound"
+)
+scrydantic_add_compile_fail_test(
+  two-lower-bounds
+  two_lower_bounds.cpp
+  "Score::points: carries a scrydantic::range that sets both min and exclusive_min"
+)
+scrydantic_add_compile_fail_test(
+  nonpositive-multiple
+  nonpositive_multiple.cpp
+  "Grid::step: carries a scrydantic::multiple_of whose value, 0, is not positive"
+)
+scrydantic_add_compile_fail_test(
+  decimal-multiple
+  decimal_multiple.cpp
+  "Price::amount: carries a scrydantic::multiple_of whose value, 0.1, is not exactly that decimal in binary"
+)
+scrydantic_add_compile_fail_test(
+  empty-multiple
+  empty_multiple.cpp
+  "Grid::step: carries a scrydantic::multiple_of that sets no value"
+)
+scrydantic_add_compile_fail_test(
+  crossed-length
+  crossed_length.cpp
+  "Account::password: carries a scrydantic::length whose min, 8, exceeds its max, 4"
+)
+scrydantic_add_compile_fail_test(
+  unbounded-items
+  unbounded_items.cpp
+  "Post::tags: carries a scrydantic::items that sets no bound"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-constraint
+  duplicate_constraint.cpp
+  "Volume::level: has more than one scrydantic::range annotation"
+)
+scrydantic_add_compile_fail_test(
+  constrained-class
+  constrained_class.cpp
+  "does not satisfy scrydantic::SupportedValue: Point carries scrydantic::range, which applies to data members"
+)
+scrydantic_add_compile_fail_test(
+  constrained-tool
+  constrained_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::range, which applies to data members"
+)
+scrydantic_add_compile_fail_test(
+  validator-signature
+  validator_signature.cpp
+  "Order::quantity: carries scrydantic::check<&checks::positive>, whose validator is std::expected<void, scrydantic::Error>(int); a validator here takes const int& and returns scrydantic::Status"
+)
+scrydantic_add_compile_fail_test(
+  validator-not-function
+  validator_not_function.cpp
+  "Order::quantity: carries scrydantic::check<42>, whose argument is not a pointer to a function"
+)
+scrydantic_add_compile_fail_test(
+  null-validator
+  null_validator.cpp
+  "does not satisfy scrydantic::Decodable: Order::quantity: carries a scrydantic::check of a null function pointer"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-validator
+  duplicate_validator.cpp
+  "Order::quantity: carries scrydantic::check<&checks::positive> twice"
+)
+scrydantic_add_compile_fail_test(
+  class-validator-signature
+  class_validator_signature.cpp
+  "Range carries scrydantic::check<&checks::ordered>, whose validator is std::expected<void, scrydantic::Error>(const int&); a validator here takes const Range& and returns scrydantic::Status"
+)
+scrydantic_add_compile_fail_test(
+  checked-tool
+  checked_tool.cpp
+  "scrydantic::bind<^^order_tools>(): order_tools::order carries scrydantic::check, which applies to data members and classes"
+)
+scrydantic_add_compile_fail_test(
+  annotated-parameter
+  annotated_parameter.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level` carrying a Scrydantic annotation, which a parameter cannot hold; take an argument aggregate and annotate its member"
+)
+scrydantic_add_compile_fail_test(
   keys-of-non-object
   keys_of_non_object.cpp
   "std::variant<Circle> is not a plain aggregate, so it has no JSON object keys"
@@ -257,4 +416,9 @@ scrydantic_add_compile_fail_test(
   tags-of-non-variant
   tags_of_non_variant.cpp
   "Circle is not a std::variant, so it has no tags"
+)
+scrydantic_add_compile_fail_test(
+  keys-of-endless-recursion
+  keys_of_endless_recursion.cpp
+  "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
 )

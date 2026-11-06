@@ -7,6 +7,7 @@
 #include <expected>
 #include <meta>
 #include <scrydantic/annotations.hpp>
+#include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
@@ -26,10 +27,6 @@ enum class value_family : std::uint8_t {
   encodable,
   decodable,
 };
-
-consteval std::string display(const std::meta::info reflection) {
-  return owned_text(std::meta::display_string_of(reflection));
-}
 
 consteval std::string at_path(const std::string& path, const std::string& text) {
   return path.empty() ? text : path + ": " + text;
@@ -52,6 +49,36 @@ consteval bool is_qualified(const std::meta::info type) {
          std::meta::is_const_type(dealiased) || std::meta::is_volatile_type(dealiased);
 }
 
+// Why the schema whose definitions are `definitions` cannot give each its own
+// name, as the object of "has", or empty when it can. Sorted by name, two
+// definitions that share one are adjacent.
+consteval std::string
+definition_names_problem(const std::vector<schema_node>& definitions) {
+  struct named_definition {
+    std::string name{};
+    std::meta::info type{};
+  };
+  std::vector<named_definition> named{};
+  for (const auto node : definitions) {
+    auto name = definition_name(node);
+    if (!name) {
+      return "the recursive type " + display(node.type) +
+             ", which no schema definition name can spell: " + name.error();
+    }
+    named.push_back({.name = std::move(*name), .type = node.type});
+  }
+  std::ranges::sort(named, {}, &named_definition::name);
+  for (std::size_t index = 1; index < named.size(); ++index) {
+    if (named[index].name == named[index - 1].name) {
+      return "the recursive types " + display(named[index - 1].type) + " and " +
+             display(named[index].type) +
+             ", which both map to the schema definition name \"" + named[index].name +
+             "\"";
+    }
+  }
+  return {};
+}
+
 // Explains why a type is outside a value family. The empty string means it is
 // inside. The text names the offending member or element by its C++ path, and it
 // is what the static_assert at every reflected entry point prints, so a rejected
@@ -59,6 +86,40 @@ consteval bool is_qualified(const std::meta::info type) {
 class value_checker {
 public:
   explicit consteval value_checker(const value_family family) : family_{family} {}
+
+  // The shape of `type` first, then whether its recursion ends, and last, for a
+  // type with a schema, whether that schema can name each of its definitions.
+  consteval std::string check_root(const std::meta::info type) {
+    if (auto text = check(type, {}); !text.empty()) {
+      return text;
+    }
+    if (auto text = check_recursion(); !text.empty()) {
+      return text;
+    }
+    return family_ == value_family::supported ? check_definition_names(type)
+                                              : std::string{};
+  }
+
+private:
+  struct reached_aggregate {
+    std::meta::info type{};
+    // Where the shape check first reached the aggregate.
+    std::string path{};
+  };
+
+  value_family family_;
+  // Every aggregate the shape check has reached, in order. Each is checked where
+  // it is first reached and nowhere else, so a recursive aggregate ends its own
+  // walk, and an aggregate that many members share is not walked again.
+  std::vector<reached_aggregate> reached_{};
+  // The construction walk's aggregates: those it is inside, and those it has
+  // finished. It finishes each once, so it visits every link once.
+  std::vector<std::meta::info> constructing_{};
+  std::vector<std::meta::info> constructed_{};
+
+  [[nodiscard]] consteval bool decodes() const {
+    return family_ != value_family::encodable;
+  }
 
   consteval std::string check(const std::meta::info reflected,
                               const std::string& path) {
@@ -71,15 +132,6 @@ public:
       return check_leaf(kind, reflected, path);
     }
     return check_composite(kind, type, path);
-  }
-
-private:
-  value_family family_;
-  // Aggregates on the path from the root to the value being checked.
-  std::vector<std::meta::info> active_{};
-
-  [[nodiscard]] consteval bool decodes() const {
-    return family_ != value_family::encodable;
   }
 
   static consteval std::string problem(const std::string& path,
@@ -98,6 +150,13 @@ private:
   static consteval std::string element_path(const std::string& path,
                                             const std::meta::info container) {
     return (path.empty() ? display(container) : path) + "[]";
+  }
+
+  // A nested alternative is named after the variant's path ("Doc::blocks[]<Text>");
+  // a root one starts its own ("Text::body").
+  static consteval std::string alternative_path(const std::string& path,
+                                                const std::meta::info alternative) {
+    return path.empty() ? std::string{} : path + "<" + display(alternative) + ">";
   }
 
   consteval std::string check_leaf(const value_kind kind, const std::meta::info shown,
@@ -199,6 +258,15 @@ private:
                            "only nullable form")
                  : check(element, path);
     }
+    // An indirect is the value it owns, on the wire and in the schema, so it adds
+    // nothing to the path.
+    if (kind == value_kind::indirect) {
+      return kind_of(element) == value_kind::optional
+                 ? problem(path, type,
+                           "nests std::optional inside std::indirect; "
+                           "std::optional<std::indirect<T>> is the nullable form")
+                 : check(element, path);
+    }
     if (kind == value_kind::vector && plain_type(element) == (^^bool)) {
       return problem(path, type,
                      "is std::vector<bool>, whose elements are not addressable; use "
@@ -210,8 +278,9 @@ private:
 
   consteval std::string check_aggregate(const std::meta::info type,
                                         const std::string& path) {
-    if (std::ranges::contains(active_, type)) {
-      return problem(path, type, "is reachable from its own members");
+    // Reached again, an aggregate is either still being checked or has passed.
+    if (std::ranges::contains(reached_, type, &reached_aggregate::type)) {
+      return {};
     }
     if (!std::meta::bases_of(type, std::meta::access_context::unchecked()).empty()) {
       return problem(path, type, "has a base class");
@@ -219,13 +288,12 @@ private:
     if (auto text = check_class_annotations(type, path); !text.empty()) {
       return text;
     }
-    active_.push_back(type);
+    reached_.push_back({.type = type, .path = path});
     for (const auto member : data_members_of(type)) {
       if (auto text = check_member(type, member, path); !text.empty()) {
         return text;
       }
     }
-    active_.pop_back();
     // After the members, so a const member is reported as such rather than as
     // the missing assignment it causes.
     if (decodes() && !is_storable(type)) {
@@ -248,7 +316,15 @@ private:
       return problem(path, type,
                      "carries scrydantic::tool, which applies to functions");
     }
-    return {};
+    for (const auto annotation : std::meta::annotations_of(type)) {
+      if (is_constraint(annotation)) {
+        return problem(path, type,
+                       "carries " + owned_text(constraint_name(annotation)) +
+                           ", which applies to data members");
+      }
+    }
+    const auto reason = validators_problem(type, type);
+    return reason.empty() ? reason : problem(path, type, reason);
   }
 
   consteval std::string check_member(const std::meta::info owner,
@@ -279,7 +355,21 @@ private:
     if (auto text = check_member_annotations(member, here); !text.empty()) {
       return text;
     }
-    return check(std::meta::type_of(member), here);
+    return check_member_value(member, here);
+  }
+
+  // The member's type, then its constraints and validators, which take a value
+  // of that type.
+  consteval std::string check_member_value(const std::meta::info member,
+                                           const std::string& here) {
+    if (auto text = check(std::meta::type_of(member), here); !text.empty()) {
+      return text;
+    }
+    auto reason = constraint_problem(member);
+    if (reason.empty()) {
+      reason = validators_problem(member, constrained_type(member));
+    }
+    return reason.empty() ? reason : at_path(here, reason);
   }
 
   static consteval std::string check_member_annotations(const std::meta::info member,
@@ -367,9 +457,7 @@ private:
                          " without a scrydantic::tag annotation; a reflected "
                          "variant is a tagged union of aggregates");
     }
-    // A nested alternative is named after the variant's path ("Doc::blocks[]<Text>");
-    // a root one starts its own ("Text::body").
-    const auto here = path.empty() ? std::string{} : path + "<" + name_of + ">";
+    const auto here = alternative_path(path, alternative);
     if (auto text = check(alternative, here); !text.empty()) {
       return text;
     }
@@ -381,11 +469,93 @@ private:
     }
     return {};
   }
+
+  // Default construction builds every member, the value a std::indirect owns,
+  // every element of a non-empty std::array, and a variant's first alternative;
+  // it leaves a std::optional disengaged and a std::vector empty. Decoding starts
+  // from a default-constructed value, so on a cycle of the former links alone it
+  // never ends. Encoding builds nothing, and the variant it is given may hold any
+  // alternative, but a value with such a cycle that passes through no variant is
+  // infinite or, through a reference, cyclic. Reflection cannot see what a
+  // default member initializer holds, so the walk assumes each member starts as
+  // its type's default. It starts from each aggregate the shape check reached, at
+  // the path it was reached by.
+  consteval std::string check_recursion() {
+    for (const auto& [type, path] : reached_) {
+      if (auto text = check_construction(type, path); !text.empty()) {
+        return text;
+      }
+    }
+    return {};
+  }
+
+  consteval std::string check_construction(const std::meta::info type,
+                                           const std::string& path) {
+    if (std::ranges::contains(constructed_, type)) {
+      return {};
+    }
+    if (std::ranges::contains(constructing_, type)) {
+      return problem(path, type,
+                     decodes() ? "contains itself through no std::optional, "
+                                 "std::vector, or variant alternative after the "
+                                 "first, so default-constructing it, as decoding "
+                                 "does, never ends"
+                               : "contains itself through no std::optional, "
+                                 "std::vector, or variant, so every value of it is "
+                                 "infinite or cyclic and cannot be JSON");
+    }
+    constructing_.push_back(type);
+    for (const auto member : data_members_of(type)) {
+      if (auto text =
+              check_filled(std::meta::type_of(member), member_path(path, type, member));
+          !text.empty()) {
+        return text;
+      }
+    }
+    constructing_.pop_back();
+    constructed_.push_back(type);
+    return {};
+  }
+
+  // Follows the links of `reflected` that every value of it fills.
+  consteval std::string check_filled(const std::meta::info reflected,
+                                     const std::string& path) {
+    const auto type = plain_type(reflected);
+    switch (kind_of(type)) {
+    case value_kind::aggregate:
+      return check_construction(type, path);
+    case value_kind::indirect:
+      return check_filled(element_of(type), path);
+    case value_kind::array:
+      return array_size_of(type) == 0
+                 ? std::string{}
+                 : check_filled(element_of(type), element_path(path, type));
+    case value_kind::variant: {
+      if (!decodes()) {
+        return {};
+      }
+      const auto first = alternatives_of(type).front();
+      return check_filled(first, alternative_path(path, first));
+    }
+    default:
+      return {};
+    }
+  }
+
+  // A schema writes each recursive aggregate once, under a name spelled from its
+  // type, so each must have a name of its own.
+  static consteval std::string check_definition_names(const std::meta::info type) {
+    std::vector<schema_node> start{};
+    append_held_nodes(start, type);
+    const auto reason =
+        definition_names_problem(recursive_nodes(std::move(start), root_node(type)));
+    return reason.empty() ? std::string{} : problem({}, type, "has " + reason);
+  }
 };
 
 consteval std::string value_problem(const std::meta::info type,
                                     const value_family family) {
-  return value_checker{family}.check(type, {});
+  return value_checker{family}.check_root(type);
 }
 
 consteval std::string tool_arguments_problem(const std::meta::info type) {
@@ -538,11 +708,18 @@ namespace scrydantic {
 ///
 /// Supported shapes are a deliberately closed matrix: booleans, bounded
 /// non-character integers, finite floats, strings, scoped enums, one optional layer,
-/// vectors except `vector<bool>`, fixed arrays, recursively supported plain
-/// aggregates, and tagged variants of such aggregates, each alternative carrying a
-/// distinct scrydantic::tag. Every supported value has a generated schema,
-/// encodes, and decodes. Reflected entry points report the member path and the
-/// reason a type falls outside this family.
+/// vectors except `vector<bool>`, fixed arrays, `std::indirect`, plain aggregates
+/// of supported members, and tagged variants of such aggregates, each alternative
+/// carrying a distinct scrydantic::tag. An indirect encodes, decodes, and has the
+/// schema of the value it owns, and `std::optional<std::indirect<T>>` is its
+/// nullable form. An aggregate may contain itself, through `std::vector` or
+/// `std::indirect`, when every such cycle passes through a `std::optional`, a
+/// `std::vector`, or a variant alternative after the first, so that
+/// default-constructing it ends; its schema refers to it with `$ref`. Every
+/// supported value has a generated schema, encodes, and decodes. A member's
+/// constraint annotations must apply to its type and admit a value, in this
+/// family and in the others. Reflected entry points report the member path and
+/// the reason a type falls outside this family.
 template <typename Type>
 concept SupportedValue =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::supported)
@@ -554,7 +731,8 @@ concept SupportedValue =
 /// elsewhere. `Json` is checked for validity and spliced verbatim.
 /// Aggregates here need not be default-constructible, movable, or free of `const`
 /// members, and may borrow a member through a reference, since encoding only reads
-/// them. Neither leaf has a schema.
+/// them; for the same reason, a cycle may pass through any variant alternative.
+/// Neither leaf has a schema.
 template <typename Type>
 concept Encodable =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::encodable)

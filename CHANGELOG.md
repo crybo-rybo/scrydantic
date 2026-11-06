@@ -10,11 +10,102 @@ The entries use ASD-STE100 Simplified Technical English.
 
 ## [Unreleased]
 
+### Added
+
+- **Structured decode errors** (`scrydantic/error.hpp`). `Error::issues`
+  lists each issue that a decode found. Each `Issue` has an `IssueKind`, a
+  path from the decoded value as `PathSegment`s, and a reason, for example
+  `must be a number`. `json_path()` gives the text of a path. `max_issues`
+  (64) is the maximum number of issues that one decode reports. Other
+  failures, and all encode failures, keep `issues` empty.
+- **Recursive models.** An aggregate can contain itself through
+  `std::vector<T>` or `std::indirect<T>`, directly or through other
+  aggregates and variant alternatives. The check accepts a cycle only if a
+  value can end it. A cycle with no `std::optional`, `std::vector`, or
+  variant alternative after the first fails to compile, and the message
+  gives the path of the cycle. An encode stops at an array or object that is
+  more than 256 levels deep, and the failure gives its path, so a deep value
+  cannot overflow the stack.
+- **`std::indirect<T>`.** It encodes, decodes, and has the schema of the `T`
+  that it owns. `std::optional<std::indirect<T>>` is its nullable form, so
+  `skip_null` and `emit_null` apply to it. `std::indirect<std::optional<T>>`
+  fails to compile. An encode accepts any allocator, and a decode needs an
+  allocator that can be default-constructed. An encode fails at the path of a
+  `std::indirect` that a move made empty.
+- **`$defs` and `$ref` in schemas.** The schema writes each aggregate that
+  contains itself one time, under `$defs` of the root, and refers to it with
+  `$ref`. A recursive root refers to itself as `"#"`, so it keeps
+  `"type":"object"`. All other schemas are written in place, as before. The
+  name of a definition comes from the qualified name of the type, for
+  example `recursive.Node-string` for `recursive::Node<std::string>`. A type
+  is not a `SupportedValue` if its schema defines two types with one name.
+  It is also not a `SupportedValue` if no definition name can spell one of
+  its recursive types: a class that is local to a function, a name that is
+  not ASCII, or a template argument such as a pointer. The message gives the
+  cause. The parameters of a tool share one `$defs`, so `bind()` checks their
+  names together.
+- **Constraints** (`scrydantic/annotations.hpp`). Five annotations bound a
+  data member. `range` and `multiple_of` apply to integer and floating-point
+  members, `length` and `pattern` to `std::string` members, and `items` to
+  `std::vector` members. Each adds its JSON Schema keyword to the schema, for
+  example `"maximum":150`. A bound of a range replaces the same bound of the
+  integer type. The schema writes a floating-point bound as
+  `format_json_number()` writes it. A decode checks each constraint except
+  `pattern` on the value that the input gives. A value past a constraint is an
+  `IssueKind::violated_constraint` issue, and its reason uses the words of the
+  keyword, for example `must be at most 150`. A decode checks a
+  floating-point number as the parser read it and again after the conversion
+  to the type of the member. A constraint on a `std::optional` member bounds
+  the value that it holds. Constraints apply through `std::indirect` and at
+  each level of a recursive model. A member that keeps its default value is
+  not checked, and an encode checks no constraint. `pattern` is only in the
+  schema. A constraint that cannot apply or that no value can meet fails to
+  compile, and the message gives the member and the cause: the wrong type of
+  member, two constraints of one kind, an empty or crossed range, a bound that
+  is not exactly a value of the type of the member, or a floating-point
+  `multiple_of` that is not exact in binary. A constraint on a class or on a
+  tool function also fails to compile.
+- **Validators** (`check<&fn>`). `check` names a validator function. On a
+  data member, the function takes the value of the member as `const T&`. On a
+  class, it takes the object. In both cases it returns `Status`. A decode
+  runs the validators of a member after the member decodes and meets its
+  constraints, in their order, until one rejects the value. It runs the
+  validators of a class after all members of the object are valid. A
+  rejection is an `IssueKind::failed_check` issue at the path of the value.
+  The reason of the issue, and the line in `model_message`, is the
+  `model_message` of the validator, or `is not valid` if it is empty. The line
+  in `message` gives the `message` of the validator if it has one, so the
+  model does not see the text for the host. Validators are not in the schema,
+  and an encode runs none. A validator must return a rejection and not throw
+  it: an exception from a validator goes out of the decode, and the call that
+  decoded fails. A validator with the wrong signature, an argument that is not
+  a function pointer, a null function pointer, or one validator two times on
+  one value fails to compile. `check` on a tool function also fails to
+  compile.
+
 ### Changed
 
-- **Requirements.** GCC 16.1 or newer. CMake, `find_package(scrydantic)`, and
-  the scripts reject GCC 16.0.x, which are development snapshots. CI now
-  builds and tests with the released GCC 16.2.0.
+- **Decode failures.** A decode does not stop at the first failure. It
+  continues to the other members and elements, and it reports each issue.
+  With one issue, `message` and `model_message` have the same text as
+  before. With more issues, they have one `<path> <reason>` line for each
+  issue. After `max_issues` issues, the decode stops, and a last line says
+  that it did not report the other issues. A bound tool gives the issues to
+  the host and the lines to the model.
+- **Paths.** In decode and encode failures, a key that is not an ASCII
+  identifier is a JSON string in brackets, for example `$["a.b"]`. Before,
+  the key followed a `.`, so a key such as `a.b` looked like two steps.
+- **Tool parameters.** A parameter that the model gives cannot have an
+  annotation from namespace `scrydantic`, for example a `description`, a
+  constraint, or `check`. `bind()`, `describe()`, and the other tool functions
+  fail to compile for such a tool, and the message gives the parameter.
+  Before, the binding ignored the annotation, so the schema did not show a
+  `description` on a parameter. Put the annotation on a member of an argument
+  aggregate.
+- **Requirements.** GCC 16.2 or newer. CMake, `find_package(scrydantic)`, and
+  the scripts reject older versions. GCC 16.1 has reflection bugs that 16.2
+  fixes, such as PR c++/124770, and GCC 16.0.x versions are development
+  snapshots. CI builds and tests with GCC 16.2.0, the minimum.
 
 ## [0.1.0] - 2026-11-04
 

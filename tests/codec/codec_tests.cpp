@@ -1,20 +1,27 @@
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_tostring.hpp>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <memory_resource>
+#include <meta>
 #include <optional>
 #include <random>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
 #include <scrydantic/diagnostics.hpp>
+#include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -544,11 +551,12 @@ TEST_CASE("name annotations replace keys in encoding decoding and errors") {
   REQUIRE_FALSE(rejected);
   CHECK(rejected.error().model_message == "$.a_first is a required member");
 
-  // With several bad members, the first in declaration order is reported, even
-  // though its key sorts later.
+  // With several bad members, each is reported, in declaration order, even
+  // though the first one's key sorts later.
   rejected = decode_text<Renamed>(R"({"a_first":1,"max_tokens":"x"})");
   REQUIRE_FALSE(rejected);
-  CHECK(rejected.error().model_message == "$.max_tokens must be an integer");
+  CHECK(rejected.error().model_message ==
+        "$.max_tokens must be an integer\n$.a_first must be a string");
 }
 
 TEST_CASE("keys_v lists what encode() writes and what a document must hold") {
@@ -1047,4 +1055,1196 @@ TEST_CASE("encoding reports a valueless variant instead of throwing") {
   const auto encoded = scrydantic::encode(block);
   REQUIRE_FALSE(encoded);
   CHECK(encoded.error().message == "$ is a variant left valueless by an exception");
+}
+
+// ---- Decode issues -----------------------------------------------------------
+
+namespace {
+
+struct Account {
+  std::string name;
+  std::int16_t age{};
+  bool active{};
+  Role role{};
+};
+
+struct Address {
+  std::string city;
+  std::uint32_t zip{};
+};
+
+struct Customer {
+  Address home;
+  std::optional<Address> work = std::nullopt;
+  std::vector<std::int32_t> scores;
+  std::array<bool, 2> flags{};
+};
+
+// Keys that a path cannot spell in dot shorthand.
+struct Awkward {
+  [[= scrydantic::name{"content-type"}]] std::string content_type;
+  [[= scrydantic::name{"a.b"}]] std::vector<int> dotted;
+  [[= scrydantic::name{"\"]"}]] bool quote{};
+};
+
+struct AwkwardNumber {
+  [[= scrydantic::name{"a.b"}]] double value{};
+};
+
+struct Bulk {
+  std::vector<int> values;
+  std::string after;
+};
+
+using scrydantic::IssueKind;
+using Issues = std::vector<scrydantic::Issue>;
+
+constexpr std::string_view stopped_line =
+    "further issues past the first 64 were not reported";
+
+// A JSON array of `count` strings, each an issue where Bulk wants integers.
+[[nodiscard]] std::string wrong_values(const std::size_t count) {
+  std::string text{"["};
+  for (std::size_t index = 0; index < count; ++index) {
+    text.append(index == 0 ? R"("x")" : R"(,"x")");
+  }
+  text.push_back(']');
+  return text;
+}
+
+// The message lines of the first `count` wrong values, joined.
+[[nodiscard]] std::string wrong_value_lines(const std::size_t count) {
+  std::string text{};
+  for (std::size_t index = 0; index < count; ++index) {
+    text.append(index == 0 ? "" : "\n")
+        .append("$.values[" + std::to_string(index) + "] must be an integer");
+  }
+  return text;
+}
+
+} // namespace
+
+namespace {
+
+// A function template because GCC 16 reports -Wshadow for each expansion of a
+// `template for` in a function that is not one.
+template <typename Enum> [[nodiscard]] std::string enumerator_name(const Enum value) {
+  template for (constexpr std::meta::info enumerator :
+                std::define_static_array(std::meta::enumerators_of(^^Enum))) {
+    if (value == [:enumerator:]) {
+      return std::string{std::meta::identifier_of(enumerator)};
+    }
+  }
+  return "an undeclared enumerator";
+}
+
+} // namespace
+
+// Issues print as `kind at path: reason`, so a failed comparison shows them.
+template <> struct Catch::StringMaker<scrydantic::IssueKind> {
+  static std::string convert(const scrydantic::IssueKind kind) {
+    return enumerator_name(kind);
+  }
+};
+
+template <> struct Catch::StringMaker<scrydantic::Issue> {
+  static std::string convert(const scrydantic::Issue& issue) {
+    return StringMaker<scrydantic::IssueKind>::convert(issue.kind) + " at " +
+           scrydantic::json_path(issue.path) + ": " + issue.reason;
+  }
+};
+
+TEST_CASE("decoding reports every issue in an object, in declaration order") {
+  const auto decoded = decode_text<Account>(
+      R"({"active":"yes","age":70000,"extra":1,"name":7,"role":"admin"})");
+  REQUIRE_FALSE(decoded);
+  // Unknown members are found before the declared ones are read.
+  CHECK(decoded.error().issues ==
+        Issues{
+            {.kind = IssueKind::unknown_member,
+             .reason = R"(contains unknown member "extra")"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"name"},
+             .reason = "must be a string"},
+            {.kind = IssueKind::out_of_range,
+             .path = {"age"},
+             .reason = "is outside the integer range"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"active"},
+             .reason = "must be a boolean"},
+            {.kind = IssueKind::unknown_enumerator,
+             .path = {"role"},
+             .reason = "is not a declared enumerator; must be one of: user, assistant"},
+        });
+  constexpr std::string_view message =
+      "$ contains unknown member \"extra\"\n"
+      "$.name must be a string\n"
+      "$.age is outside the integer range\n"
+      "$.active must be a boolean\n"
+      "$.role is not a declared enumerator; must be one of: user, assistant";
+  CHECK(decoded.error().message == message);
+  CHECK(decoded.error().model_message == message);
+
+  // Each unknown member is its own issue, in key order, and a missing required
+  // member is one more.
+  const auto sparse = decode_text<Account>(R"({"b":1,"a":2})");
+  REQUIRE_FALSE(sparse);
+  CHECK(sparse.error().issues == Issues{
+                                     {.kind = IssueKind::unknown_member,
+                                      .reason = R"(contains unknown member "a")"},
+                                     {.kind = IssueKind::unknown_member,
+                                      .reason = R"(contains unknown member "b")"},
+                                     {.kind = IssueKind::missing_member,
+                                      .path = {"name"},
+                                      .reason = "is a required member"},
+                                 });
+  CHECK(sparse.error().model_message == "$ contains unknown member \"a\"\n"
+                                        "$ contains unknown member \"b\"\n"
+                                        "$.name is a required member");
+}
+
+TEST_CASE("issues inside nested objects, optionals, and arrays carry full paths") {
+  const auto decoded = decode_text<Customer>(
+      R"({"flags":[true,1],"home":{"zip":-1},"scores":[1,"two",3,4.5],)"
+      R"("work":{"city":null,"zip":"x"}})");
+  REQUIRE_FALSE(decoded);
+  CHECK(decoded.error().issues == Issues{
+                                      {.kind = IssueKind::missing_member,
+                                       .path = {"home", "city"},
+                                       .reason = "is a required member"},
+                                      {.kind = IssueKind::out_of_range,
+                                       .path = {"home", "zip"},
+                                       .reason = "is outside the integer range"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"work", "city"},
+                                       .reason = "must be a string"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"work", "zip"},
+                                       .reason = "must be an integer"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"scores", 1UZ},
+                                       .reason = "must be an integer"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"scores", 3UZ},
+                                       .reason = "must be an integer"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"flags", 1UZ},
+                                       .reason = "must be a boolean"},
+                                  });
+  constexpr std::string_view message = "$.home.city is a required member\n"
+                                       "$.home.zip is outside the integer range\n"
+                                       "$.work.city must be a string\n"
+                                       "$.work.zip must be an integer\n"
+                                       "$.scores[1] must be an integer\n"
+                                       "$.scores[3] must be an integer\n"
+                                       "$.flags[1] must be a boolean";
+  CHECK(decoded.error().message == message);
+  CHECK(decoded.error().model_message == message);
+}
+
+TEST_CASE("a value of the wrong JSON type is one issue, and nothing inside is read") {
+  const auto decoded =
+      decode_text<Customer>(R"({"flags":[true],"home":[],"scores":{},"work":"w"})");
+  REQUIRE_FALSE(decoded);
+  CHECK(decoded.error().issues ==
+        Issues{
+            {.kind = IssueKind::wrong_type,
+             .path = {"home"},
+             .reason = "must be an object"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"work"},
+             .reason = "must be an object"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"scores"},
+             .reason = "must be an array"},
+            {.kind = IssueKind::wrong_size,
+             .path = {"flags"},
+             .reason = "must be an array of the declared fixed size"},
+        });
+  CHECK(decoded.error().model_message == "$.home must be an object\n"
+                                         "$.work must be an object\n"
+                                         "$.scores must be an array\n"
+                                         "$.flags must be an array of the declared "
+                                         "fixed size");
+
+  // A fixed-size array's two failures share their text but not their kind.
+  const auto not_array =
+      decode_text<Customer>(R"({"flags":{},"home":{"city":""},"scores":[]})");
+  REQUIRE_FALSE(not_array);
+  CHECK(not_array.error().issues ==
+        Issues{{.kind = IssueKind::wrong_type,
+                .path = {"flags"},
+                .reason = "must be an array of the declared fixed size"}});
+  CHECK(not_array.error().model_message ==
+        "$.flags must be an array of the declared fixed size");
+}
+
+TEST_CASE("a variant reports its alternative's issues, or one issue for its tag") {
+  const auto decoded = decode_text<Drawing>(
+      R"({"highlight":{"radius":"big"},"shapes":[)"
+      R"({"radius":"big","side":1,"type":"circle"},{"type":"hexagon","width":"w"},7,)"
+      R"({"height":"h","type":"rectangle","width":"w"}]})");
+  REQUIRE_FALSE(decoded);
+  // With no alternative chosen, an object's other members are not checked: the
+  // hexagon's width and the highlight's radius go unreported.
+  CHECK(decoded.error().issues ==
+        Issues{
+            {.kind = IssueKind::unknown_member,
+             .path = {"shapes", 0UZ},
+             .reason = R"(contains unknown member "side")"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"shapes", 0UZ, "radius"},
+             .reason = "must be a number"},
+            {.kind = IssueKind::unknown_tag,
+             .path = {"shapes", 1UZ, "type"},
+             .reason = "must be one of: circle, rectangle"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"shapes", 2UZ},
+             .reason = "must be an object"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"shapes", 3UZ, "height"},
+             .reason = "must be a number"},
+            {.kind = IssueKind::wrong_type,
+             .path = {"shapes", 3UZ, "width"},
+             .reason = "must be a number"},
+            {.kind = IssueKind::missing_tag,
+             .path = {"highlight", "type"},
+             .reason = "is a required member; must be one of: circle, rectangle"},
+        });
+  constexpr std::string_view message =
+      "$.shapes[0] contains unknown member \"side\"\n"
+      "$.shapes[0].radius must be a number\n"
+      "$.shapes[1].type must be one of: circle, rectangle\n"
+      "$.shapes[2] must be an object\n"
+      "$.shapes[3].height must be a number\n"
+      "$.shapes[3].width must be a number\n"
+      "$.highlight.type is a required member; must be one of: circle, rectangle";
+  CHECK(decoded.error().message == message);
+  CHECK(decoded.error().model_message == message);
+
+  // A tag that is not a string names no alternative either.
+  const auto untyped = decode_text<Shape>(R"({"radius":"big","type":7})");
+  REQUIRE_FALSE(untyped);
+  CHECK(untyped.error().issues ==
+        Issues{{.kind = IssueKind::unknown_tag,
+                .path = {"type"},
+                .reason = "must be one of: circle, rectangle"}});
+}
+
+TEST_CASE("text that is not JSON is one issue at the root") {
+  const auto decoded = decode_text<Account>(R"({"name":)");
+  REQUIRE_FALSE(decoded);
+  CHECK(decoded.error().issues ==
+        Issues{{.kind = IssueKind::invalid_json, .reason = "is not valid JSON"}});
+  CHECK(decoded.error().message == "JSON text is not valid JSON");
+  CHECK(decoded.error().model_message == "JSON text is not valid JSON");
+}
+
+TEST_CASE("paths quote keys that are not identifiers") {
+  const auto decoded =
+      decode_text<Awkward>(R"({"\"]":0,"a.b":[1,"x"],"content-type":1,"x.y":2})");
+  REQUIRE_FALSE(decoded);
+  CHECK(decoded.error().issues == Issues{
+                                      {.kind = IssueKind::unknown_member,
+                                       .reason = R"(contains unknown member "x.y")"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"content-type"},
+                                       .reason = "must be a string"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"a.b", 1UZ},
+                                       .reason = "must be an integer"},
+                                      {.kind = IssueKind::wrong_type,
+                                       .path = {"\"]"},
+                                       .reason = "must be a boolean"},
+                                  });
+  CHECK(decoded.error().model_message == R"($ contains unknown member "x.y")"
+                                         "\n"
+                                         R"($["content-type"] must be a string)"
+                                         "\n"
+                                         R"($["a.b"][1] must be an integer)"
+                                         "\n"
+                                         R"($["\"]"] must be a boolean)");
+
+  // An encode failure spells its path the same way, and is no decode issue.
+  const auto encoded = scrydantic::encode(
+      AwkwardNumber{.value = std::numeric_limits<double>::infinity()});
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message == R"($["a.b"] must be finite)");
+  CHECK(encoded.error().model_message.empty());
+  CHECK(encoded.error().issues.empty());
+}
+
+TEST_CASE("decoding reports at most max_issues issues, then says it stopped") {
+  static_assert(scrydantic::max_issues == 64);
+  const auto check_reported = [](const std::size_t count) {
+    INFO(count << " wrong values");
+    const auto decoded =
+        decode_text<Bulk>(R"({"after":"","values":)" + wrong_values(count) + "}");
+    REQUIRE_FALSE(decoded);
+    const auto& error = decoded.error();
+    const std::size_t reported = std::min(count, scrydantic::max_issues);
+    REQUIRE(error.issues.size() == reported);
+    for (std::size_t index = 0; index < reported; ++index) {
+      CHECK(error.issues[index] == scrydantic::Issue{.kind = IssueKind::wrong_type,
+                                                     .path = {"values", index},
+                                                     .reason = "must be an integer"});
+    }
+    const auto expected =
+        count > scrydantic::max_issues
+            ? wrong_value_lines(reported) + "\n" + std::string{stopped_line}
+            : wrong_value_lines(reported);
+    CHECK(error.message == expected);
+    CHECK(error.model_message == expected);
+    return error;
+  };
+  check_reported(scrydantic::max_issues - 1);
+  check_reported(scrydantic::max_issues);
+  const auto stopped = check_reported(scrydantic::max_issues + 1);
+  // Hostile input reports exactly what one issue too many does.
+  const auto hostile = check_reported(100'000);
+  CHECK(hostile.issues == stopped.issues);
+  CHECK(hostile.message == stopped.message);
+}
+
+TEST_CASE("an issue past max_issues stops the whole decode") {
+  // Below the limit, the missing `after` is the 64th issue and is reported.
+  const auto at_limit = decode_text<Bulk>(R"({"values":)" + wrong_values(63) + "}");
+  REQUIRE_FALSE(at_limit);
+  REQUIRE(at_limit.error().issues.size() == scrydantic::max_issues);
+  CHECK(at_limit.error().issues.back() ==
+        scrydantic::Issue{.kind = IssueKind::missing_member,
+                          .path = {"after"},
+                          .reason = "is a required member"});
+  CHECK(at_limit.error().message ==
+        wrong_value_lines(63) + "\n$.after is a required member");
+
+  // At it, the missing `after` is the 65th, a sibling of the array that filled
+  // the report, and the decode stops there.
+  const auto past_limit = decode_text<Bulk>(R"({"values":)" + wrong_values(64) + "}");
+  REQUIRE_FALSE(past_limit);
+  CHECK(past_limit.error().issues.size() == scrydantic::max_issues);
+  CHECK(past_limit.error().message ==
+        wrong_value_lines(64) + "\n" + std::string{stopped_line});
+
+  // Unknown members count too, and stop the decode before any declared member.
+  // Three-digit keys visit in the order they are written.
+  std::string unknown{"{"};
+  for (std::size_t index = 0; index <= scrydantic::max_issues; ++index) {
+    unknown.append(index == 0 ? "" : ",")
+        .append("\"k" + std::to_string(100 + index) + "\":0");
+  }
+  unknown.push_back('}');
+  const auto crowded = decode_text<Bulk>(unknown);
+  REQUIRE_FALSE(crowded);
+  REQUIRE(crowded.error().issues.size() == scrydantic::max_issues);
+  CHECK(crowded.error().issues.back() ==
+        scrydantic::Issue{.kind = IssueKind::unknown_member,
+                          .reason = R"(contains unknown member "k163")"});
+  CHECK(crowded.error().message.ends_with("\n$ contains unknown member \"k163\"\n" +
+                                          std::string{stopped_line}));
+}
+
+// ---- Indirection -------------------------------------------------------------
+
+namespace {
+
+struct Boxed {
+  std::optional<std::indirect<Shape>> highlight;
+  std::indirect<Renamed> renamed;
+};
+
+struct Unboxed {
+  std::optional<Shape> highlight;
+  Renamed renamed;
+};
+
+struct OptionalInside {
+  std::indirect<std::optional<int>> value;
+};
+
+// Decoding accepts any allocator it can default-construct, as for std::vector.
+struct Pooled {
+  std::pmr::indirect<int> value;
+};
+
+// An allocator that must be given the resource it allocates from.
+template <typename Value> class BoundAllocator {
+public:
+  using value_type = Value;
+
+  explicit BoundAllocator(std::pmr::memory_resource& resource) noexcept
+      : resource_{&resource} {}
+  template <typename Other>
+  // NOLINTNEXTLINE(google-explicit-constructor): allocators rebind implicitly.
+  BoundAllocator(const BoundAllocator<Other>& other) noexcept
+      : resource_{other.resource()} {}
+
+  [[nodiscard]] Value* allocate(const std::size_t count) {
+    return static_cast<Value*>(
+        resource_->allocate(count * sizeof(Value), alignof(Value)));
+  }
+  void deallocate(Value* const pointer, const std::size_t count) noexcept {
+    resource_->deallocate(pointer, count * sizeof(Value), alignof(Value));
+  }
+  [[nodiscard]] std::pmr::memory_resource* resource() const noexcept {
+    return resource_;
+  }
+  friend bool operator==(const BoundAllocator&, const BoundAllocator&) = default;
+
+private:
+  std::pmr::memory_resource* resource_;
+};
+
+struct Bound {
+  std::indirect<int, BoundAllocator<int>> value;
+};
+
+} // namespace
+
+static_assert(scrydantic::SupportedValue<Boxed>);
+static_assert(!scrydantic::SupportedValue<OptionalInside>);
+static_assert(
+    !scrydantic::SupportedValue<std::optional<std::indirect<std::optional<int>>>>);
+static_assert(scrydantic::SupportedValue<Pooled>);
+// Encoding only reads, so it takes an allocator that decoding cannot construct.
+static_assert(scrydantic::Encodable<Bound>);
+static_assert(!scrydantic::Decodable<Bound>);
+
+static_assert(mentions(scrydantic::supported_value_diagnostic<OptionalInside>(),
+                       "OptionalInside::value: std::indirect<std::optional<int> > "
+                       "nests std::optional inside std::indirect; "
+                       "std::optional<std::indirect<T>> is the nullable form"));
+static_assert(mentions(scrydantic::decodable_diagnostic<Bound>(),
+                       "Bound::value: std::indirect<int, "
+                       "{anonymous}::BoundAllocator<int> > must be default-"
+                       "constructible, move-constructible, and move-assignable"));
+
+// An indirect has the schema of the value it owns, and an optional one joins null
+// to a variant's alternatives as an optional variant does.
+static_assert(scrydantic::schema_v<Boxed> == scrydantic::schema_v<Unboxed>);
+static_assert(
+    scrydantic::schema_v<Pooled> ==
+    R"({"additionalProperties":false,"properties":{"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["value"],"type":"object"})");
+
+TEST_CASE("std::indirect encodes and decodes as the value it owns") {
+  const Boxed boxed{
+      .highlight = std::indirect<Shape>(Shape{Circle{.radius = 1}}),
+      .renamed = std::indirect<Renamed>(Renamed{.limit = 5, .zed = "z"}),
+  };
+  const Unboxed unboxed{
+      .highlight = Shape{Circle{.radius = 1}},
+      .renamed = Renamed{.limit = 5, .zed = "z"},
+  };
+  const auto text = std::string{R"({"highlight":{"radius":1,"type":"circle"},)"
+                                R"("renamed":{"a_first":"z","max_tokens":5}})"};
+  CHECK(scrydantic::encode(boxed)->text == text);
+  CHECK(scrydantic::encode(unboxed)->text == text);
+
+  const auto decoded = decode_text<Boxed>(text);
+  REQUIRE(decoded);
+  CHECK(std::get<Circle>(**decoded->highlight).radius == 1.0);
+  CHECK(decoded->renamed->zed == "z");
+  CHECK_FALSE(decode_text<Boxed>(R"({"highlight":null,"renamed":{"a_first":"y"}})")
+                  ->highlight.has_value());
+
+  const auto failed = decode_text<Boxed>(
+      R"({"highlight":{"type":"hexagon"},"renamed":{"a_first":"y"}})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.highlight.type must be one of: circle, rectangle");
+
+  const auto pooled = decode_text<Pooled>(R"({"value":7})");
+  REQUIRE(pooled);
+  CHECK(*pooled->value == 7);
+  CHECK(scrydantic::encode(*pooled)->text == R"({"value":7})");
+
+  std::pmr::monotonic_buffer_resource resource{};
+  const Bound bound{.value = std::indirect<int, BoundAllocator<int>>(
+                        std::allocator_arg, BoundAllocator<int>{resource}, 3)};
+  CHECK(scrydantic::encode(bound)->text == R"({"value":3})");
+}
+
+TEST_CASE("encoding reports a std::indirect left valueless by a move") {
+  Boxed boxed{
+      .highlight = std::nullopt,
+      .renamed = std::indirect<Renamed>(Renamed{.limit = 5, .zed = "z"}),
+  };
+  const auto taken = std::move(boxed.renamed);
+  REQUIRE(boxed.renamed.valueless_after_move());
+
+  const auto encoded = scrydantic::encode(boxed);
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message ==
+        "$.renamed is a std::indirect left valueless by a move");
+  CHECK(encoded.error().model_message.empty());
+  CHECK(taken->zed == "z");
+}
+
+// ---- Recursive models --------------------------------------------------------
+
+// Named rather than anonymous, so the schema definition names below read as a
+// program's own would.
+namespace recursive {
+
+// A tree: std::vector allows an incomplete element type.
+struct Category {
+  std::vector<Category> children;
+  std::string name;
+};
+
+// A linked list, which ends where its optional is disengaged.
+struct Chain {
+  [[= scrydantic::skip_null]] std::optional<std::indirect<Chain>> next;
+  int value{};
+};
+
+struct Employee;
+
+struct Team {
+  std::vector<Employee> members;
+  std::string name;
+};
+
+struct Employee {
+  std::optional<std::indirect<Team>> leads;
+  std::string name;
+};
+
+// A variant alternative of the shape Chain has, which makes the variant's own
+// conversions ask what Chain's do (decode_failed()).
+struct[[= scrydantic::tag{"link"}]] Link {
+  std::optional<std::indirect<Link>> next;
+};
+
+struct[[= scrydantic::tag{"end"}]] End {};
+
+using Linked = std::variant<End, Link>;
+
+// A recursive type below a root that is not.
+struct Catalog {
+  [[= scrydantic::description{"The top category"}]] Category root;
+  std::string title;
+};
+
+// An expression tree. The leaf comes first, so a default-constructed Expression
+// holds no further Expression.
+struct Negate;
+struct Sum;
+
+struct[[= scrydantic::tag{"literal"}]] Literal {
+  double value{};
+};
+
+using Expression = std::variant<Literal, Negate, Sum>;
+
+struct[[= scrydantic::tag{"negate"}]] Negate {
+  std::indirect<Expression> operand;
+};
+
+struct[[= scrydantic::tag{"sum"}]] Sum {
+  std::vector<Expression> terms;
+};
+
+template <typename Value> struct Node {
+  std::vector<Node> children;
+  Value value{};
+};
+
+struct Forest {
+  std::vector<Node<int>> numbers;
+  std::optional<Node<std::string>> words;
+};
+
+// One identifier in two namespaces.
+namespace other {
+struct Category {
+  std::vector<Category> children;
+};
+} // namespace other
+
+struct Shelves {
+  Category mine;
+  other::Category theirs;
+};
+
+// A tagged class that recurses both as a variant alternative and as a plain
+// value, so its schema needs both of its forms as definitions.
+struct Folder;
+
+struct[[= scrydantic::tag{"file"}]] File {
+  std::string name;
+};
+
+using Entry = std::variant<File, Folder>;
+
+struct[[= scrydantic::tag{"folder"}]] Folder {
+  std::vector<Entry> entries;
+  std::vector<Folder> folders;
+};
+
+struct Drive {
+  Folder top;
+};
+
+// Cycles that hold no std::optional, std::vector, or later alternative.
+struct Endless {
+  std::indirect<Endless> next;
+};
+
+struct Pong;
+
+struct Ping {
+  std::indirect<Pong> pong;
+};
+
+struct Pong {
+  Ping ping;
+};
+
+struct Halves {
+  std::array<std::indirect<Halves>, 2> halves;
+};
+
+struct Wrapped;
+
+using WrappedFirst = std::variant<Wrapped, Literal>;
+
+struct[[= scrydantic::tag{"wrapped"}]] Wrapped {
+  std::indirect<WrappedFirst> inner;
+};
+
+// A reference always binds to something, so a chain of them closes on itself.
+struct Ring {
+  const Ring& next;
+};
+
+// Cycles that end: an empty std::array holds nothing, and a vector may be empty.
+struct NoHalves {
+  std::array<std::indirect<NoHalves>, 0> none;
+};
+
+struct Rows {
+  std::array<std::vector<Rows>, 2> rows;
+};
+
+// Spin<1> and Spin<-1> contain each other, and the sign tells their names apart.
+template <int Sign> struct Spin {
+  std::vector<Spin<-Sign>> flipped;
+};
+
+struct Spins {
+  Spin<1> up;
+};
+
+// Every kind of template argument that a definition name spells.
+enum class Axis : std::uint8_t {
+  rows,
+  columns,
+};
+
+template <typename Element, int Offset, Axis Along, bool Dense, char Mark> struct Grid {
+  std::vector<Grid> cells;
+};
+
+template <typename... Tags> struct Marked {
+  std::vector<Marked> marks;
+};
+
+template <typename Value> struct Outer {
+  struct Inner {
+    std::vector<Inner> more;
+  };
+};
+
+template <std::int64_t Low, std::uint64_t High> struct Range {
+  std::vector<Range> parts;
+};
+
+struct Spelled {
+  Grid<std::array<std::optional<std::uint8_t>, 2>, -2, Axis::columns, true, 'x'> grid;
+  Marked<std::variant<Literal, Sum>, std::indirect<double>, std::vector<char>,
+         std::string, long>
+      marked;
+  Outer<float>::Inner inner;
+  Range<std::numeric_limits<std::int64_t>::min(),
+        std::numeric_limits<std::uint64_t>::max()>
+      range;
+};
+
+// long and long long have one width, and so one name.
+template <typename Integer> struct Tally {
+  std::vector<Tally> parts;
+  Integer count{};
+};
+
+struct Tallies {
+  Tally<long> wide;
+  Tally<long long> wider;
+};
+
+// Recursive types whose names cannot be spelled.
+template <typename Tag> struct Tagged {
+  std::vector<Tagged> children;
+};
+
+struct Pointed {
+  Tagged<int*> tagged;
+};
+
+template <double Scale> struct Scaled {
+  std::vector<Scaled> parts;
+};
+
+struct Scales {
+  Scaled<0.5> half;
+};
+
+struct Größe {
+  std::vector<Größe> parts;
+};
+
+struct Sizes {
+  Größe size;
+};
+
+// A recursive value that splices raw JSON, which only encoding takes.
+struct Noted {
+  [[= scrydantic::skip_null]] std::optional<std::indirect<Noted>> next;
+  scrydantic::Json note;
+};
+
+} // namespace recursive
+
+namespace {
+
+// An anonymous namespace is part of the qualified name a definition derives.
+struct Outline {
+  std::vector<Outline> sections;
+};
+
+struct Report {
+  Outline outline;
+};
+
+// A class local to a function has no stable name.
+consteval std::string_view local_definition_diagnostic() {
+  struct Local {
+    std::vector<Local> more;
+  };
+  struct Holder {
+    Local local;
+  };
+  return scrydantic::supported_value_diagnostic<Holder>();
+}
+
+// A chain of `length` links, valued from `length - 1` at its head down to 0.
+[[nodiscard]] recursive::Chain chain_of(const std::size_t length) {
+  recursive::Chain head{.next = std::nullopt, .value = 0};
+  for (int value = 1; std::cmp_less(value, length); ++value) {
+    recursive::Chain link{.next = std::indirect<recursive::Chain>(std::move(head)),
+                          .value = value};
+    head = std::move(link);
+  }
+  return head;
+}
+
+// The canonical text of chain_of(length), with `last` as its last link.
+[[nodiscard]] std::string chain_text(const std::size_t length,
+                                     const std::string_view last = R"({"value":0})") {
+  std::string text{};
+  for (std::size_t link = 1; link < length; ++link) {
+    text += R"({"next":)";
+  }
+  text += last;
+  for (std::size_t value = 1; value < length; ++value) {
+    text += R"(,"value":)" + std::to_string(value) + "}";
+  }
+  return text;
+}
+
+// A Noted chain of `length` links. Each note is 0, except the last link's, which is
+// `last`.
+[[nodiscard]] recursive::Noted noted_chain(const std::size_t length, std::string last) {
+  recursive::Noted head{.next = std::nullopt, .note = {.text = std::move(last)}};
+  for (std::size_t link = 1; link < length; ++link) {
+    recursive::Noted outer{.next = std::indirect<recursive::Noted>(std::move(head)),
+                           .note = {.text = "0"}};
+    head = std::move(outer);
+  }
+  return head;
+}
+
+} // namespace
+
+static_assert(scrydantic::SupportedValue<recursive::Category>);
+static_assert(scrydantic::ToolArguments<recursive::Category>);
+static_assert(scrydantic::SupportedValue<recursive::Chain>);
+static_assert(scrydantic::SupportedValue<recursive::Team>);
+static_assert(scrydantic::SupportedValue<recursive::Employee>);
+static_assert(scrydantic::SupportedValue<recursive::Catalog>);
+static_assert(scrydantic::SupportedValue<recursive::Expression>);
+static_assert(scrydantic::SupportedValue<recursive::Forest>);
+static_assert(scrydantic::SupportedValue<recursive::Shelves>);
+static_assert(scrydantic::SupportedValue<recursive::Drive>);
+static_assert(scrydantic::SupportedValue<recursive::NoHalves>);
+static_assert(scrydantic::SupportedValue<recursive::Rows>);
+static_assert(scrydantic::SupportedValue<std::indirect<recursive::Chain>>);
+
+static_assert(!scrydantic::SupportedValue<recursive::Endless>);
+static_assert(!scrydantic::Encodable<recursive::Endless>);
+static_assert(!scrydantic::SupportedValue<recursive::Ping>);
+static_assert(!scrydantic::SupportedValue<recursive::Halves>);
+// Encoding builds nothing, so a variant to encode may hold its later alternative.
+static_assert(!scrydantic::Decodable<recursive::WrappedFirst>);
+static_assert(scrydantic::Encodable<recursive::WrappedFirst>);
+static_assert(!scrydantic::Encodable<recursive::Ring>);
+static_assert(scrydantic::SupportedValue<recursive::Spins>);
+static_assert(scrydantic::SupportedValue<recursive::Spelled>);
+// Only a schema needs names: the rest of the codec takes these types.
+static_assert(sizeof(long) == sizeof(long long));
+static_assert(!scrydantic::SupportedValue<recursive::Tallies>);
+static_assert(scrydantic::Decodable<recursive::Tallies>);
+static_assert(!scrydantic::SupportedValue<recursive::Pointed>);
+static_assert(scrydantic::Decodable<recursive::Pointed>);
+static_assert(!scrydantic::SupportedValue<recursive::Scales>);
+static_assert(!scrydantic::SupportedValue<recursive::Sizes>);
+// A recursive root needs no name of its own.
+static_assert(scrydantic::SupportedValue<recursive::Tagged<int*>>);
+// Encoding reads a Json payload, which has no schema.
+static_assert(scrydantic::Encodable<recursive::Noted>);
+static_assert(!scrydantic::SupportedValue<recursive::Noted>);
+
+// The diagnostics agree with the concepts for recursive types too.
+static_assert(scrydantic::supported_value_diagnostic<recursive::Category>().empty());
+static_assert(scrydantic::tool_arguments_diagnostic<recursive::Category>().empty());
+static_assert(scrydantic::decodable_diagnostic<recursive::Expression>().empty());
+static_assert(scrydantic::encodable_diagnostic<recursive::WrappedFirst>().empty());
+static_assert(scrydantic::encodable_diagnostic<recursive::Noted>().empty());
+
+// keys_v and tags_v list the wire names of a recursive type as of any other type.
+static_assert(keys_are<recursive::Category>({"children", "name"}));
+static_assert(keys_are<recursive::Chain>({"next", "value"}));
+static_assert(keys_are<recursive::Folder>({"entries", "folders"}));
+static_assert(tags_are<recursive::Expression>({"literal", "negate", "sum"}));
+static_assert(tags_are<recursive::Entry>({"file", "folder"}));
+
+static_assert(
+    mentions(scrydantic::supported_value_diagnostic<recursive::Endless>(),
+             "recursive::Endless::next: recursive::Endless contains itself through no "
+             "std::optional, std::vector, or variant alternative after the first, so "
+             "default-constructing it, as decoding does, never ends"));
+static_assert(mentions(
+    scrydantic::encodable_diagnostic<recursive::Endless>(),
+    "recursive::Endless::next: recursive::Endless contains itself through no "
+    "std::optional, std::vector, or variant, so every value of it is infinite or "
+    "cyclic and cannot be JSON"));
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Ping>(),
+                       "recursive::Ping::pong.ping: recursive::Ping contains itself"));
+static_assert(
+    mentions(scrydantic::supported_value_diagnostic<recursive::Halves>(),
+             "recursive::Halves::halves[]: recursive::Halves contains itself"));
+static_assert(
+    mentions(scrydantic::decodable_diagnostic<recursive::WrappedFirst>(),
+             "recursive::Wrapped::inner<recursive::Wrapped>: recursive::Wrapped "
+             "contains itself through no std::optional, std::vector, or variant "
+             "alternative after the first"));
+static_assert(mentions(scrydantic::encodable_diagnostic<recursive::Ring>(),
+                       "recursive::Ring::next: recursive::Ring contains itself through "
+                       "no std::optional, std::vector, or variant"));
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Tallies>(),
+                       "recursive::Tallies has the recursive types recursive::Tally<"));
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Tallies>(),
+                       ", which both map to the schema definition name "
+                       "\"recursive.Tally-int64\""));
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Pointed>(),
+                       "recursive::Pointed has the recursive type "
+                       "recursive::Tagged<int*>, which no schema definition name can "
+                       "spell: int* is not a type that a definition name spells"));
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Scales>(),
+                       ", which no schema definition name can spell: "));
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Scales>(),
+                       " is not a constant that a definition name spells; an argument "
+                       "constant must be an integer, a bool, or an enumerator"));
+static_assert(
+    mentions(scrydantic::supported_value_diagnostic<recursive::Sizes>(),
+             "recursive::Sizes has the recursive type recursive::Größe, which "
+             "no schema definition name can spell: recursive::Größe has a "
+             "name that is not ASCII letters, digits, and '_'"));
+static_assert(mentions(local_definition_diagnostic(),
+                       "Local is local to a function; declare it in a namespace"));
+
+// A recursive root refers to itself as "#", and keeps "type":"object" at the top.
+static_assert(
+    scrydantic::schema_v<recursive::Category> ==
+    R"({"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#"},"type":"array"},"name":{"type":"string"}},"required":["children","name"],"type":"object"})");
+static_assert(scrydantic::input_schema_v<recursive::Category> ==
+              scrydantic::schema_v<recursive::Category>);
+static_assert(scrydantic::schema_v<std::indirect<recursive::Category>> ==
+              scrydantic::schema_v<recursive::Category>);
+
+static_assert(
+    scrydantic::schema_v<recursive::Chain> ==
+    R"({"additionalProperties":false,"properties":{"next":{"anyOf":[{"$ref":"#"},{"type":"null"}]},"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"})");
+
+// Below a root that is not recursive, the same type is a definition.
+static_assert(
+    scrydantic::schema_v<std::vector<recursive::Chain>> ==
+    R"({"$defs":{"recursive.Chain":{"additionalProperties":false,"properties":{"next":{"anyOf":[{"$ref":"#/$defs/recursive.Chain"},{"type":"null"}]},"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"}},"items":{"$ref":"#/$defs/recursive.Chain"},"type":"array"})");
+
+static_assert(
+    scrydantic::schema_v<recursive::Team> ==
+    R"({"$defs":{"recursive.Employee":{"additionalProperties":false,"properties":{"leads":{"anyOf":[{"$ref":"#"},{"type":"null"}]},"name":{"type":"string"}},"required":["leads","name"],"type":"object"}},"additionalProperties":false,"properties":{"members":{"items":{"$ref":"#/$defs/recursive.Employee"},"type":"array"},"name":{"type":"string"}},"required":["members","name"],"type":"object"})");
+
+// A description stays beside the reference it describes.
+static_assert(
+    scrydantic::schema_v<recursive::Catalog> ==
+    R"({"$defs":{"recursive.Category":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Category"},"type":"array"},"name":{"type":"string"}},"required":["children","name"],"type":"object"}},"additionalProperties":false,"properties":{"root":{"$ref":"#/$defs/recursive.Category","description":"The top category"},"title":{"type":"string"}},"required":["root","title"],"type":"object"})");
+
+// Only the alternatives that recurse are definitions; the leaf stays in place.
+static_assert(
+    scrydantic::schema_v<recursive::Expression> ==
+    R"({"$defs":{"recursive.Negate":{"additionalProperties":false,"properties":{"operand":{"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]},"type":{"enum":["negate"],"type":"string"}},"required":["operand","type"],"type":"object"},"recursive.Sum":{"additionalProperties":false,"properties":{"terms":{"items":{"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]},"type":"array"},"type":{"enum":["sum"],"type":"string"}},"required":["terms","type"],"type":"object"}},"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]})");
+
+static_assert(
+    scrydantic::schema_v<recursive::Forest> ==
+    R"({"$defs":{"recursive.Node-int32":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Node-int32"},"type":"array"},"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["children"],"type":"object"},"recursive.Node-string":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Node-string"},"type":"array"},"value":{"type":"string"}},"required":["children"],"type":"object"}},"additionalProperties":false,"properties":{"numbers":{"items":{"$ref":"#/$defs/recursive.Node-int32"},"type":"array"},"words":{"anyOf":[{"$ref":"#/$defs/recursive.Node-string"},{"type":"null"}]}},"required":["numbers","words"],"type":"object"})");
+
+static_assert(
+    scrydantic::schema_v<recursive::Shelves> ==
+    R"({"$defs":{"recursive.Category":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Category"},"type":"array"},"name":{"type":"string"}},"required":["children","name"],"type":"object"},"recursive.other.Category":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.other.Category"},"type":"array"}},"required":["children"],"type":"object"}},"additionalProperties":false,"properties":{"mine":{"$ref":"#/$defs/recursive.Category"},"theirs":{"$ref":"#/$defs/recursive.other.Category"}},"required":["mine","theirs"],"type":"object"})");
+
+static_assert(
+    scrydantic::schema_v<recursive::Drive> ==
+    R"({"$defs":{"recursive.Folder":{"additionalProperties":false,"properties":{"entries":{"items":{"anyOf":[{"additionalProperties":false,"properties":{"name":{"type":"string"},"type":{"enum":["file"],"type":"string"}},"required":["name","type"],"type":"object"},{"$ref":"#/$defs/recursive.Folder"}]},"type":"array"},"folders":{"items":{"$ref":"#/$defs/recursive.Folder-untagged"},"type":"array"},"type":{"enum":["folder"],"type":"string"}},"required":["entries","folders","type"],"type":"object"},"recursive.Folder-untagged":{"additionalProperties":false,"properties":{"entries":{"items":{"anyOf":[{"additionalProperties":false,"properties":{"name":{"type":"string"},"type":{"enum":["file"],"type":"string"}},"required":["name","type"],"type":"object"},{"$ref":"#/$defs/recursive.Folder"}]},"type":"array"},"folders":{"items":{"$ref":"#/$defs/recursive.Folder-untagged"},"type":"array"}},"required":["entries","folders"],"type":"object"}},"additionalProperties":false,"properties":{"top":{"$ref":"#/$defs/recursive.Folder-untagged"}},"required":["top"],"type":"object"})");
+
+static_assert(
+    scrydantic::schema_v<Report> ==
+    R"({"$defs":{"anonymous.Outline":{"additionalProperties":false,"properties":{"sections":{"items":{"$ref":"#/$defs/anonymous.Outline"},"type":"array"}},"required":["sections"],"type":"object"}},"additionalProperties":false,"properties":{"outline":{"$ref":"#/$defs/anonymous.Outline"}},"required":["outline"],"type":"object"})");
+
+// The sign marker keeps Spin<1> and Spin<-1> apart.
+static_assert(
+    scrydantic::schema_v<recursive::Spins> ==
+    R"({"$defs":{"recursive.Spin-1":{"additionalProperties":false,"properties":{"flipped":{"items":{"$ref":"#/$defs/recursive.Spin-minus1"},"type":"array"}},"required":["flipped"],"type":"object"},"recursive.Spin-minus1":{"additionalProperties":false,"properties":{"flipped":{"items":{"$ref":"#/$defs/recursive.Spin-1"},"type":"array"}},"required":["flipped"],"type":"object"}},"additionalProperties":false,"properties":{"up":{"$ref":"#/$defs/recursive.Spin-1"}},"required":["up"],"type":"object"})");
+
+static_assert(mentions(scrydantic::schema_v<recursive::Spelled>,
+                       R"("$ref":"#/$defs/recursive.Grid-array-optional-uint8-2-)"
+                       R"(minus2-columns-true-120")"));
+static_assert(mentions(scrydantic::schema_v<recursive::Spelled>,
+                       R"("$ref":"#/$defs/recursive.Marked-variant-recursive.Literal-)"
+                       R"(recursive.Sum-indirect-double-vector-char-string-int64")"));
+static_assert(mentions(scrydantic::schema_v<recursive::Spelled>,
+                       R"("$ref":"#/$defs/recursive.Outer-float.Inner")"));
+static_assert(mentions(scrydantic::schema_v<recursive::Spelled>,
+                       R"("$ref":"#/$defs/recursive.Range-minus9223372036854775808-)"
+                       R"(18446744073709551615")"));
+
+TEST_CASE("a recursive tree round trips and reports failures deep inside it") {
+  const auto text = std::string{
+      R"({"children":[{"children":[{"children":[],"name":"c"}],"name":"b"}],"name":"a"})"};
+  const auto decoded = decode_text<recursive::Category>(text);
+  REQUIRE(decoded);
+  REQUIRE(decoded->children.size() == 1);
+  CHECK(decoded->children[0].children[0].name == "c");
+  CHECK(scrydantic::encode(*decoded)->text == text);
+
+  auto failed = decode_text<recursive::Category>(
+      R"({"children":[{"children":[{"children":[],"name":7}],"name":"b"}],"name":"a"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.children[0].children[0].name must be a string");
+  failed =
+      decode_text<recursive::Category>(R"({"children":[{"name":"b"}],"name":"a"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message == "$.children[0].children is a required member");
+}
+
+TEST_CASE("issues deep in a recursive tree are each reported at their path") {
+  const auto failed = decode_text<recursive::Category>(
+      R"({"children":[{"children":[],"name":1},{"children":[],"name":2}],"name":3})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().issues.size() == 3);
+  CHECK(failed.error().model_message == "$.children[0].name must be a string\n"
+                                        "$.children[1].name must be a string\n"
+                                        "$.name must be a string");
+}
+
+TEST_CASE("results of recursive types fail without asking how a failure converts") {
+  const auto linked =
+      decode_text<recursive::Linked>(R"({"next":{"next":null},"type":"link"})");
+  REQUIRE(linked);
+  CHECK(std::get<recursive::Link>(*linked).next.has_value());
+  const auto bad_link =
+      decode_text<recursive::Linked>(R"({"next":{"next":7},"type":"link"})");
+  REQUIRE_FALSE(bad_link);
+  CHECK(bad_link.error().model_message == "$.next.next must be an object");
+
+  const auto bad_optional =
+      decode_text<std::optional<recursive::Chain>>(R"({"value":"one"})");
+  REQUIRE_FALSE(bad_optional);
+  CHECK(bad_optional.error().model_message == "$.value must be an integer");
+  const auto bad_array = decode_text<std::array<recursive::Chain, 1>>(R"([[]])");
+  REQUIRE_FALSE(bad_array);
+  CHECK(bad_array.error().model_message == "$[0] must be an object");
+  const auto bad_vector = decode_text<std::vector<recursive::Chain>>("{}");
+  REQUIRE_FALSE(bad_vector);
+  CHECK(bad_vector.error().model_message == "$ must be an array");
+}
+
+TEST_CASE("a linked list ends at a disengaged optional, which skip_null omits") {
+  const recursive::Chain chain{
+      .next = std::indirect<recursive::Chain>(
+          recursive::Chain{.next = std::nullopt, .value = 2}),
+      .value = 1,
+  };
+  const auto text = std::string{R"({"next":{"value":2},"value":1})"};
+  CHECK(scrydantic::encode(chain)->text == text);
+
+  const auto decoded = decode_text<recursive::Chain>(text);
+  REQUIRE(decoded);
+  REQUIRE(decoded->next.has_value());
+  CHECK((*decoded->next)->value == 2);
+  CHECK_FALSE((*decoded->next)->next.has_value());
+  CHECK(decode_text<recursive::Chain>(R"({"next":null,"value":1})"));
+
+  const auto failed =
+      decode_text<recursive::Chain>(R"({"next":{"next":{"value":"x"}},"value":1})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message == "$.next.next.value must be an integer");
+}
+
+TEST_CASE("mutually recursive aggregates round trip") {
+  const auto text =
+      std::string{R"({"members":[{"leads":{"members":[{"leads":null,)"
+                  R"("name":"b"}],"name":"inner"},"name":"a"}],"name":"outer"})"};
+  const auto decoded = decode_text<recursive::Team>(text);
+  REQUIRE(decoded);
+  REQUIRE(decoded->members[0].leads.has_value());
+  CHECK((*decoded->members[0].leads)->members[0].name == "b");
+  CHECK(scrydantic::encode(*decoded)->text == text);
+
+  const auto failed = decode_text<recursive::Team>(
+      R"({"members":[{"leads":{"members":[{"leads":null,"name":1}],"name":"t"},)"
+      R"("name":"e"}],"name":"x"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.members[0].leads.members[0].name must be a string");
+}
+
+TEST_CASE("a recursive tagged variant decodes by tag at every depth") {
+  const auto text = std::string{
+      R"({"operand":{"terms":[{"type":"literal","value":1},{"operand":)"
+      R"({"type":"literal","value":2},"type":"negate"}],"type":"sum"},"type":"negate"})"};
+  const auto decoded = decode_text<recursive::Expression>(text);
+  REQUIRE(decoded);
+  const auto& sum =
+      std::get<recursive::Sum>(*std::get<recursive::Negate>(*decoded).operand);
+  REQUIRE(sum.terms.size() == 2);
+  CHECK(std::get<recursive::Literal>(sum.terms[0]).value == 1.0);
+  CHECK(std::get<recursive::Literal>(*std::get<recursive::Negate>(sum.terms[1]).operand)
+            .value == 2.0);
+  CHECK(scrydantic::encode(*decoded)->text == text);
+
+  auto failed = decode_text<recursive::Expression>(
+      R"({"operand":{"terms":[{"type":"literal"},{"type":"product"}],"type":"sum"},)"
+      R"("type":"negate"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.operand.terms[1].type must be one of: literal, negate, sum");
+  failed = decode_text<recursive::Expression>(R"({"type":"negate"})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message == "$.operand is a required member");
+}
+
+TEST_CASE("each specialization of a recursive template recurses on its own") {
+  const auto text =
+      std::string{R"({"numbers":[{"children":[{"children":[],"value":2}],)"
+                  R"("value":1}],"words":{"children":[],"value":"w"}})"};
+  const auto decoded = decode_text<recursive::Forest>(text);
+  REQUIRE(decoded);
+  CHECK(decoded->numbers[0].children[0].value == 2);
+  CHECK(decoded->words->value == "w");
+  CHECK(scrydantic::encode(*decoded)->text == text);
+
+  const auto failed = decode_text<recursive::Forest>(
+      R"({"numbers":[{"children":[{"children":[],"value":"2"}],"value":1}],"words":null})");
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message ==
+        "$.numbers[0].children[0].value must be an integer");
+}
+
+TEST_CASE("recursion nests as deep as the parser reads and no deeper") {
+  // 256 links nest 256 objects, the parser's limit.
+  const auto deepest = chain_text(256);
+  const auto decoded = decode_text<recursive::Chain>(deepest);
+  REQUIRE(decoded);
+  CHECK(scrydantic::encode(*decoded)->text == deepest);
+  CHECK(scrydantic::encode(chain_of(256))->text == deepest);
+
+  std::string path = "$";
+  for (std::size_t link = 1; link < 256; ++link) {
+    path += ".next";
+  }
+  const auto failed =
+      decode_text<recursive::Chain>(chain_text(256, R"({"value":"0"})"));
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().model_message == path + ".value must be an integer");
+
+  // One link more is past the parser's limit, and the writer stops there too.
+  const auto too_deep = decode_text<recursive::Chain>(chain_text(257));
+  REQUIRE_FALSE(too_deep);
+  CHECK(too_deep.error().message == "JSON text is not valid JSON");
+  const auto encoded = scrydantic::encode(chain_of(257));
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message ==
+        path + ".next is an array or object nested more than 256 deep, so the value "
+               "cannot be JSON");
+}
+
+TEST_CASE("encode_verbatim() writes a recursive value as encode() does") {
+  // A literal deep in the tree takes the number spelling of each writer.
+  const recursive::Expression expression{recursive::Negate{
+      .operand = std::indirect<recursive::Expression>(recursive::Expression{
+          recursive::Sum{.terms = {recursive::Literal{.value = 1e-7}}}}),
+  }};
+  CHECK(scrydantic::encode_verbatim(expression)->text ==
+        R"({"operand":{"terms":[{"type":"literal","value":1e-07}],"type":"sum"},)"
+        R"("type":"negate"})");
+  CHECK(scrydantic::encode(expression)->text ==
+        R"({"operand":{"terms":[{"type":"literal","value":1E-7}],"type":"sum"},)"
+        R"("type":"negate"})");
+  CHECK(spelling_mismatch(expression) == std::nullopt);
+
+  // Both spellings stop at the same depth, with the same failure.
+  CHECK(scrydantic::encode_verbatim(chain_of(256))->text == chain_text(256));
+  const auto encoded = scrydantic::encode(chain_of(257));
+  const auto verbatim = scrydantic::encode_verbatim(chain_of(257));
+  REQUIRE_FALSE(encoded);
+  REQUIRE_FALSE(verbatim);
+  CHECK(verbatim.error().message == encoded.error().message);
+  CHECK(verbatim.error().model_message.empty());
+}
+
+TEST_CASE("payloads in a recursive value count toward its nesting") {
+  const recursive::Noted noted{
+      .next = std::indirect<recursive::Noted>(recursive::Noted{
+          .next = std::nullopt, .note = {.text = R"({"b": 2, "a": 1.50})"}}),
+      .note = {.text = "[ 1 ]"},
+  };
+  CHECK(scrydantic::encode_verbatim(noted)->text ==
+        R"({"next":{"note":{"b": 2, "a": 1.50}},"note":[ 1 ]})");
+  CHECK(scrydantic::encode(noted)->text ==
+        R"({"next":{"note":{"a":1.5,"b":2}},"note":[1]})");
+
+  // 256 links nest 256 objects, which the writer accepts. A payload that is an
+  // array in the last link is one level more, which only the final check sees.
+  CHECK(scrydantic::encode(noted_chain(256, "0")));
+  CHECK(scrydantic::encode_verbatim(noted_chain(256, "0")));
+  constexpr std::string_view reason =
+      "the value nests arrays and objects more than 256 deep, so it cannot be JSON";
+  const auto encoded = scrydantic::encode(noted_chain(256, "[0]"));
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message == reason);
+  const auto verbatim = scrydantic::encode_verbatim(noted_chain(256, "[0]"));
+  REQUIRE_FALSE(verbatim);
+  CHECK(verbatim.error().message == reason);
 }
