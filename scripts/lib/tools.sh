@@ -42,21 +42,34 @@ resolve_tool() {
   fi
 }
 
+# The oldest GCC that CMakeLists.txt accepts: the first GCC 16 release. GCC
+# 16.0.x versions are development snapshots.
+readonly MINIMUM_GCC_VERSION=16.1
+
+# is_supported_gcc <command>
+#
+# Succeeds when <command> runs and is GCC MINIMUM_GCC_VERSION or newer.
+is_supported_gcc() {
+  local version
+  version="$("$1" -dumpfullversion 2>/dev/null)" || return 1
+  [[ "$(printf '%s\n' "${MINIMUM_GCC_VERSION}" "${version}" | sort -V | head -n 1)" == \
+    "${MINIMUM_GCC_VERSION}" ]]
+}
+
 # resolve_compiler
 #
 # Sets COMPILER to the C++ compiler to configure with: CXX when it is set, else
-# g++ when it is GCC 16 or newer (as on Arch or Fedora), else g++-16 (as on
-# Ubuntu with the toolchain PPA).
+# g++ or g++-16, whichever is first to be GCC 16.1 or newer.
 resolve_compiler() {
   if [[ -n "${CXX:-}" ]]; then
     COMPILER="${CXX}"
-  elif command -v g++ >/dev/null 2>&1 &&
-    (("$(g++ -dumpversion | cut -d. -f1)" >= 16)); then
+  elif is_supported_gcc g++; then
     COMPILER=g++
-  elif command -v g++-16 >/dev/null 2>&1; then
+  elif is_supported_gcc g++-16; then
     COMPILER=g++-16
   else
-    echo "error: found no GCC 16 or newer; set CXX to one" >&2
+    echo "error: found no GCC ${MINIMUM_GCC_VERSION} or newer as g++ or" \
+      "g++-16; set CXX to one" >&2
     exit 1
   fi
 }

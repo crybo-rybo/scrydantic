@@ -6,12 +6,12 @@ include("${CMAKE_CURRENT_LIST_DIR}/scrydanticTargets.cmake")
 # so a consumer on any other toolchain cannot compile against this package.
 if(
   NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
-  OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16
+  OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16.1
 )
   set(scrydantic_FOUND FALSE)
   set(
     scrydantic_NOT_FOUND_MESSAGE
-    "scrydantic requires GCC 16 or newer (C++26 reflection)"
+    "scrydantic requires GCC 16.1 or newer (C++26 reflection)"
   )
 endif()
 
