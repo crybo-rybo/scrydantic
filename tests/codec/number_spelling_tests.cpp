@@ -1,6 +1,6 @@
 // The compile-time spelling of numbers, which generated schemas write bounds
-// with, against the JSON core's canonical writer, which writes the same numbers
-// at run time.
+// with, against format_json_number(), the JSON core's canonical writer, which
+// writes the same numbers at run time.
 
 #include <bit>
 #include <catch2/catch_test_macros.hpp>
@@ -11,7 +11,7 @@
 #include <limits>
 #include <random>
 #include <scrydantic/detail/json_number.hpp>
-#include <scrydantic/detail/json_text.hpp>
+#include <scrydantic/json.hpp>
 #include <string>
 #include <vector>
 
@@ -85,8 +85,7 @@ static_assert(spelled(-0.0) == "-0");
 TEST_CASE("doubles are spelled at compile time as the canonical writer spells them") {
   std::size_t mismatches = 0;
   for (const double value : spelling_cases()) {
-    std::string canonical{};
-    scrydantic::detail::append_canonical_json_number(canonical, value);
+    const auto canonical = scrydantic::format_json_number(value);
     if (spelled(value) != canonical && ++mismatches <= 5) {
       UNSCOPED_INFO(canonical << " was spelled " << spelled(value));
     }

@@ -14,6 +14,7 @@
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
 #include <scrydantic/detail/json_number.hpp>
+#include <scrydantic/diagnostics.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
@@ -112,6 +113,12 @@ struct Canvas {
 // A default outside its own constraint: an absent member keeps it unchecked.
 struct Counter {
   [[= range{.min = 1}]] std::int32_t count = 0;
+};
+
+// A renamed member is bounded, and reported, under its wire name.
+struct Budget {
+  [[ = scrydantic::name{"max_tokens"},
+     = range{.min = 1, .max = 4096} ]] std::uint32_t limit{};
 };
 
 struct Many {
@@ -516,9 +523,35 @@ TEST_CASE("constraints check decoded input, not the program's own values") {
   CHECK(rejection<Counter>(R"({"count":0})") ==
         std::vector<std::string>{"violated_constraint $.count must be at least 1"});
 
-  // Encoding writes the program's values as they are.
-  CHECK(scrydantic::encode(Ages{.inclusive = 1000})->text ==
-        R"({"at_least":0,"at_most":0,"exclusive":0,"inclusive":1000,"mixed":0})");
+  // Encoding writes the program's values as they are, verbatim or canonical.
+  constexpr std::string_view written =
+      R"({"at_least":0,"at_most":0,"exclusive":0,"inclusive":1000,"mixed":0})";
+  CHECK(scrydantic::encode(Ages{.inclusive = 1000})->text == written);
+  CHECK(scrydantic::encode_verbatim(Ages{.inclusive = 1000})->text == written);
+}
+
+// The wire names of constrained types are the codec's own.
+static_assert(scrydantic::keys_v<Budget>.size() == 1 &&
+              scrydantic::keys_v<Budget>[0] == "max_tokens");
+static_assert(scrydantic::tags_v<Mark>.size() == 2 &&
+              scrydantic::tags_v<Mark>[0] == "circle" &&
+              scrydantic::tags_v<Mark>[1] == "label");
+static_assert(scrydantic::schema_v<Budget> ==
+              R"({"additionalProperties":false,"properties":{"max_tokens":)"
+              R"({"maximum":4096,"minimum":1,"type":"integer"}},"required":[],)"
+              R"("type":"object"})");
+
+TEST_CASE("a renamed member's constraint issue is at its wire name") {
+  const auto decoded = decode_text<Budget>(R"({"max_tokens":0})");
+  REQUIRE_FALSE(decoded);
+  CHECK(decoded.error().issues ==
+        std::vector<scrydantic::Issue>{{.kind = IssueKind::violated_constraint,
+                                        .path = {"max_tokens"},
+                                        .reason = "must be at least 1"}});
+  CHECK(decoded.error().model_message == "$.max_tokens must be at least 1");
+  const auto largest = decode_text<Budget>(R"({"max_tokens":4096})");
+  REQUIRE(largest);
+  CHECK(largest->limit == 4096U);
 }
 
 // ---- Indirect and recursive models -------------------------------------------
@@ -728,107 +761,123 @@ struct HoldsCrossed {
 
 } // namespace
 
-static_assert(mentions(scrydantic::detail::supported_diagnostic<MisappliedLength>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<MisappliedLength>(),
                        "MisappliedLength::count: carries scrydantic::length, which "
                        "applies to std::string members, not to int"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<MisappliedRange>(),
+    mentions(scrydantic::supported_value_diagnostic<MisappliedRange>(),
              "MisappliedRange::name: carries scrydantic::range, which applies "
              "to integer and floating-point members, not to std::optional<"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<MisappliedIndirect>(),
+    mentions(scrydantic::supported_value_diagnostic<MisappliedIndirect>(),
              "MisappliedIndirect::count: carries scrydantic::length, which applies "
              "to std::string members, not to std::optional<std::indirect<int"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<FixedItems>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<FixedItems>(),
                        "FixedItems::flags: carries scrydantic::items, which does not "
                        "apply to std::array<bool, 2>, whose size is fixed"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Crossed>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Crossed>(),
                        "Crossed::value: carries a scrydantic::range whose min, 5, "
                        "exceeds its max, 4"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<CrossedExclusive>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<CrossedExclusive>(),
                        "CrossedExclusive::value: carries a scrydantic::range whose "
                        "exclusive_min, 0.5, exceeds its max, 0.25"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<EmptyIntegers>(),
+    mentions(scrydantic::supported_value_diagnostic<EmptyIntegers>(),
              "EmptyIntegers::value: carries a scrydantic::range that no value "
              "of int satisfies"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<EmptyPoint>(),
+    mentions(scrydantic::supported_value_diagnostic<EmptyPoint>(),
              "EmptyPoint::value: carries a scrydantic::range that no value of "
              "double satisfies"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<EmptyEdge>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<EmptyEdge>(),
                        "EmptyEdge::value: carries a scrydantic::range that no value of "
                        "short unsigned int satisfies"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<EmptyDoubles>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<EmptyDoubles>(),
                        "EmptyDoubles::value: carries a scrydantic::range that no value "
                        "of double satisfies"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<NegativeUnsigned>(),
+    mentions(scrydantic::supported_value_diagnostic<NegativeUnsigned>(),
              "NegativeUnsigned::value: carries a scrydantic::range whose min, "
              "-1, is outside the range of unsigned int"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<TooWide>(),
+    mentions(scrydantic::supported_value_diagnostic<TooWide>(),
              "TooWide::value: carries a scrydantic::range whose max, 32768, is "
              "outside the range of short int"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Fractional>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Fractional>(),
                        "Fractional::value: carries a scrydantic::range whose max, 1.5, "
                        "is not an integer"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<NotAFloat>(),
+    mentions(scrydantic::supported_value_diagnostic<NotAFloat>(),
              "NotAFloat::value: carries a scrydantic::range whose max, 0.1, is "
              "not exactly a float"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<NotADouble>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<NotADouble>(),
                        "NotADouble::value: carries a scrydantic::range whose max, "
                        "9007199254740993, is not exactly a double"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Infinite>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Infinite>(),
                        "Infinite::value: carries a scrydantic::range whose max, "
                        "infinity, is not finite"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<Unbounded>(),
+    mentions(scrydantic::supported_value_diagnostic<Unbounded>(),
              "Unbounded::value: carries a scrydantic::range that sets no bound"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<DoubleLower>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<DoubleLower>(),
                        "DoubleLower::value: carries a scrydantic::range that sets both "
                        "min and exclusive_min"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<ZeroFactor>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<ZeroFactor>(),
                        "ZeroFactor::value: carries a scrydantic::multiple_of whose "
                        "value, 0, is not positive"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<NegativeFactor>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<NegativeFactor>(),
                        "NegativeFactor::value: carries a scrydantic::multiple_of whose "
                        "value, -0.5, is not positive"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<DecimalFactor>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<DecimalFactor>(),
                        "DecimalFactor::value: carries a scrydantic::multiple_of whose "
                        "value, 0.1, is not exactly that decimal in binary"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<FractionalFactor>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<FractionalFactor>(),
                        "FractionalFactor::value: carries a scrydantic::multiple_of "
                        "whose value, 0.5, is not an integer"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<NoFactor>(),
+    mentions(scrydantic::supported_value_diagnostic<NoFactor>(),
              "NoFactor::value: carries a scrydantic::multiple_of that sets no "
              "value"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<CrossedLength>(),
+    mentions(scrydantic::supported_value_diagnostic<CrossedLength>(),
              "CrossedLength::text: carries a scrydantic::length whose min, 5, "
              "exceeds its max, 4"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<UnboundedItems>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<UnboundedItems>(),
                        "UnboundedItems::values: carries a scrydantic::items that sets "
                        "no bound"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<TwoRanges>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<TwoRanges>(),
                        "TwoRanges::value: has more than one scrydantic::range "
                        "annotation"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<TwoPatterns>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<TwoPatterns>(),
                        "TwoPatterns::text: has more than one scrydantic::pattern "
                        "annotation"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<RangedClass>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<RangedClass>(),
                        "RangedClass carries scrydantic::range, which applies to data "
                        "members"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<HoldsCrossed>(),
+    mentions(scrydantic::supported_value_diagnostic<HoldsCrossed>(),
              "HoldsCrossed::values[].value: carries a scrydantic::range whose "
              "min, 5, exceeds its max, 4"));
 // Every family checks constraints, encoding included, though it does not apply them.
-static_assert(mentions(scrydantic::detail::encodable_diagnostic<Crossed>(),
+static_assert(mentions(scrydantic::encodable_diagnostic<Crossed>(),
                        "does not satisfy scrydantic::Encodable: "));
-static_assert(mentions(scrydantic::detail::encodable_diagnostic<Crossed>(),
+static_assert(mentions(scrydantic::encodable_diagnostic<Crossed>(),
                        "Crossed::value: carries a scrydantic::range whose min, 5, "
                        "exceeds its max, 4"));
 static_assert(!scrydantic::Decodable<Crossed>);
+// Each family's public diagnostic gives the constraint's problem as its concept
+// rejects it, and none for the constrained types these tests decode.
+static_assert(!scrydantic::Encodable<Crossed>);
+static_assert(
+    mentions(scrydantic::decodable_diagnostic<Crossed>(),
+             "does not satisfy scrydantic::Decodable: {anonymous}::Crossed::value: "
+             "carries a scrydantic::range whose min, 5, exceeds its max, 4"));
+static_assert(!scrydantic::ToolArguments<Crossed>);
+static_assert(
+    mentions(scrydantic::tool_arguments_diagnostic<Crossed>(),
+             "does not satisfy scrydantic::ToolArguments: {anonymous}::Crossed::value: "
+             "carries a scrydantic::range whose min, 5, exceeds its max, 4"));
+static_assert(scrydantic::Decodable<Budget> &&
+              scrydantic::decodable_diagnostic<Budget>().empty());
+static_assert(scrydantic::ToolArguments<Budget> &&
+              scrydantic::tool_arguments_diagnostic<Budget>().empty());

@@ -5,3 +5,4 @@
 - [ ] `./scripts/check.sh` passes (formatting, static checks, and the dev tests)
 - [ ] This PR adds or updates tests, and each bug fix includes a regression test
 - [ ] If behavior or public API changed, this PR updates `README.md` or `docs/`
+- [ ] If users can see the change, this PR adds an entry under `[Unreleased]` in `CHANGELOG.md`

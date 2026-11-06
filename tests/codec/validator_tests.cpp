@@ -11,6 +11,7 @@
 #include <optional>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
+#include <scrydantic/diagnostics.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <stdexcept>
@@ -106,6 +107,11 @@ struct Trip {
   [[= check<&is_known_city>]] std::string from;
   [[ = scrydantic::length{.max = 4}, = check<&is_known_city> ]] std::string to;
   [[= check<&is_even>]] std::optional<std::int32_t> passengers;
+};
+
+// A renamed member's validator is reported under its wire name.
+struct Seating {
+  [[ = scrydantic::name{"seat_count"}, = check<&is_even> ]] std::int32_t seats{};
 };
 
 struct Account {
@@ -317,8 +323,10 @@ TEST_CASE("a field validator sees only a decoded value from the input") {
   CHECK(schedule->slots == 3);
   CHECK(calls.even == 0);
 
-  // Encoding checks nothing.
+  // Encoding checks nothing, verbatim or canonical.
   CHECK(scrydantic::encode(Trip{.from = "Atlantis", .to = "Mu", .passengers = 5}));
+  CHECK(scrydantic::encode_verbatim(
+      Trip{.from = "Atlantis", .to = "Mu", .passengers = 5}));
   CHECK(calls.even == 0);
 }
 
@@ -383,6 +391,23 @@ TEST_CASE("validator issues sit among the others, and count toward max_issues") 
   CHECK(many.message.ends_with("$.points[63].at must be even\n"
                                "further issues past the first 64 were not reported"));
   CHECK(many.model_message == many.message);
+}
+
+// The wire names of validated types are the codec's own.
+static_assert(scrydantic::keys_v<Seating>.size() == 1 &&
+              scrydantic::keys_v<Seating>[0] == "seat_count");
+static_assert(scrydantic::tags_v<Moment>.size() == 2 &&
+              scrydantic::tags_v<Moment>[0] == "span" &&
+              scrydantic::tags_v<Moment>[1] == "point");
+
+TEST_CASE("a renamed member's validator issue is at its wire name") {
+  calls = {};
+  CHECK(decode_text<Seating>(R"({"seat_count":4})"));
+  CHECK(rejection<Seating>(R"({"seat_count":3})").issues ==
+        std::vector<scrydantic::Issue>{{.kind = scrydantic::IssueKind::failed_check,
+                                        .path = {"seat_count"},
+                                        .reason = "must be even"}});
+  CHECK(calls.even == 2);
 }
 
 TEST_CASE("a field validator sees through an indirect") {
@@ -476,38 +501,61 @@ struct HoldsTwice {
 } // namespace
 
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<ByValue>(),
+    mentions(scrydantic::supported_value_diagnostic<ByValue>(),
              "ByValue::value: carries scrydantic::check<&{anonymous}::by_value>, "
              "whose validator is std::expected<void, scrydantic::Error>(int); "
              "a validator here takes const int& and returns scrydantic::Status"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<ReturnsBool>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<ReturnsBool>(),
                        "ReturnsBool::value: carries "
                        "scrydantic::check<&{anonymous}::returns_bool>, whose validator "
                        "is bool(const int&)"));
 // An optional member's validator takes its value, as its constraints bound it.
-static_assert(mentions(scrydantic::detail::supported_diagnostic<OfOptional>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<OfOptional>(),
                        "; a validator here takes const int& and returns "
                        "scrydantic::Status"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<WrongType>(),
+    mentions(scrydantic::supported_value_diagnostic<WrongType>(),
              "WrongType::value: carries scrydantic::check<&{anonymous}::of_text>"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<NotAFunction>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<NotAFunction>(),
                        "NotAFunction::value: carries scrydantic::check<42>, whose "
                        "argument is not a pointer to a function"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<NullValidator>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<NullValidator>(),
                        "NullValidator::value: carries a scrydantic::check of a null "
                        "function pointer"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Twice>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Twice>(),
                        "Twice::value: carries scrydantic::check<&{anonymous}::is_even> "
                        "twice"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<ClassOfInt>(),
+    mentions(scrydantic::supported_value_diagnostic<ClassOfInt>(),
              "ClassOfInt carries scrydantic::check<&{anonymous}::is_even>, whose "
              "validator is std::expected<void, scrydantic::Error>(const int&) "
              "noexcept; a validator here takes const {anonymous}::ClassOfInt& "
              "and returns scrydantic::Status"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<HoldsTwice>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsTwice>(),
                        "HoldsTwice::nested.value: carries scrydantic::check<"));
 // The validators these tests use are accepted, noexcept or not.
-static_assert(scrydantic::detail::supported_diagnostic<Trip>().empty());
-static_assert(scrydantic::detail::supported_diagnostic<Schedule>().empty());
+static_assert(scrydantic::supported_value_diagnostic<Trip>().empty());
+static_assert(scrydantic::supported_value_diagnostic<Schedule>().empty());
+// Each family's public diagnostic gives the validator's problem as its concept
+// rejects it, and none for the validated types these tests decode.
+static_assert(!scrydantic::Encodable<ByValue>);
+static_assert(
+    mentions(scrydantic::encodable_diagnostic<ByValue>(),
+             "does not satisfy scrydantic::Encodable: {anonymous}::ByValue::value: "
+             "carries scrydantic::check<&{anonymous}::by_value>"));
+static_assert(!scrydantic::Decodable<ByValue>);
+static_assert(
+    mentions(scrydantic::decodable_diagnostic<ByValue>(),
+             "does not satisfy scrydantic::Decodable: {anonymous}::ByValue::value: "
+             "carries scrydantic::check<&{anonymous}::by_value>"));
+static_assert(!scrydantic::ToolArguments<ByValue>);
+static_assert(
+    mentions(scrydantic::tool_arguments_diagnostic<ByValue>(),
+             "does not satisfy scrydantic::ToolArguments: {anonymous}::ByValue::value: "
+             "carries scrydantic::check<&{anonymous}::by_value>"));
+static_assert(scrydantic::Encodable<Trip> &&
+              scrydantic::encodable_diagnostic<Trip>().empty());
+static_assert(scrydantic::Decodable<Trip> &&
+              scrydantic::decodable_diagnostic<Trip>().empty());
+static_assert(scrydantic::ToolArguments<Trip> &&
+              scrydantic::tool_arguments_diagnostic<Trip>().empty());

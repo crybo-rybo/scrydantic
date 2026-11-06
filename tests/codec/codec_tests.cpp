@@ -15,8 +15,7 @@
 #include <random>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
-#include <scrydantic/detail/encode.hpp>
-#include <scrydantic/detail/json_text.hpp>
+#include <scrydantic/diagnostics.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
@@ -325,55 +324,101 @@ namespace {
 
 } // namespace
 
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Outer>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Outer>(),
                        "does not satisfy scrydantic::SupportedValue: "));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Outer>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Outer>(),
                        "Outer::nested.letters[]: wchar_t is a character type"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<HoldsBad>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsBad>(),
                        "HoldsBad::items[]<"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<HoldsBad>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsBad>(),
                        "BadAlternative>.letter: char is a character type"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<std::variant<Unannotated>>(),
+    mentions(scrydantic::supported_value_diagnostic<std::variant<Unannotated>>(),
              "without a scrydantic::tag annotation"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<std::variant<Left, int>>(),
+    mentions(scrydantic::supported_value_diagnostic<std::variant<Left, int>>(),
              "has the alternative int, which is not a plain aggregate"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<std::variant<Left, AlsoLeft>>(),
+    mentions(scrydantic::supported_value_diagnostic<std::variant<Left, AlsoLeft>>(),
              "that share the tag \"left\""));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<std::variant<TypedAlternative>>(),
+    mentions(scrydantic::supported_value_diagnostic<std::variant<TypedAlternative>>(),
              "TypedAlternative::kind: has the JSON key \"type\""));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Colliding>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Colliding>(),
                        "has members first and second that both map to the JSON key "
                        "\"key\""));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<MisplacedSkip>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<MisplacedSkip>(),
                        "MisplacedSkip::value: is not a std::optional"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<HoldsView>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsView>(),
                        "HoldsView::text: "));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<HoldsView>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsView>(),
                        " is encode-only borrowed text; decoding and schemas take "
                        "std::string"));
-static_assert(mentions(scrydantic::detail::decodable_diagnostic<ConstView>(),
+static_assert(mentions(scrydantic::decodable_diagnostic<ConstView>(),
                        "ConstView::value: is a const member"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Document>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Document>(),
                        "scrydantic::Json is raw JSON, which has no schema"));
-static_assert(mentions(scrydantic::detail::tool_arguments_diagnostic<Shape>(),
+static_assert(mentions(scrydantic::tool_arguments_diagnostic<Shape>(),
                        "is not a plain aggregate; tool arguments decode from one "
                        "JSON object"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Bytes>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Bytes>(),
                        "Bytes::data[]: unsigned char is a character type, as "
                        "std::int8_t and std::uint8_t are; use std::int16_t or "
                        "std::uint16_t for a number"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<Flags>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<Flags>(),
                        "Flags::flags: std::vector<bool> is std::vector<bool>, whose "
                        "elements are not addressable; use std::vector<std::uint16_t>, "
                        "or std::array<bool, N> for a fixed size"));
 // Each replacement the diagnostics suggest is itself supported.
 static_assert(scrydantic::SupportedValue<Words>);
 static_assert(scrydantic::SupportedValue<FlagsFixed>);
-static_assert(scrydantic::detail::supported_diagnostic<Drawing>().empty());
+static_assert(scrydantic::supported_value_diagnostic<Drawing>().empty());
+// Each family's diagnostic agrees with its concept, and an entry point's
+// diagnostic is the one the concept's diagnostic gives.
+static_assert(scrydantic::encodable_diagnostic<BorrowedRequest>().empty());
+static_assert(mentions(scrydantic::encodable_diagnostic<Bytes>(),
+                       "does not satisfy scrydantic::Encodable: "));
+static_assert(scrydantic::decodable_diagnostic<Payload>().empty());
+static_assert(mentions(scrydantic::decodable_diagnostic<const Payload>(),
+                       "is cv-qualified or a reference"));
+static_assert(scrydantic::tool_arguments_diagnostic<Drawing>().empty());
+static_assert(scrydantic::encodable_diagnostic<Bytes>() ==
+              scrydantic::detail::encodable_diagnostic<Bytes>());
+
+// ---- Wire names --------------------------------------------------------------
+
+namespace {
+
+template <typename Type>
+constexpr bool keys_are(const std::vector<std::string_view>& expected) {
+  const auto& keys = scrydantic::keys_v<Type>;
+  return std::vector<std::string_view>{keys.begin(), keys.end()} == expected;
+}
+
+template <typename Variant>
+constexpr bool tags_are(const std::vector<std::string_view>& expected) {
+  const auto& tags = scrydantic::tags_v<Variant>;
+  return std::vector<std::string_view>{tags.begin(), tags.end()} == expected;
+}
+
+} // namespace
+
+// Keys are the final JSON keys in encoding order, optional members included.
+static_assert(keys_are<Renamed>({"a_first", "max_tokens"}));
+static_assert(keys_are<Drawing>({"highlight", "shapes"}));
+static_assert(keys_are<Sparse>({"absent", "explicit_null", "initialized", "plain"}));
+// An alternative's tag member is not one of its keys.
+static_assert(keys_are<Rectangle>({"height", "width"}));
+static_assert(scrydantic::keys_v<EmptyAlternative>.empty());
+// Encode-only aggregates have keys too, and the type may be qualified.
+static_assert(keys_are<BorrowedRequest>({"max_tokens", "model", "stream", "system",
+                                         "temperature", "tools", "top_p"}));
+static_assert(keys_are<const Renamed&>({"a_first", "max_tokens"}));
+
+// Tags follow the alternatives.
+static_assert(tags_are<Shape>({"circle", "rectangle"}));
+static_assert(tags_are<Edge>({"empty", "late"}));
+static_assert(tags_are<StreamEvent>({"delta", "stop"}));
 
 // ---- Schemas -----------------------------------------------------------------
 
@@ -424,7 +469,7 @@ TEST_CASE("tagged variants encode the tag at its canonical position") {
       R"({"highlight":{"height":4,"type":"rectangle","width":5},)"
       R"("shapes":[{"radius":1.5,"type":"circle"},{"height":2,"type":"rectangle","width":3}]})"};
 
-  const auto direct = scrydantic::detail::encode_value(drawing);
+  const auto direct = scrydantic::encode_verbatim(drawing);
   REQUIRE(direct);
   CHECK(direct->text == expected);
   const auto canonical = scrydantic::encode(drawing);
@@ -514,6 +559,45 @@ TEST_CASE("name annotations replace keys in encoding decoding and errors") {
         "$.max_tokens must be an integer\n$.a_first must be a string");
 }
 
+TEST_CASE("keys_v lists what encode() writes and what a document must hold") {
+  const auto encoded = scrydantic::encode(Renamed{.limit = 1, .zed = "z"});
+  REQUIRE(encoded);
+  const auto view = scrydantic::JsonView::parse(*encoded);
+  REQUIRE(view);
+  REQUIRE(view->size() == scrydantic::keys_v<Renamed>.size());
+  for (std::size_t index = 0; index < scrydantic::keys_v<Renamed>.size(); ++index) {
+    CHECK(view->key_at(index) == scrydantic::keys_v<Renamed>[index]);
+  }
+
+  // A member with an initializer is optional to decode; keys_v still lists it,
+  // so a caller can require it.
+  const auto partial =
+      scrydantic::JsonView::parse(scrydantic::Json{.text = R"({"a_first":"v"})"});
+  REQUIRE(partial);
+  REQUIRE(scrydantic::decode<Renamed>(*partial));
+  std::vector<std::string_view> missing{};
+  for (const std::string_view key : scrydantic::keys_v<Renamed>) {
+    if (!partial->find(key)) {
+      missing.push_back(key);
+    }
+  }
+  CHECK(missing == std::vector<std::string_view>{"max_tokens"});
+}
+
+TEST_CASE("tags_v matches a tag received apart from its object") {
+  const auto is_shape = [](const std::string_view tag) {
+    for (const std::string_view known : scrydantic::tags_v<Shape>) {
+      if (known == tag) {
+        return true;
+      }
+    }
+    return false;
+  };
+  CHECK(is_shape("circle"));
+  CHECK(is_shape("rectangle"));
+  CHECK_FALSE(is_shape("triangle"));
+}
+
 TEST_CASE("skip_null omits disengaged members and reads their absence as null") {
   CHECK(scrydantic::encode(Sparse{.absent = std::nullopt,
                                   .explicit_null = std::nullopt,
@@ -595,7 +679,7 @@ TEST_CASE("encode-only values borrow text and splice JSON verbatim") {
       }},
   };
 
-  const auto direct = scrydantic::detail::encode_value(body);
+  const auto direct = scrydantic::encode_verbatim(body);
   REQUIRE(direct);
   CHECK(direct->text ==
         R"({"max_tokens":1024,"model":"model-name","stream":true,"temperature":0.7,)"
@@ -614,6 +698,40 @@ TEST_CASE("encode-only values borrow text and splice JSON verbatim") {
         R"({"model":"m","stream":true,"system":"s","temperature":0,"top_p":0.5})");
 }
 
+TEST_CASE("encode_verbatim() keeps payload text that encode() respells") {
+  // Wider than any 64-bit integer, so canonical form reads it as a double.
+  const Payload wide{.body = {.text = R"({"z": 12345678901234567890123, "a": 1.50})"}};
+  const auto verbatim = scrydantic::encode_verbatim(wide);
+  REQUIRE(verbatim);
+  CHECK(verbatim->text == R"({"body":{"z": 12345678901234567890123, "a": 1.50}})");
+  const auto canonical = scrydantic::encode(wide);
+  REQUIRE(canonical);
+  CHECK(canonical->text == R"({"body":{"a":1.5,"z":1.2345678901234568E22}})");
+
+  // Numbers take std::to_chars' shortest text; keys and escapes stay canonical.
+  CHECK(scrydantic::encode_verbatim(1e-7)->text == "1e-07");
+  CHECK(scrydantic::encode(1e-7)->text == "1E-7");
+  CHECK(scrydantic::encode_verbatim(Renamed{.limit = 3, .zed = "a\nb"})->text ==
+        R"({"a_first":"a\nb","max_tokens":3})");
+}
+
+TEST_CASE("encode_verbatim() fails where encode() fails") {
+  const auto non_finite =
+      scrydantic::encode_verbatim(std::vector<double>{1.0, std::nan("")});
+  REQUIRE_FALSE(non_finite);
+  CHECK(non_finite.error().message == "$[1] must be finite");
+  CHECK(non_finite.error().model_message.empty());
+
+  const auto invalid = scrydantic::encode_verbatim(Payload{.body = {.text = "{"}});
+  REQUIRE_FALSE(invalid);
+  CHECK(invalid.error().message == "$.body is not valid JSON");
+
+  const auto bad_text = scrydantic::encode_verbatim(DocText{.text = "bad \xff byte"});
+  REQUIRE_FALSE(bad_text);
+  CHECK(bad_text.error().message ==
+        "the value holds a string that is not valid UTF-8, so it cannot be JSON");
+}
+
 // ---- Canonical spelling ------------------------------------------------------
 
 namespace {
@@ -623,7 +741,7 @@ namespace {
 template <typename Type>
 [[nodiscard]] std::optional<std::string> spelling_mismatch(const Type& value) {
   const auto direct = scrydantic::encode(value);
-  const auto verbatim = scrydantic::detail::encode_value(value);
+  const auto verbatim = scrydantic::encode_verbatim(value);
   if (!direct || !verbatim) {
     return direct ? "the verbatim writer failed" : "encode() failed";
   }
@@ -739,7 +857,7 @@ TEST_CASE("encode() canonicalizes spliced payloads as a whole-text pass would") 
        }) {
     INFO(payload);
     const Payload value{.body = {.text = std::string{payload}}};
-    if (!scrydantic::detail::validate_json(payload)) {
+    if (!scrydantic::is_valid_json(payload)) {
       CHECK_FALSE(scrydantic::encode(value));
       continue;
     }
@@ -762,7 +880,7 @@ TEST_CASE("strings are escaped as the canonical writer escapes them") {
   const auto expected =
       std::string{R"("\"\\/\b\f\n\r\t\u0001\u001F)"} + "\x7f\xc3\xa9\"";
   CHECK(scrydantic::encode(text)->text == expected);
-  CHECK(scrydantic::detail::encode_value(text)->text == expected);
+  CHECK(scrydantic::encode_verbatim(text)->text == expected);
   CHECK(scrydantic::escape_json_string(text) == expected);
   CHECK(decode_text<std::string>(expected).value() == text);
 }
@@ -792,12 +910,32 @@ TEST_CASE("encode() reports spliced payloads that nest too deep together") {
   CHECK(encoded.error().message == reason);
   CHECK(encoded.error().model_message.empty());
 
-  const auto verbatim = scrydantic::detail::encode_value(deep).and_then(
-      scrydantic::detail::validate_encoded_json);
+  const auto verbatim = scrydantic::encode_verbatim(deep);
   REQUIRE_FALSE(verbatim);
   CHECK(verbatim.error().message == reason);
 
   CHECK(scrydantic::encode(DocToolResult{.result = nest(255), .tool_call_id = "c"}));
+}
+
+TEST_CASE("encode_verbatim() checks the depth of the text it writes") {
+  // The earlier `x` sits at the parser's limit within the payload. encode() drops
+  // it as a duplicate key; encode_verbatim() keeps it, one level deeper inside the
+  // enclosing object.
+  const scrydantic::Json payload{
+      .text = R"({"x":)" + std::string(255, '[') + "0" + std::string(255, ']') +
+              R"(,"x":0})",
+  };
+  REQUIRE(scrydantic::is_valid_json(payload.text));
+  const DocToolResult value{.result = payload, .tool_call_id = "c"};
+
+  const auto encoded = scrydantic::encode(value);
+  REQUIRE(encoded);
+  CHECK(encoded->text == R"({"is_error":false,"result":{"x":0},"tool_call_id":"c"})");
+
+  const auto verbatim = scrydantic::encode_verbatim(value);
+  REQUIRE_FALSE(verbatim);
+  CHECK(verbatim.error().message ==
+        "the value nests arrays and objects more than 256 deep, so it cannot be JSON");
 }
 
 TEST_CASE("encode() takes a reference or cv-qualified type argument") {
@@ -809,7 +947,7 @@ TEST_CASE("encode() takes a reference or cv-qualified type argument") {
   CHECK(scrydantic::encode<const std::optional<int>>(value)->text == "42");
   const DocText text{.text = "hi"};
   CHECK(scrydantic::encode<const DocText&>(text)->text == R"({"text":"hi"})");
-  CHECK(scrydantic::detail::encode_value<std::optional<int>&>(value)->text == "42");
+  CHECK(scrydantic::encode_verbatim<std::optional<int>&>(value)->text == "42");
 }
 
 TEST_CASE("an invalid spliced JSON payload fails encoding at its path") {
@@ -818,7 +956,7 @@ TEST_CASE("an invalid spliced JSON payload fails encoding at its path") {
         .model = "m",
         .tools = std::vector<BorrowedTool>{{.input_schema = {.text = text}}},
     };
-    const auto encoded = scrydantic::detail::encode_value(body);
+    const auto encoded = scrydantic::encode_verbatim(body);
     REQUIRE_FALSE(encoded);
     CHECK(encoded.error().message == "$.tools[0].input_schema is not valid JSON");
     CHECK(encoded.error().model_message.empty());
@@ -843,7 +981,7 @@ TEST_CASE("document-like values round trip byte for byte") {
   const auto& result = std::get<DocToolResult>(decoded->messages[2].content[0]);
   CHECK(result.result.text == R"({"summary":"sunny","temperature_c":21.5})");
 
-  const auto direct = scrydantic::detail::encode_value(*decoded);
+  const auto direct = scrydantic::encode_verbatim(*decoded);
   REQUIRE(direct);
   CHECK(direct->text == text);
   const auto canonical = scrydantic::encode(*decoded);
@@ -1372,11 +1510,11 @@ static_assert(scrydantic::SupportedValue<Pooled>);
 static_assert(scrydantic::Encodable<Bound>);
 static_assert(!scrydantic::Decodable<Bound>);
 
-static_assert(mentions(scrydantic::detail::supported_diagnostic<OptionalInside>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<OptionalInside>(),
                        "OptionalInside::value: std::indirect<std::optional<int> > "
                        "nests std::optional inside std::indirect; "
                        "std::optional<std::indirect<T>> is the nullable form"));
-static_assert(mentions(scrydantic::detail::decodable_diagnostic<Bound>(),
+static_assert(mentions(scrydantic::decodable_diagnostic<Bound>(),
                        "Bound::value: std::indirect<int, "
                        "{anonymous}::BoundAllocator<int> > must be default-"
                        "constructible, move-constructible, and move-assignable"));
@@ -1669,6 +1807,12 @@ struct Sizes {
   Größe size;
 };
 
+// A recursive value that splices raw JSON, which only encoding takes.
+struct Noted {
+  [[= scrydantic::skip_null]] std::optional<std::indirect<Noted>> next;
+  scrydantic::Json note;
+};
+
 } // namespace recursive
 
 namespace {
@@ -1690,7 +1834,7 @@ consteval std::string_view local_definition_diagnostic() {
   struct Holder {
     Local local;
   };
-  return scrydantic::detail::supported_diagnostic<Holder>();
+  return scrydantic::supported_value_diagnostic<Holder>();
 }
 
 // A chain of `length` links, valued from `length - 1` at its head down to 0.
@@ -1716,6 +1860,18 @@ consteval std::string_view local_definition_diagnostic() {
     text += R"(,"value":)" + std::to_string(value) + "}";
   }
   return text;
+}
+
+// A Noted chain of `length` links. Each note is 0, except the last link's, which is
+// `last`.
+[[nodiscard]] recursive::Noted noted_chain(const std::size_t length, std::string last) {
+  recursive::Noted head{.next = std::nullopt, .note = {.text = std::move(last)}};
+  for (std::size_t link = 1; link < length; ++link) {
+    recursive::Noted outer{.next = std::indirect<recursive::Noted>(std::move(head)),
+                           .note = {.text = "0"}};
+    head = std::move(outer);
+  }
+  return head;
 }
 
 } // namespace
@@ -1754,46 +1910,63 @@ static_assert(!scrydantic::SupportedValue<recursive::Scales>);
 static_assert(!scrydantic::SupportedValue<recursive::Sizes>);
 // A recursive root needs no name of its own.
 static_assert(scrydantic::SupportedValue<recursive::Tagged<int*>>);
+// Encoding reads a Json payload, which has no schema.
+static_assert(scrydantic::Encodable<recursive::Noted>);
+static_assert(!scrydantic::SupportedValue<recursive::Noted>);
+
+// The diagnostics agree with the concepts for recursive types too.
+static_assert(scrydantic::supported_value_diagnostic<recursive::Category>().empty());
+static_assert(scrydantic::tool_arguments_diagnostic<recursive::Category>().empty());
+static_assert(scrydantic::decodable_diagnostic<recursive::Expression>().empty());
+static_assert(scrydantic::encodable_diagnostic<recursive::WrappedFirst>().empty());
+static_assert(scrydantic::encodable_diagnostic<recursive::Noted>().empty());
+
+// keys_v and tags_v list the wire names of a recursive type as of any other type.
+static_assert(keys_are<recursive::Category>({"children", "name"}));
+static_assert(keys_are<recursive::Chain>({"next", "value"}));
+static_assert(keys_are<recursive::Folder>({"entries", "folders"}));
+static_assert(tags_are<recursive::Expression>({"literal", "negate", "sum"}));
+static_assert(tags_are<recursive::Entry>({"file", "folder"}));
 
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<recursive::Endless>(),
+    mentions(scrydantic::supported_value_diagnostic<recursive::Endless>(),
              "recursive::Endless::next: recursive::Endless contains itself through no "
              "std::optional, std::vector, or variant alternative after the first, so "
              "default-constructing it, as decoding does, never ends"));
 static_assert(mentions(
-    scrydantic::detail::encodable_diagnostic<recursive::Endless>(),
+    scrydantic::encodable_diagnostic<recursive::Endless>(),
     "recursive::Endless::next: recursive::Endless contains itself through no "
     "std::optional, std::vector, or variant, so every value of it is infinite or "
     "cyclic and cannot be JSON"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Ping>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Ping>(),
                        "recursive::Ping::pong.ping: recursive::Ping contains itself"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<recursive::Halves>(),
+    mentions(scrydantic::supported_value_diagnostic<recursive::Halves>(),
              "recursive::Halves::halves[]: recursive::Halves contains itself"));
 static_assert(
-    mentions(scrydantic::detail::decodable_diagnostic<recursive::WrappedFirst>(),
+    mentions(scrydantic::decodable_diagnostic<recursive::WrappedFirst>(),
              "recursive::Wrapped::inner<recursive::Wrapped>: recursive::Wrapped "
              "contains itself through no std::optional, std::vector, or variant "
              "alternative after the first"));
-static_assert(mentions(scrydantic::detail::encodable_diagnostic<recursive::Ring>(),
+static_assert(mentions(scrydantic::encodable_diagnostic<recursive::Ring>(),
                        "recursive::Ring::next: recursive::Ring contains itself through "
                        "no std::optional, std::vector, or variant"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Tallies>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Tallies>(),
                        "recursive::Tallies has the recursive types recursive::Tally<"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Tallies>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Tallies>(),
                        ", which both map to the schema definition name "
                        "\"recursive.Tally-int64\""));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Pointed>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Pointed>(),
                        "recursive::Pointed has the recursive type "
                        "recursive::Tagged<int*>, which no schema definition name can "
                        "spell: int* is not a type that a definition name spells"));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Scales>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Scales>(),
                        ", which no schema definition name can spell: "));
-static_assert(mentions(scrydantic::detail::supported_diagnostic<recursive::Scales>(),
+static_assert(mentions(scrydantic::supported_value_diagnostic<recursive::Scales>(),
                        " is not a constant that a definition name spells; an argument "
                        "constant must be an integer, a bool, or an enumerator"));
 static_assert(
-    mentions(scrydantic::detail::supported_diagnostic<recursive::Sizes>(),
+    mentions(scrydantic::supported_value_diagnostic<recursive::Sizes>(),
              "recursive::Sizes has the recursive type recursive::Größe, which "
              "no schema definition name can spell: recursive::Größe has a "
              "name that is not ASCII letters, digits, and '_'"));
@@ -2025,4 +2198,53 @@ TEST_CASE("recursion nests as deep as the parser reads and no deeper") {
   CHECK(encoded.error().message ==
         path + ".next is an array or object nested more than 256 deep, so the value "
                "cannot be JSON");
+}
+
+TEST_CASE("encode_verbatim() writes a recursive value as encode() does") {
+  // A literal deep in the tree takes the number spelling of each writer.
+  const recursive::Expression expression{recursive::Negate{
+      .operand = std::indirect<recursive::Expression>(recursive::Expression{
+          recursive::Sum{.terms = {recursive::Literal{.value = 1e-7}}}}),
+  }};
+  CHECK(scrydantic::encode_verbatim(expression)->text ==
+        R"({"operand":{"terms":[{"type":"literal","value":1e-07}],"type":"sum"},)"
+        R"("type":"negate"})");
+  CHECK(scrydantic::encode(expression)->text ==
+        R"({"operand":{"terms":[{"type":"literal","value":1E-7}],"type":"sum"},)"
+        R"("type":"negate"})");
+  CHECK(spelling_mismatch(expression) == std::nullopt);
+
+  // Both spellings stop at the same depth, with the same failure.
+  CHECK(scrydantic::encode_verbatim(chain_of(256))->text == chain_text(256));
+  const auto encoded = scrydantic::encode(chain_of(257));
+  const auto verbatim = scrydantic::encode_verbatim(chain_of(257));
+  REQUIRE_FALSE(encoded);
+  REQUIRE_FALSE(verbatim);
+  CHECK(verbatim.error().message == encoded.error().message);
+  CHECK(verbatim.error().model_message.empty());
+}
+
+TEST_CASE("payloads in a recursive value count toward its nesting") {
+  const recursive::Noted noted{
+      .next = std::indirect<recursive::Noted>(recursive::Noted{
+          .next = std::nullopt, .note = {.text = R"({"b": 2, "a": 1.50})"}}),
+      .note = {.text = "[ 1 ]"},
+  };
+  CHECK(scrydantic::encode_verbatim(noted)->text ==
+        R"({"next":{"note":{"b": 2, "a": 1.50}},"note":[ 1 ]})");
+  CHECK(scrydantic::encode(noted)->text ==
+        R"({"next":{"note":{"a":1.5,"b":2}},"note":[1]})");
+
+  // 256 links nest 256 objects, which the writer accepts. A payload that is an
+  // array in the last link is one level more, which only the final check sees.
+  CHECK(scrydantic::encode(noted_chain(256, "0")));
+  CHECK(scrydantic::encode_verbatim(noted_chain(256, "0")));
+  constexpr std::string_view reason =
+      "the value nests arrays and objects more than 256 deep, so it cannot be JSON";
+  const auto encoded = scrydantic::encode(noted_chain(256, "[0]"));
+  REQUIRE_FALSE(encoded);
+  CHECK(encoded.error().message == reason);
+  const auto verbatim = scrydantic::encode_verbatim(noted_chain(256, "[0]"));
+  REQUIRE_FALSE(verbatim);
+  CHECK(verbatim.error().message == reason);
 }

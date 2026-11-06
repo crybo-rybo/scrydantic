@@ -15,8 +15,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <scrydantic/detail/encode.hpp>
-#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <variant>
@@ -124,7 +122,7 @@ constexpr std::size_t message_count = 100;
 TEST_CASE("JSON core", "[json]") {
   const auto& text = conversation_text();
   BENCHMARK("JsonView::parse") { return scrydantic::JsonView::parse(text); };
-  BENCHMARK("validate_json") { return scrydantic::detail::validate_json(text.text); };
+  BENCHMARK("is_valid_json") { return scrydantic::is_valid_json(text.text); };
   BENCHMARK("JsonView::parse and to_json") {
     return scrydantic::JsonView::parse(text)->to_json();
   };
@@ -134,9 +132,7 @@ TEST_CASE("reflected codec", "[codec]") {
   const auto conversation = bench::make_conversation(message_count);
   const auto& text = conversation_text();
   BENCHMARK("encode (canonical)") { return scrydantic::encode(conversation); };
-  BENCHMARK("encode_value (verbatim)") {
-    return scrydantic::detail::encode_value(conversation);
-  };
+  BENCHMARK("encode_verbatim") { return scrydantic::encode_verbatim(conversation); };
   BENCHMARK("decode from text") {
     return scrydantic::decode<bench::Conversation>(text);
   };

@@ -6,6 +6,8 @@
 
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
+#include <scrydantic/diagnostics.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <scrydantic/tools.hpp>
+#include <scrydantic/version.hpp>
