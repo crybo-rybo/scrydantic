@@ -142,7 +142,7 @@ template <spelling Spelling>
       return encode_fail("is not valid JSON");
     }
   } else {
-    if (!validate_json(value.text)) {
+    if (!is_valid_json(value.text)) {
       return encode_fail("is not valid JSON");
     }
     output.append(value.text);

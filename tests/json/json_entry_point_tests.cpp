@@ -29,7 +29,7 @@ namespace core = scrydantic::detail;
   const auto viewed = JsonView::parse(scrydantic::Json{.text = std::string{input}});
   std::string appended{};
   const bool canonicalized = core::append_canonical_json(appended, input);
-  REQUIRE(core::validate_json(input) == document.has_value());
+  REQUIRE(scrydantic::is_valid_json(input) == document.has_value());
   REQUIRE((core::check_json(input) == core::json_validity::valid) ==
           document.has_value());
   REQUIRE(viewed.has_value() == document.has_value());
@@ -107,6 +107,13 @@ TEST_CASE("the JSON core rejects every shape of incomplete document") {
       {"trailing newline", "{\"a\":1}\n", true},
       {"leading whitespace", "  {\"a\":1}", true},
       {"bare number", "123", true},
+      // Numbers the grammar allows but a double cannot hold.
+      {"overflowing number", "1e400", false},
+      {"overflowing negative number", "-1e400", false},
+      {"nonzero number that rounds to zero", "1e-400", false},
+      {"number below half the smallest subnormal", "2e-324", false},
+      {"smallest subnormal", "5e-324", true},
+      {"zero with a huge negative exponent", "0e-400", true},
       {"bare number with space", "123 ", true},
       {"bare true", "true", true},
       {"bare null", "null", true},
@@ -126,7 +133,7 @@ TEST_CASE("the JSON core bounds malformed non-null-terminated input") {
   // the view's end rather than look for a NUL.
   constexpr std::array input{'{'};
   const auto text = std::string_view{input.data(), input.size()};
-  CHECK_FALSE(core::validate_json(text));
+  CHECK_FALSE(scrydantic::is_valid_json(text));
   CHECK_FALSE(core_accepts(text));
 }
 
@@ -159,21 +166,38 @@ TEST_CASE("every entry point writes the core's canonical text") {
 }
 
 TEST_CASE("canonical numbers are spelled positionally or with an uppercase E") {
-  const auto spelled = [](const double value) {
-    std::string text{};
-    core::append_canonical_json_number(text, value);
-    return text;
-  };
-  CHECK(spelled(1.0) == "1");
-  CHECK(spelled(-0.0) == "-0");
-  CHECK(spelled(1234.5) == "1234.5");
-  CHECK(spelled(0.0001) == "0.0001");
-  CHECK(spelled(1e-7) == "1E-7");
-  CHECK(spelled(1.5e300) == "1.5E300");
+  CHECK(scrydantic::format_json_number(1.0) == "1");
+  CHECK(scrydantic::format_json_number(-0.0) == "-0");
+  CHECK(scrydantic::format_json_number(1234.5) == "1234.5");
+  CHECK(scrydantic::format_json_number(0.0001) == "0.0001");
+  CHECK(scrydantic::format_json_number(1e-7) == "1E-7");
+  CHECK(scrydantic::format_json_number(1e15) == "1000000000000000");
+  CHECK(scrydantic::format_json_number(1e16) == "1E16");
+  CHECK(scrydantic::format_json_number(1.5e300) == "1.5E300");
   // JSON has no spelling for a non-finite number.
-  CHECK(spelled(std::numeric_limits<double>::infinity()) == "null");
-  CHECK(spelled(-std::numeric_limits<double>::infinity()) == "null");
-  CHECK(spelled(std::numeric_limits<double>::quiet_NaN()) == "null");
+  CHECK(scrydantic::format_json_number(std::numeric_limits<double>::infinity()) ==
+        "null");
+  CHECK(scrydantic::format_json_number(-std::numeric_limits<double>::infinity()) ==
+        "null");
+  CHECK(scrydantic::format_json_number(std::numeric_limits<double>::quiet_NaN()) ==
+        "null");
+
+  // The codec's in-place form appends the same text.
+  std::string text{"["};
+  core::append_canonical_json_number(text, 1e-7);
+  CHECK(text == "[1E-7");
+}
+
+TEST_CASE("a formatted number is the spelling the canonical writer gives it") {
+  for (const double value :
+       {0.1, -2.5, 1e21, 123456789.125, 5e-324, 1.7976931348623157e308}) {
+    const auto text = scrydantic::format_json_number(value);
+    INFO(text);
+    const auto parsed = JsonView::parse(scrydantic::Json{.text = text});
+    REQUIRE(parsed);
+    CHECK(parsed->number() == value);
+    CHECK(parsed->to_json().text == text);
+  }
 }
 
 TEST_CASE("appending canonical JSON leaves the output alone on a rejection") {

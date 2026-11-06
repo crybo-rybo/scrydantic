@@ -6,9 +6,19 @@ pass. The library's design is described in
 
 ## Toolchain
 
-- GCC 16 or newer, the only compiler that implements C++26 reflection. The
-  scripts use `CXX` when it is set. Otherwise they use `g++` if it is GCC 16
-  (Arch, Fedora), and then `g++-16` (Ubuntu with the toolchain PPA).
+- GCC 16.1 or newer, the only compiler that implements C++26 reflection.
+  GCC 16.0.x versions are development snapshots, and CMake rejects them. The
+  scripts use `CXX` when it is set. Otherwise they use `g++` or `g++-16`,
+  whichever is first to be GCC 16.1 or newer.
+- Ubuntu packages only GCC 16 snapshots (`g++-16` in 26.04 and in the
+  toolchain PPA). On Ubuntu, use the official GCC image that CI uses. The
+  digest is in `.github/workflows/ci.yml`:
+
+  ```sh
+  docker run --rm -it -v "$PWD":/src -w /src gcc:16.2.0 bash
+  apt-get update && apt-get install -y cmake ninja-build pipx
+  scripts/test.sh
+  ```
 - CMake 3.30 or newer, and Ninja.
 - [uv](https://docs.astral.sh/uv/) or pipx. The scripts use them to run the
   pinned clang-format, clang-tidy, lizard, gcovr, and shellcheck from PyPI.
@@ -29,6 +39,7 @@ warnings check the reflection code.
 | `scripts/lint.sh` | Runs clang-tidy, the include-boundary and hygiene checks, shellcheck, and the complexity check. |
 | `scripts/complexity.sh --report` | Lists the most complex functions and the totals. |
 | `scripts/coverage.sh` | Reports line coverage of `include/` and `src/` by the tests, and writes `build/coverage/report/index.html`. |
+| `scripts/release-notes.sh vX.Y.Z` | Checks a release tag against `version.hpp` and `CHANGELOG.md`, and prints the release notes. |
 | `cmake --workflow --preset <name>` | Configures, builds, and tests a preset, without a script. |
 
 To run the quick checks (formatting and complexity) before each commit, enable
@@ -82,7 +93,7 @@ The tests are under `tests/`. Each test has a CTest label, so
 
 | Label | Tests |
 |---|---|
-| `json` | The C++23 core: the document, `JsonView`, the text operations, and the golden fixtures (`tests/json/`) |
+| `json` | The C++23 core: the document, `JsonView`, the text operations, and the golden fixtures (`tests/json/`), and the version macros (`tests/version/`) |
 | `reflection` | The codec, the schemas, and tool binding (`tests/codec/`, `tests/tools/`) |
 | `fuzz` | The fuzz corpus replayed through the property target (`tests/fuzz/`) |
 | `multi-tu` | Call-site keying across translation units (`tests/multi_tu/`) |
@@ -95,8 +106,8 @@ case:
 - **A new rejection** needs a `scrydantic_add_compile_fail_test()` in
   `tests/CMakeLists.txt`, with a substring of the diagnostic that names the
   type, member, or function and the reason. Also add `static_assert`s on the
-  `detail::*_diagnostic` text for the rejection, as `tests/codec/codec_tests.cpp`
-  does.
+  text that the matching function in `diagnostics.hpp` gives for the
+  rejection, as `tests/codec/codec_tests.cpp` does.
 - **A change to what the parser accepts or writes** needs an update to the
   golden fixtures. See [tests/fixtures/json/README.md](tests/fixtures/json/README.md)
   for how to update them.
@@ -107,9 +118,10 @@ case:
   `tests/codec/codec_tests.cpp` passing. Those tests check that `encode()`
   writes exactly what canonicalizing the verbatim writer's text writes.
 
-The installed package is tested by CI's `package` job. You can also test it
-manually: install to a prefix, then configure `tests/package/` with
-`CMAKE_PREFIX_PATH` set to that prefix.
+CI's `package` jobs test the installed package and the source tree as a
+subproject. You can also test them manually: configure `tests/package/` with
+`CMAKE_PREFIX_PATH` set to an installation prefix, or with
+`SCRYDANTIC_SOURCE_DIR` set to the repository root.
 
 ## Benchmarks
 
@@ -123,6 +135,46 @@ Compare a hot-path change with the numbers from before the change, on the same
 machine. Benchmarks run only from an optimized build, so they are not
 registered with CTest. [docs/architecture.md](docs/architecture.md#performance)
 records the current baseline.
+
+## Changelog
+
+A change that a user can see (the public API, the behavior, the supported
+types, the diagnostics, or the build and the package) adds an entry under
+`## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md). Use the
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) sections: `Added`,
+`Changed`, `Deprecated`, `Removed`, `Fixed`, and `Security`. Write the entries
+in ASD-STE100 Simplified Technical English: short sentences, active voice, and
+one meaning for each word.
+
+## Releases
+
+The version is set in one place, `include/scrydantic/version.hpp`. CMake reads
+it from there. Scrydantic follows Semantic Versioning. Before 1.0, increase the
+minor version for a change that breaks the public API, and the patch version
+for all other changes.
+
+1. On a branch, set the new version in `include/scrydantic/version.hpp`.
+2. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`,
+   add a new empty `## [Unreleased]` above it, and update the compare links at
+   the end of the file.
+3. Update the version in the README's `FetchContent` example, and the
+   supported versions in `SECURITY.md` for a new minor series.
+4. Run `scripts/release-notes.sh vX.Y.Z` and `scripts/check.sh --all`, then
+   merge the pull request.
+5. Tag the merge commit and push the tag:
+
+   ```sh
+   git switch main && git pull --ff-only
+   git tag -a vX.Y.Z -m "Scrydantic vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+The tag starts `.github/workflows/release.yml`. It checks the tag with
+`scripts/release-notes.sh` and runs every CI job on the tagged commit. Then it
+publishes a GitHub release with the changelog section as the notes, a source
+archive (`scrydantic-X.Y.Z.tar.gz`), its SHA-256 checksum, and a build
+provenance attestation. If a job fails, no release is published. Fix the
+cause on `main`, delete the tag, and tag again.
 
 ## Conventions
 

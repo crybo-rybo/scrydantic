@@ -56,7 +56,8 @@ scrydantic_add_header_checks(
 )
 
 # The JSON core's own tests, compiled as C++23 like the core itself. They reach
-# the document type behind JsonView through the private src/ headers.
+# the document type behind JsonView through the private src/ headers. The
+# version test is here too, because version.hpp is one of the core's headers.
 add_executable(
   scrydantic_json_tests
   json/json_entry_point_tests.cpp
@@ -64,6 +65,7 @@ add_executable(
   json/json_error_tests.cpp
   json/json_fixture_tests.cpp
   json/json_view_tests.cpp
+  version/version_tests.cpp
 )
 target_compile_features(scrydantic_json_tests PRIVATE cxx_std_23)
 target_include_directories(scrydantic_json_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -90,6 +92,7 @@ target_compile_definitions(
   PRIVATE
     "SCRYDANTIC_JSON_FIXTURE_DIR=\"${SCRYDANTIC_JSON_FIXTURE_DIR}\""
     "SCRYDANTIC_FUZZ_CORPUS_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus\""
+    "SCRYDANTIC_EXPECTED_VERSION=\"${PROJECT_VERSION}\""
 )
 target_link_libraries(
   scrydantic_json_tests
@@ -132,6 +135,7 @@ set_tests_properties(
 # Catch2 alone.
 add_executable(
   scrydantic_tests
+  codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
   tools/tool_binding_tests.cpp
 )
@@ -274,4 +278,14 @@ scrydantic_add_compile_fail_test(
   misplaced-context
   misplaced_context.cpp
   "greeting_tools::greet has parameter `session` of type Session; the context is only ever the leading parameter, as const Session&"
+)
+scrydantic_add_compile_fail_test(
+  keys-of-non-object
+  keys_of_non_object.cpp
+  "std::variant<Circle> is not a plain aggregate, so it has no JSON object keys"
+)
+scrydantic_add_compile_fail_test(
+  tags-of-non-variant
+  tags_of_non_variant.cpp
+  "Circle is not a std::variant, so it has no tags"
 )
