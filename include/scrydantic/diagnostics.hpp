@@ -1,7 +1,7 @@
 #pragma once
 
 #if !defined(__cpp_impl_reflection)
-#error "Scrydantic requires a compiler implementing P2996 (GCC 16 or newer)"
+#error "Scrydantic requires a compiler implementing P2996 (GCC 16.1 or newer)"
 #endif
 
 #include <meta>

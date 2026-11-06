@@ -5,7 +5,7 @@
 #
 #   PRESET   dev (the default), release, asan, or tsan; coverage has its own
 #            script, scripts/coverage.sh
-#   CXX      the compiler, when the detected GCC 16 (scripts/lib/tools.sh) is
+#   CXX      the compiler, when the detected GCC 16.1 (scripts/lib/tools.sh) is
 #            not the one to use
 #   FRESH=1  reconfigure the preset's build directory from scratch
 #

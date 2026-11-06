@@ -10,6 +10,12 @@ The entries use ASD-STE100 Simplified Technical English.
 
 ## [Unreleased]
 
+### Changed
+
+- **Requirements.** GCC 16.1 or newer. CMake, `find_package(scrydantic)`, and
+  the scripts reject GCC 16.0.x, which are development snapshots. CI now
+  builds and tests with the released GCC 16.2.0.
+
 ## [0.1.0] - 2026-11-04
 
 This is the first release.

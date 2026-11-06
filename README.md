@@ -9,8 +9,8 @@ no dependency beyond the standard library.
 
 ## Build and test
 
-Use GCC 16 or newer with reflection support, CMake 3.30 or newer, and Ninja.
-From the repository root:
+Use GCC 16.1 or newer with reflection support, CMake 3.30 or newer, and Ninja.
+GCC 16.0.x development snapshots are not supported. From the repository root:
 
 ```sh
 CXX=g++-16 cmake --workflow --preset dev    # configure, build, and run every test
@@ -19,8 +19,8 @@ cmake --install build/dev --prefix "$PWD/stage"
 ```
 
 `CXX` names the compiler on the first configure. Omit it where `g++` is
-already GCC 16. Tests fetch Catch2; the library itself depends on nothing but
-the standard library.
+already GCC 16.1 or newer. Tests fetch Catch2; the library itself depends on
+nothing but the standard library.
 
 The scripts that CI runs are the same ones to use locally, and
 `scripts/check.sh` runs all of them:

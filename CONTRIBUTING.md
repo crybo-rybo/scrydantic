@@ -6,9 +6,19 @@ pass. The library's design is described in
 
 ## Toolchain
 
-- GCC 16 or newer, the only compiler that implements C++26 reflection. The
-  scripts use `CXX` when it is set. Otherwise they use `g++` if it is GCC 16
-  (Arch, Fedora), and then `g++-16` (Ubuntu with the toolchain PPA).
+- GCC 16.1 or newer, the only compiler that implements C++26 reflection.
+  GCC 16.0.x versions are development snapshots, and CMake rejects them. The
+  scripts use `CXX` when it is set. Otherwise they use `g++` or `g++-16`,
+  whichever is first to be GCC 16.1 or newer.
+- Ubuntu packages only GCC 16 snapshots (`g++-16` in 26.04 and in the
+  toolchain PPA). On Ubuntu, use the official GCC image that CI uses. The
+  digest is in `.github/workflows/ci.yml`:
+
+  ```sh
+  docker run --rm -it -v "$PWD":/src -w /src gcc:16.2.0 bash
+  apt-get update && apt-get install -y cmake ninja-build pipx
+  scripts/test.sh
+  ```
 - CMake 3.30 or newer, and Ninja.
 - [uv](https://docs.astral.sh/uv/) or pipx. The scripts use them to run the
   pinned clang-format, clang-tidy, lizard, gcovr, and shellcheck from PyPI.

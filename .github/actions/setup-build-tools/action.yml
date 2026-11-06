@@ -1,0 +1,20 @@
+name: Set up the build tools
+description: >-
+  Install CMake, Ninja, and any extra Debian packages in the GCC image that the
+  CI jobs run in (.github/workflows/ci.yml). The image supplies GCC itself.
+inputs:
+  packages:
+    description: Extra Debian packages to install, separated by spaces.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        read -r -a extra <<<"${PACKAGES}"
+        apt-get update -o Acquire::Retries=5
+        apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
+          cmake ninja-build "${extra[@]}"

@@ -80,16 +80,19 @@ set_property(
 )
 
 # The reflected codec uses C++26 reflection (P2996), which only GCC 16+ compiles.
+# GCC 16.1 is the first release; 16.0.x versions are development snapshots,
+# which CI does not test.
 if(
   NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
-  OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16
+  OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16.1
 )
   message(
     FATAL_ERROR
-    "Scrydantic requires GCC 16 or newer (C++26 reflection), but the C++ "
+    "Scrydantic requires GCC 16.1 or newer (C++26 reflection), but the C++ "
     "compiler is ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} "
-    "(${CMAKE_CXX_COMPILER}). Configure a fresh build directory with CXX set "
-    "to GCC 16, such as CXX=g++-16, or with -DCMAKE_CXX_COMPILER=g++-16."
+    "(${CMAKE_CXX_COMPILER}). GCC 16.0.x is a development snapshot. Configure "
+    "a fresh build directory with CXX set to GCC 16.1 or newer, or with "
+    "-DCMAKE_CXX_COMPILER."
   )
 endif()
 
