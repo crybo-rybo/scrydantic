@@ -31,9 +31,10 @@ The entries use ASD-STE100 Simplified Technical English.
 - **Paths.** In decode and encode failures, a key that is not an ASCII
   identifier is a JSON string in brackets, for example `$["a.b"]`. Before,
   the key followed a `.`, so a key such as `a.b` looked like two steps.
-- **Requirements.** GCC 16.1 or newer. CMake, `find_package(scrydantic)`, and
-  the scripts reject GCC 16.0.x, which are development snapshots. CI now
-  builds and tests with the released GCC 16.2.0.
+- **Requirements.** GCC 16.2 or newer. CMake, `find_package(scrydantic)`, and
+  the scripts reject older versions. GCC 16.1 has reflection bugs that 16.2
+  fixes, such as PR c++/124770, and GCC 16.0.x versions are development
+  snapshots. CI builds and tests with GCC 16.2.0, the minimum.
 
 ## [0.1.0] - 2026-11-04
 
