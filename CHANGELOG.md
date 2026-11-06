@@ -10,8 +10,27 @@ The entries use ASD-STE100 Simplified Technical English.
 
 ## [Unreleased]
 
+### Added
+
+- **Structured decode errors** (`scrydantic/error.hpp`). `Error::issues`
+  lists each issue that a decode found. Each `Issue` has an `IssueKind`, a
+  path from the decoded value as `PathSegment`s, and a reason, for example
+  `must be a number`. `json_path()` gives the text of a path. `max_issues`
+  (64) is the maximum number of issues that one decode reports. Other
+  failures, and all encode failures, keep `issues` empty.
+
 ### Changed
 
+- **Decode failures.** A decode does not stop at the first failure. It
+  continues to the other members and elements, and it reports each issue.
+  With one issue, `message` and `model_message` have the same text as
+  before. With more issues, they have one `<path> <reason>` line for each
+  issue. After `max_issues` issues, the decode stops, and a last line says
+  that it did not report the other issues. A bound tool gives the issues to
+  the host and the lines to the model.
+- **Paths.** In decode and encode failures, a key that is not an ASCII
+  identifier is a JSON string in brackets, for example `$["a.b"]`. Before,
+  the key followed a `.`, so a key such as `a.b` looked like two steps.
 - **Requirements.** GCC 16.1 or newer. CMake, `find_package(scrydantic)`, and
   the scripts reject GCC 16.0.x, which are development snapshots. CI now
   builds and tests with the released GCC 16.2.0.
