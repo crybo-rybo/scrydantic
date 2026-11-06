@@ -68,14 +68,14 @@ include(FetchContent)
 FetchContent_Declare(
   scrydantic
   GIT_REPOSITORY https://github.com/crybo-rybo/scrydantic.git
-  GIT_TAG v0.1.0
+  GIT_TAG v0.2.0
 )
 FetchContent_MakeAvailable(scrydantic)
 target_link_libraries(my_app PRIVATE scrydantic::scrydantic)
 ```
 
 Or install it (`cmake --install build/dev --prefix <prefix>`) and use
-`find_package(scrydantic 0.1 CONFIG REQUIRED)`.
+`find_package(scrydantic 0.2 CONFIG REQUIRED)`.
 
 The `scrydantic::scrydantic` target turns on C++26 and `-freflection` for you.
 Scrydantic is pre-1.0, so a minor release can change the API.
