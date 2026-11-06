@@ -36,23 +36,17 @@ struct constraint_annotation {
   std::string_view name{};
 };
 
-// A function, not an inline variable: GCC 16.1 rejects an odr-used inline
-// variable of consteval-only type as "not defined" (PR c++/124770, fixed in
-// 16.2). Without `inline`, the variable would have internal linkage, and the
-// consteval functions below, which are inline, would break the ODR by using it.
-consteval auto constraint_annotations() {
-  return std::array{
-      constraint_annotation{.what = ^^range, .name = "scrydantic::range"},
-      constraint_annotation{.what = ^^multiple_of, .name = "scrydantic::multiple_of"},
-      constraint_annotation{.what = ^^length, .name = "scrydantic::length"},
-      constraint_annotation{.what = ^^items, .name = "scrydantic::items"},
-      constraint_annotation{.what = ^^pattern, .name = "scrydantic::pattern"},
-  };
-}
+inline constexpr std::array constraint_annotations{
+    constraint_annotation{.what = ^^range, .name = "scrydantic::range"},
+    constraint_annotation{.what = ^^multiple_of, .name = "scrydantic::multiple_of"},
+    constraint_annotation{.what = ^^length, .name = "scrydantic::length"},
+    constraint_annotation{.what = ^^items, .name = "scrydantic::items"},
+    constraint_annotation{.what = ^^pattern, .name = "scrydantic::pattern"},
+};
 
 // The name of a constraint annotation, or empty for any other annotation.
 consteval std::string_view constraint_name(const std::meta::info annotation) {
-  for (const auto& constraint : constraint_annotations()) {
+  for (const auto& constraint : constraint_annotations) {
     if (annotation_matches(annotation, constraint.what)) {
       return constraint.name;
     }
@@ -479,7 +473,7 @@ consteval std::string annotation_problem(const std::meta::info annotation,
 
 // Why the constraint annotations of `member` cannot hold; empty when they can.
 consteval std::string constraint_problem(const std::meta::info member) {
-  for (const auto& constraint : constraint_annotations()) {
+  for (const auto& constraint : constraint_annotations) {
     if (annotation_count(member, constraint.what) > 1) {
       return "has more than one " + owned_text(constraint.name) + " annotation";
     }
