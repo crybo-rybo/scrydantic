@@ -204,7 +204,7 @@ template <typename Enum> [[nodiscard]] std::string enumerator_name(const Enum va
 // ends the test when `decoded` holds a value, and at -O2 it follows that path,
 // where the moved-out Error's short strings point into the storage that the
 // value's destructor then frees, and reports -Wfree-nonheap-object. Any
-// std::expected whose value owns memory draws it so; see the GCC 16 notes.
+// std::expected whose value owns memory draws it so.
 template <typename Type>
 [[nodiscard]] scrydantic::Error rejection(const std::string_view text) {
   const auto decoded = decode_text<Type>(text);

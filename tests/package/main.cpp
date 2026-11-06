@@ -1,5 +1,5 @@
-// The README's package example: bind a namespace and call its one tool. It
-// also checks that the version macros match the version CMake found.
+// A consumer of the package: bind a namespace and call its one tool. It also
+// checks that the version macros match the version CMake found.
 
 #include <scrydantic/scrydantic.hpp>
 #include <string_view>

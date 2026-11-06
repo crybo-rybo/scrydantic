@@ -70,7 +70,7 @@ add_executable(
 target_compile_features(scrydantic_json_tests PRIVATE cxx_std_23)
 target_include_directories(scrydantic_json_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 # The JSON golden fixtures are frozen, generated text, checked in as one archive
-# (fixtures/json/README.md) and unpacked at configure time. The corpora supply
+# (json/json_fixture_tests.cpp describes them) and unpacked at configure time. The corpora supply
 # the prefixes the truncation replay walks.
 set(
   SCRYDANTIC_JSON_FIXTURE_ARCHIVE

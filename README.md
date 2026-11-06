@@ -1,51 +1,67 @@
 # Scrydantic
 
-Scrydantic uses C++26 static reflection to generate JSON Schema, strictly
-encode and decode C++ values, and bind annotated C++ functions as tools that a
-model or any other JSON client can call. Declare plain structs and functions,
-annotate them, and get a schema, a strict decoder that enforces the annotated
-constraints and reports every issue with its path, a canonical encoder, and a
-type-erased handler, with no code generation step and no dependency beyond the
-standard library.
+Pydantic-style JSON for C++26. Declare a plain struct and Scrydantic uses
+static reflection to give you its JSON Schema, a strict decoder that reports
+every problem with its path, and a canonical encoder. Annotate a function and
+it becomes a tool that a model, or any other JSON client, can call.
 
-## Build and test
+There is no code generator, no macros, and no dependency beyond the standard
+library.
 
-Use GCC 16.2 or newer with reflection support, CMake 3.30 or newer, and Ninja.
-Older GCC 16 versions are not supported. From the repository root:
+```cpp
+#include <scrydantic/scrydantic.hpp>
 
-```sh
-CXX=g++-16 cmake --workflow --preset dev    # configure, build, and run every test
-build/dev/examples/scrydantic_mcp_tools_example
-cmake --install build/dev --prefix "$PWD/stage"
+struct [[= scrydantic::tag{"circle"}]] Circle { double radius; };
+struct [[= scrydantic::tag{"square"}]] Square { double side; };
+
+struct Drawing {
+  std::vector<std::variant<Circle, Square>> shapes;
+};
+
+// The schema is a compile-time string.
+constexpr std::string_view schema = scrydantic::schema_v<Drawing>;
+
+// Decoding is strict, and one call reports every issue it finds.
+auto drawing = scrydantic::decode<Drawing>(scrydantic::Json{
+    .text = R"({"shapes":[{"type":"circle","radius":"big"},{"type":"hex"}]})"});
+// drawing.error().message:
+//   $.shapes[0].radius must be a number
+//   $.shapes[1].type must be one of: circle, square
+
+// Encoding writes canonical JSON.
+auto json = scrydantic::encode(Drawing{.shapes = {Circle{1.5}, Square{2}}});
+// json->text:
+//   {"shapes":[{"radius":1.5,"type":"circle"},{"side":2,"type":"square"}]}
 ```
 
-`CXX` names the compiler on the first configure. Omit it where `g++` is
-already GCC 16.2 or newer. Tests fetch Catch2; the library itself depends on
-nothing but the standard library.
+Tools work the same way. The parameter list becomes the input schema, and the
+handler decodes the arguments, calls the function, and encodes the result:
 
-The scripts that CI runs are the same ones to use locally, and
-`scripts/check.sh` runs all of them:
+```cpp
+namespace tools {
+[[= scrydantic::tool{"Add two integers"}]]
+int add(int a, int b) { return a + b; }
+}
 
-```sh
-scripts/check.sh                # formatting, static checks, and the dev tests
-PRESET=asan scripts/test.sh     # also dev, release, and tsan
-scripts/format.sh --fix         # clang-format, pinned to CI's version
-scripts/coverage.sh             # line coverage of the library by its tests
+auto bound = scrydantic::bind<^^tools>();
+bound[0].name;                    // "add"
+bound[0].input_schema.text;       // {"additionalProperties":false,"properties":{"a":...
+bound[0].invoke(scrydantic::Json{.text = R"({"a":2,"b":3})"})->text;  // "5"
 ```
 
-[CONTRIBUTING.md](CONTRIBUTING.md) describes the presets, every check and its
-thresholds, the test layout, and the benchmarks.
+**[Read the guide](docs/guide.md)** for the supported types, the annotations,
+constraints and validators, error handling, and tool binding.
+[`examples/mcp_tools.cpp`](examples/mcp_tools.cpp) serves MCP-style
+`tools/list` and `tools/call` requests from a few annotated functions.
 
-## Use the package
+## Requirements
 
-Add the installation prefix to `CMAKE_PREFIX_PATH`, then:
+- GCC 16.2 or newer. It is the only compiler that implements C++26 reflection.
+- CMake 3.30 or newer.
 
-```cmake
-find_package(scrydantic 0.1 CONFIG REQUIRED)
-target_link_libraries(my_app PRIVATE scrydantic::scrydantic)
-```
+## Add it to your project
 
-Or build Scrydantic as part of your project from a release tag:
+With FetchContent:
 
 ```cmake
 include(FetchContent)
@@ -58,95 +74,23 @@ FetchContent_MakeAvailable(scrydantic)
 target_link_libraries(my_app PRIVATE scrydantic::scrydantic)
 ```
 
-As a subproject, Scrydantic builds no tests or examples, and it does not turn
-its warnings into errors.
+Or install it (`cmake --install build/dev --prefix <prefix>`) and use
+`find_package(scrydantic 0.1 CONFIG REQUIRED)`.
 
-The target enables C++26 and reflection and links the compiled JSON core.
-`scrydantic::json` exposes only that C++23 core without enabling reflection.
+The `scrydantic::scrydantic` target turns on C++26 and `-freflection` for you.
+Scrydantic is pre-1.0, so a minor release can change the API.
 
-```cpp
-#include <scrydantic/scrydantic.hpp>
+## Build and test
 
-namespace tools {
-[[= scrydantic::tool{"Add two integers"}]]
-int add(int a, int b) { return a + b; }
-}
-
-int main() {
-  auto bound = scrydantic::bind<^^tools>();
-  auto result = bound.front().invoke(
-      scrydantic::Json{.text = R"({"a":2,"b":3})"});
-  return result && result->text == "5" ? 0 : 1;
-}
+```sh
+cmake --workflow --preset dev    # configure, build, and run every test
+scripts/check.sh                 # formatting, static checks, and the tests
+scripts/format.sh --fix          # format the sources
 ```
 
-`bind()` supplies each tool's name, description, input schema, and callable
-handler. `describe()` supplies compile-time contracts without handlers.
-`encode()`, `decode<T>()`, and `input_schema_v<T>` also work independently
-of tool binding. A model can be recursive, through `std::vector<T>` or
-`std::optional<std::indirect<T>>`. Its schema refers to the recursive types
-with `$ref`, and every other schema is written in place. `encode_verbatim()`
-keeps spliced `Json` payloads byte for byte, where `encode()` canonicalizes
-them. `keys_v<T>` and `tags_v<V>` list the JSON keys of a type and the tags of
-a variant. For JSON built by hand, `is_valid_json()`, `escape_json_string()`,
-and `format_json_number()` check text and spell strings and numbers as the
-canonical writer does. Fallible operations use `scrydantic::Result<T>` or
-`Status`; a tool can refuse a call with `scrydantic::tool_error()`. A decode
-failure lists each issue that it found in `Error::issues`, with an `IssueKind`
-and a path, and its messages hold one line for each, such as
-`$.shapes[0].radius must be a number`. A bound tool returns those lines to the
-model in `model_message`.
-
-A library that builds on Scrydantic can give its own users the same
-compile-time errors: each concept, such as `Encodable`, has a function in
-`<scrydantic/diagnostics.hpp>`, such as `encodable_diagnostic<T>()`, that
-returns why a type fails the check, or an empty string when it passes.
-
-Constraint annotations bound a member in its schema and in decoding at once, and
-`check` runs a validator of your own on the decoded value:
-
-```cpp
-inline scrydantic::Status known_city(const std::string& city) {
-  if (city == "Oslo" || city == "Lima") {
-    return {};
-  }
-  return std::unexpected(
-      scrydantic::tool_error("must be a known city", "has no row in cities"));
-}
-
-struct Booking {
-  [[= scrydantic::check<&known_city>]] std::string city;
-  [[= scrydantic::range{.min = 1, .max = 8}]] std::int32_t guests{};
-  [[= scrydantic::length{.max = 200}]] std::string note;
-};
-```
-
-The schema of `guests` is `{"maximum":8,"minimum":1,"type":"integer"}`, and
-decoding `{"city":"Rome","guests":9,"note":""}` tells the model
-`$.city must be a known city` and `$.guests must be at most 8`. The host's
-`message` has `$.city has no row in cities` in the first line's place: a
-validator's host text never reaches the model. `multiple_of`, `items`, and
-`pattern` complete the constraints; `pattern` is written to the schema but not
-checked. A class can carry `check` too, and a constraint that cannot hold, such
-as `range{.min = -1}` on an unsigned member, does not compile. Constraints and
-validators see through `std::indirect` and apply at every level of a recursive
-model. Encoding checks nothing, since an encoded value is the program's own.
-
-See [the MCP tools example](examples/mcp_tools.cpp) for an MCP-style
-tool listing and calls; the example is not a complete MCP server.
-[docs/architecture.md](docs/architecture.md) describes the design and its open
-questions.
-
-## Versioning
-
-Scrydantic follows [Semantic Versioning](https://semver.org/). Before 1.0, a
-minor release may break the public API; headers under `scrydantic/detail/` may
-change in any release. `<scrydantic/version.hpp>` defines
-`SCRYDANTIC_VERSION_MAJOR`, `_MINOR`, `_PATCH`, `SCRYDANTIC_VERSION`
-(`major * 10000 + minor * 100 + patch`), and `SCRYDANTIC_VERSION_STRING`.
-[CHANGELOG.md](CHANGELOG.md) lists the changes in each release, and
-[SECURITY.md](SECURITY.md) says how to report a vulnerability.
+Set `CXX` on the first configure if `g++` is not GCC 16.2. The other presets
+are `release`, `asan`, `tsan`, and `coverage`.
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE)
