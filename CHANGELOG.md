@@ -18,6 +18,32 @@ The entries use ASD-STE100 Simplified Technical English.
   `must be a number`. `json_path()` gives the text of a path. `max_issues`
   (64) is the maximum number of issues that one decode reports. Other
   failures, and all encode failures, keep `issues` empty.
+- **Recursive models.** An aggregate can contain itself through
+  `std::vector<T>` or `std::indirect<T>`, directly or through other
+  aggregates and variant alternatives. The check accepts a cycle only if a
+  value can end it. A cycle with no `std::optional`, `std::vector`, or
+  variant alternative after the first fails to compile, and the message
+  gives the path of the cycle. An encode stops at an array or object that is
+  more than 256 levels deep, and the failure gives its path, so a deep value
+  cannot overflow the stack.
+- **`std::indirect<T>`.** It encodes, decodes, and has the schema of the `T`
+  that it owns. `std::optional<std::indirect<T>>` is its nullable form, so
+  `skip_null` and `emit_null` apply to it. `std::indirect<std::optional<T>>`
+  fails to compile. An encode accepts any allocator, and a decode needs an
+  allocator that can be default-constructed. An encode fails at the path of a
+  `std::indirect` that a move made empty.
+- **`$defs` and `$ref` in schemas.** The schema writes each aggregate that
+  contains itself one time, under `$defs` of the root, and refers to it with
+  `$ref`. A recursive root refers to itself as `"#"`, so it keeps
+  `"type":"object"`. All other schemas are written in place, as before. The
+  name of a definition comes from the qualified name of the type, for
+  example `recursive.Node-string` for `recursive::Node<std::string>`. A type
+  is not a `SupportedValue` if its schema defines two types with one name.
+  It is also not a `SupportedValue` if no definition name can spell one of
+  its recursive types: a class that is local to a function, a name that is
+  not ASCII, or a template argument such as a pointer. The message gives the
+  cause. The parameters of a tool share one `$defs`, so `bind()` checks their
+  names together.
 
 ### Changed
 
