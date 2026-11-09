@@ -8,12 +8,14 @@
 #include <meta>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
+#include <scrydantic/detail/json_string.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <scrydantic/detail/schema.hpp>
 #include <scrydantic/detail/tools.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -286,6 +288,40 @@ template <typename... Tools>
 [[nodiscard]] constexpr std::array<ToolDescriptor, sizeof...(Tools)>
 tool_descriptors(tool_set<Tools...>) {
   return {tool_descriptor<Tools>()...};
+}
+
+// ---- Dispatch by name --------------------------------------------------------
+
+// Why ToolSet::invoke() found no tool. The requested name came from the model, so
+// it is spelled as a JSON string literal, as decode echoes an unknown member's
+// key: a name holding a quote or a control character still reads as one name.
+// The known names are the ones the model was given, in the order it was given
+// them.
+template <typename Context>
+[[nodiscard]] Error
+unknown_tool_error(const std::string_view name,
+                   const std::span<const BoundTool<Context>> tools) {
+  std::string message{"unknown tool "};
+  append_json_string(message, name);
+  if (tools.empty()) {
+    message += "; there are no tools";
+  }
+  std::string_view separator = "; known tools: ";
+  for (const auto& tool : tools) {
+    message += separator;
+    message += tool.name;
+    separator = ", ";
+  }
+  return tool_error(std::move(message));
+}
+
+// Why ToolSet::make() refused its tools. Two tools of one name are the host's
+// bug, which the model, not yet given the tools, cannot act on, so the error has
+// no model_message.
+[[nodiscard]] inline Error duplicate_tool_error(const std::string_view name) {
+  std::string message{"two tools are named "};
+  append_json_string(message, name);
+  return Error{.message = std::move(message)};
 }
 
 } // namespace scrydantic::detail

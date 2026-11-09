@@ -141,6 +141,7 @@ add_executable(
   codec/number_spelling_tests.cpp
   codec/validator_tests.cpp
   tools/tool_binding_tests.cpp
+  tools/tool_set_tests.cpp
 )
 target_link_libraries(
   scrydantic_tests
