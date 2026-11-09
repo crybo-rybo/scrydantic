@@ -1340,6 +1340,75 @@ TEST_CASE("text that is not JSON is one issue at the root") {
   CHECK(decoded.error().model_message == "JSON text is not valid JSON");
 }
 
+TEST_CASE("decode() takes JSON text in each form it is held in, or a parsed view") {
+  const auto zed = [](const scrydantic::Result<Renamed>& decoded) {
+    REQUIRE(decoded);
+    return decoded->zed;
+  };
+  scrydantic::Json json{.text = R"({"a_first":"json"})"};
+  const scrydantic::Json& const_json = json;
+  std::string text = R"({"a_first":"string"})";
+  const std::string_view view = R"({"a_first":"view"})";
+  const char* const pointer = R"({"a_first":"pointer"})";
+  const auto parsed = scrydantic::JsonView::parse(R"({"a_first":"parsed"})");
+  REQUIRE(parsed);
+
+  CHECK(zed(scrydantic::decode<Renamed>(json)) == "json");
+  CHECK(zed(scrydantic::decode<Renamed>(const_json)) == "json");
+  CHECK(zed(scrydantic::decode<Renamed>(scrydantic::Json{.text = json.text})) ==
+        "json");
+  CHECK(zed(scrydantic::decode<Renamed>(text)) == "string");
+  CHECK(zed(scrydantic::decode<Renamed>(std::string{text})) == "string");
+  CHECK(zed(scrydantic::decode<Renamed>(view)) == "view");
+  CHECK(zed(scrydantic::decode<Renamed>(pointer)) == "pointer");
+  CHECK(zed(scrydantic::decode<Renamed>(R"({"a_first":"literal"})")) == "literal");
+  CHECK(zed(scrydantic::decode<Renamed>(*parsed)) == "parsed");
+  CHECK(zed(scrydantic::decode<Renamed>(scrydantic::JsonView{*parsed})) == "parsed");
+
+  // Only the viewed characters are read, so a view into a larger buffer ends
+  // where the view does.
+  const std::string_view buffer = "[1,2] and more";
+  CHECK(scrydantic::decode<std::vector<int>>(buffer.substr(0, 5)).value() ==
+        std::vector<int>{1, 2});
+}
+
+TEST_CASE("decode() reports the same failures for JSON text as for a Json") {
+  for (const std::string_view text : {R"({"name":)", "[]", R"({"a_first":1})"}) {
+    const auto from_text = scrydantic::decode<Renamed>(text);
+    const auto from_json =
+        scrydantic::decode<Renamed>(scrydantic::Json{.text = std::string{text}});
+    REQUIRE_FALSE(from_text);
+    REQUIRE_FALSE(from_json);
+    CHECK(from_text.error().message == from_json.error().message);
+    CHECK(from_text.error().model_message == from_json.error().model_message);
+    CHECK(from_text.error().issues == from_json.error().issues);
+  }
+
+  const auto truncated = scrydantic::decode<Account>(R"({"name":)");
+  REQUIRE_FALSE(truncated);
+  CHECK(truncated.error().issues ==
+        Issues{{.kind = IssueKind::invalid_json, .reason = "is not valid JSON"}});
+  CHECK(truncated.error().message == "JSON text is not valid JSON");
+  CHECK(truncated.error().model_message == "JSON text is not valid JSON");
+}
+
+TEST_CASE("decode<Json>() reads text, a Json, and a view as the same value") {
+  // A Json argument is JSON text to parse, not the value to return, so decoding
+  // it into a Json captures its canonical text as decoding any other text does.
+  constexpr std::string_view text = R"({"b":[1, 2.50],"a":null})";
+  constexpr std::string_view canonical = R"({"a":null,"b":[1,2.5]})";
+  const auto parsed = scrydantic::JsonView::parse(text);
+  REQUIRE(parsed);
+
+  CHECK(scrydantic::decode<scrydantic::Json>(text)->text == canonical);
+  CHECK(scrydantic::decode<scrydantic::Json>(std::string{text})->text == canonical);
+  CHECK(
+      scrydantic::decode<scrydantic::Json>(scrydantic::Json{.text = std::string{text}})
+          ->text == canonical);
+  CHECK(scrydantic::decode<scrydantic::Json>(*parsed)->text == canonical);
+  CHECK_FALSE(scrydantic::decode<scrydantic::Json>("{"));
+}
+
 TEST_CASE("paths quote keys that are not identifiers") {
   const auto decoded =
       decode_text<Awkward>(R"({"\"]":0,"a.b":[1,"x"],"content-type":1,"x.y":2})");

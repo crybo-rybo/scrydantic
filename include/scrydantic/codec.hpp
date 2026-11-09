@@ -166,20 +166,30 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 
 /// Parses JSON text and decodes it into a reflected value, strictly.
 ///
-/// Text that is not JSON fails with `JSON text is not valid JSON` as both
-/// messages, and one IssueKind::invalid_json issue at `$`; every other failure
-/// is reported as decode(const JsonView&) reports it.
+/// A string literal or a std::string can be passed as it is. Text that is not
+/// JSON fails with `JSON text is not valid JSON` as both messages, and one
+/// IssueKind::invalid_json issue at `$`; every other failure is reported as
+/// decode(const JsonView&) reports it.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
-/// @param json JSON text to parse and decode.
+/// @param text JSON text to parse and decode.
 /// @return The decoded value, or the parse or decode failure.
-template <typename Type> [[nodiscard]] Result<Type> decode(const Json& json) {
+template <typename Type>
+[[nodiscard]] Result<Type> decode(const std::string_view text) {
   // Composed from std::expected's monadic operations, which build their failure
   // with std::unexpect: see detail::decode_failed().
-  return JsonView::parse(json)
+  return JsonView::parse(text)
       .transform_error([](const Error&) {
         return detail::invalid_json_error("JSON text is not valid JSON");
       })
       .and_then([](const JsonView& view) { return decode<Type>(view); });
+}
+
+/// Parses the text of a Json and decodes it, as decode(std::string_view) does.
+/// @tparam Type Cv-unqualified value type from the Decodable family.
+/// @param json JSON text to parse and decode.
+/// @return What decode(std::string_view) returns for `json.text`.
+template <typename Type> [[nodiscard]] Result<Type> decode(const Json& json) {
+  return decode<Type>(std::string_view{json.text});
 }
 
 /// The JSON keys of a reflected object type, in the order encode() writes them.

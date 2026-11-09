@@ -607,7 +607,7 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 // with std::unexpect: see decode_failed().
 template <ToolArguments Args>
 [[nodiscard]] Result<Args> decode_arguments(const Json& input) {
-  return JsonView::parse(input)
+  return JsonView::parse(std::string_view{input.text})
       .transform_error([](const Error&) {
         return invalid_json_error("tool arguments are not valid JSON");
       })

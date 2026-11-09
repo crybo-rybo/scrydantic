@@ -167,11 +167,12 @@ a `double` cannot hold exactly. Tool results are encoded this way.
 
 ## Decoding and errors
 
-`decode<T>(json)` parses JSON text and returns a `Result<T>`. It also accepts
-a `JsonView` that you have already parsed.
+`decode<T>(text)` parses JSON text and returns a `Result<T>`. The text can be
+a string literal, a `std::string`, a `std::string_view`, or a `Json`. It also
+accepts a `JsonView` that you have already parsed.
 
 ```cpp
-auto reading = scrydantic::decode<Reading>(scrydantic::Json{.text = R"({"degrees":3,"label":null})"});
+auto reading = scrydantic::decode<Reading>(R"({"degrees":3,"label":null})");
 if (reading) {
   reading->degrees; // 3
 }
@@ -192,8 +193,8 @@ A failure is an `Error` with three parts:
   path, such as `$.shapes[0].radius`.
 
 ```cpp
-auto drawing = scrydantic::decode<Drawing>(scrydantic::Json{
-    .text = R"({"shapes":[{"type":"circle","radius":"big"},{"type":"hex"}],"extra":1})"});
+auto drawing = scrydantic::decode<Drawing>(
+    R"({"shapes":[{"type":"circle","radius":"big"},{"type":"hex"}],"extra":1})");
 drawing.error().message;
 // $ contains unknown member "extra"
 // $.shapes[0].radius must be a number
@@ -340,9 +341,11 @@ compile-time constants, for a manifest that needs no handlers.
 ## Working with raw JSON
 
 - `Json` holds JSON text in its `text` member. Making one does not parse it.
-- `JsonView::parse(json)` parses text into a read-only view, with `kind()`,
+- `JsonView::parse(text)` parses text into a read-only view, with `kind()`,
   `find(key)`, `at(index)`, `key_at(index)`, `string()`, `number()`,
-  `boolean()`, and `to_json()`. Object keys are visited in sorted order.
+  `boolean()`, and `to_json()`. Object keys are visited in sorted order. The
+  view holds its own copy of every key and string, so the text need not
+  outlive it.
 - `is_valid_json(text)` checks text without building a document.
 - `escape_json_string(text)` and `format_json_number(value)` spell a string or
   a number exactly as the encoder does, for JSON built by hand.
