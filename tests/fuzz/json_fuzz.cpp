@@ -1,6 +1,8 @@
 // Property fuzz target for Scrydantic's JSON core (src/json/document.hpp). For every
 // input it asserts that
-//   - validate() accepts exactly what parse() accepts;
+//   - validate() accepts exactly what parse() accepts, and diagnose() rejects
+//     what parse() rejects at the same byte for the same reason, with only
+//     valid UTF-8 before that byte;
 //   - an accepted document's canonical text parses, validates, and describes the
 //     same tree: the same kinds, keys, strings, and numeric values, where a
 //     whole-valued double such as 1.0 may come back as the equal integer 1,
@@ -160,6 +162,26 @@ void check_objects(const json::Value& value, const std::string_view input) {
   });
 }
 
+// parse()'s rejection of `input`: diagnose() must make the same one, and its
+// offset must lie within the input after nothing but valid UTF-8, whose code
+// points describe() counts.
+void check_rejection(const json::Rejection& rejection, const std::string_view input) {
+  if (json::diagnose(input) != rejection) {
+    fail("diagnose disagrees with parse about a rejection", input);
+  }
+  if (rejection.offset > input.size()) {
+    fail("a rejection lies past the end of the input", input);
+  }
+  // Quoting passes bytes from 0x80 up through unchanged, so the quoted text
+  // parses exactly when they are valid UTF-8.
+  if (!json::validate(json::quote(input.substr(0, rejection.offset)))) {
+    fail("the bytes before a rejection are not valid UTF-8", input);
+  }
+  if (json::describe(input, rejection).empty()) {
+    fail("a rejection has no description", input);
+  }
+}
+
 void check_quoting(const std::string_view input) {
   const auto quoted = json::quote(input);
   const auto parsed = json::parse(quoted);
@@ -180,6 +202,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
     fail("validate disagrees with parse", input);
   }
   if (!parsed) {
+    check_rejection(parsed.error(), input);
     return 0;
   }
   check_objects(*parsed, input);

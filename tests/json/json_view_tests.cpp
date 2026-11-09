@@ -155,8 +155,11 @@ TEST_CASE("the public JSON view rejects malformed input") {
   const auto document = JsonView::parse(scrydantic::Json{.text = "{"});
 
   REQUIRE_FALSE(document);
-  CHECK(document.error().message == "JSON text is not valid");
-  CHECK(document.error().model_message.empty());
+  // A fixed phrase and a position in the input: the model may see it too.
+  CHECK(document.error().message ==
+        "JSON text is not valid: unexpected end of input at line 1, column 2");
+  CHECK(document.error().model_message == document.error().message);
+  CHECK(document.error().issues.empty());
 }
 
 TEST_CASE("escape_json_string quotes and escapes control characters") {

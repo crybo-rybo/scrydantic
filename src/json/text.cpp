@@ -29,6 +29,11 @@ json_validity check_json(const std::string_view input) noexcept {
   return json::check(input);
 }
 
+std::string describe_invalid_json(const std::string_view input) {
+  const auto rejection = json::diagnose(input);
+  return rejection ? json::describe(input, *rejection) : std::string{};
+}
+
 bool append_canonical_json(std::string& output, const std::string_view text) {
   const auto document = json::parse(text);
   if (!document) {

@@ -192,6 +192,8 @@ TEST_CASE("the JSON layer matches every golden fixture") {
     CHECK(json::validate(fixture.input) == parsed.has_value());
     REQUIRE(parsed.has_value() == fixture.output.has_value());
     if (!parsed) {
+      // The validator stops at the same byte for the same reason.
+      CHECK(json::diagnose(fixture.input) == parsed.error());
       continue;
     }
     const auto written = json::write(*parsed);
@@ -224,8 +226,12 @@ TEST_CASE(
       const auto prefix = std::string_view{text}.substr(0, length);
       INFO("prefix length " << length);
       const bool expected = contains(found->second, length);
+      const auto parsed = json::parse(prefix);
       REQUIRE(json::validate(prefix) == expected);
-      REQUIRE(json::parse(prefix).has_value() == expected);
+      REQUIRE(parsed.has_value() == expected);
+      if (!parsed) {
+        REQUIRE(json::diagnose(prefix) == parsed.error());
+      }
       ++prefixes;
     }
   }

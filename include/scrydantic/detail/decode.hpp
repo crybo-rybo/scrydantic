@@ -13,6 +13,7 @@
 #include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/failure.hpp>
 #include <scrydantic/detail/json_string.hpp>
+#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <scrydantic/error.hpp>
@@ -604,12 +605,14 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 }
 
 // Composed from std::expected's monadic operations, which build their failure
-// with std::unexpect: see decode_failed().
+// with std::unexpect: see decode_failed(). Text that is not JSON is read once
+// more to describe it, which only a failure pays for.
 template <ToolArguments Args>
 [[nodiscard]] Result<Args> decode_arguments(const Json& input) {
   return JsonView::parse(input)
-      .transform_error([](const Error&) {
-        return invalid_json_error("tool arguments are not valid JSON");
+      .transform_error([&input](const Error&) {
+        return invalid_json_error("tool arguments are not valid JSON",
+                                  describe_invalid_json(input.text));
       })
       .and_then([](const JsonView& view) { return detail::decode<Args>(view); });
 }

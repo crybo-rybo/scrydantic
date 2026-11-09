@@ -64,6 +64,7 @@ add_executable(
   json/json_document_tests.cpp
   json/json_error_tests.cpp
   json/json_fixture_tests.cpp
+  json/json_rejection_tests.cpp
   json/json_view_tests.cpp
   version/version_tests.cpp
 )

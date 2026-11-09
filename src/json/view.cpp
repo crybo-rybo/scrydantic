@@ -31,7 +31,11 @@ JsonView::JsonView(std::shared_ptr<const void> value) noexcept
 Result<JsonView> JsonView::parse(const Json& json) {
   auto document = detail::json::parse(json.text);
   if (!document) {
-    return std::unexpected(Error{.message = "JSON text is not valid"});
+    // A fixed phrase and a position in the input: nothing a model may not see.
+    auto message = "JSON text is not valid: " +
+                   detail::json::describe(json.text, document.error());
+    return std::unexpected(
+        Error{.message = message, .model_message = std::move(message)});
   }
   return JsonView{std::shared_ptr<const void>{
       std::make_shared<const detail::json::Value>(std::move(*document))}};

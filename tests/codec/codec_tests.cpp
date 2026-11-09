@@ -1016,8 +1016,10 @@ TEST_CASE("JsonView serializes the viewed node canonically") {
 TEST_CASE("public decoding reports path-based messages") {
   auto decoded = decode_text<Renamed>("{");
   REQUIRE_FALSE(decoded);
-  CHECK(decoded.error().message == "JSON text is not valid JSON");
-  CHECK(decoded.error().model_message == "JSON text is not valid JSON");
+  CHECK(decoded.error().message ==
+        "JSON text is not valid JSON: unexpected end of input at line 1, column 2");
+  CHECK(decoded.error().model_message ==
+        "JSON text is not valid JSON: unexpected end of input at line 1, column 2");
 
   decoded = decode_text<Renamed>("[]");
   REQUIRE_FALSE(decoded);
@@ -1332,12 +1334,16 @@ TEST_CASE("a variant reports its alternative's issues, or one issue for its tag"
 }
 
 TEST_CASE("text that is not JSON is one issue at the root") {
-  const auto decoded = decode_text<Account>(R"({"name":)");
+  // The reason says why and where reading stopped, with the column in code
+  // points: the e with diaeresis is two bytes but one column.
+  const auto decoded =
+      decode_text<Account>("{\n  \"name\": \"Zo\xC3\xAB\" \"age\": 3\n}");
   REQUIRE_FALSE(decoded);
-  CHECK(decoded.error().issues ==
-        Issues{{.kind = IssueKind::invalid_json, .reason = "is not valid JSON"}});
-  CHECK(decoded.error().message == "JSON text is not valid JSON");
-  CHECK(decoded.error().model_message == "JSON text is not valid JSON");
+  const std::string where = "expected ',' or '}' at line 2, column 17";
+  CHECK(decoded.error().issues == Issues{{.kind = IssueKind::invalid_json,
+                                          .reason = "is not valid JSON: " + where}});
+  CHECK(decoded.error().message == "JSON text is not valid JSON: " + where);
+  CHECK(decoded.error().model_message == decoded.error().message);
 }
 
 TEST_CASE("paths quote keys that are not identifiers") {
@@ -2192,7 +2198,9 @@ TEST_CASE("recursion nests as deep as the parser reads and no deeper") {
   // One link more is past the parser's limit, and the writer stops there too.
   const auto too_deep = decode_text<recursive::Chain>(chain_text(257));
   REQUIRE_FALSE(too_deep);
-  CHECK(too_deep.error().message == "JSON text is not valid JSON");
+  // The 257th object opens after 256 openings of `{"next":`, eight bytes each.
+  CHECK(too_deep.error().message ==
+        "JSON text is not valid JSON: nesting deeper than 256 at line 1, column 2049");
   const auto encoded = scrydantic::encode(chain_of(257));
   REQUIRE_FALSE(encoded);
   CHECK(encoded.error().message ==
