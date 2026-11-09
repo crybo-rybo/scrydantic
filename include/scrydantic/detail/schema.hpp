@@ -393,23 +393,3 @@ template <typename Args> consteval std::string_view checked_input_schema() {
 }
 
 } // namespace scrydantic::detail
-
-namespace scrydantic {
-
-/// Canonical JSON Schema generated for any supported reflected value.
-///
-/// Handler result types are supported roots too. A tool binding never sends a
-/// result schema to a model; it is here so a host can export its own tool
-/// contracts. A member's constraint annotations add their keywords to its schema,
-/// and decoding checks every one of them but `pattern`. A type outside
-/// SupportedValue fails to compile with the offending member path and the reason.
-/// @tparam Value Type satisfying SupportedValue.
-template <typename Value>
-inline constexpr std::string_view schema_v = detail::checked_schema<Value>();
-
-/// Canonical JSON Schema generated for a reflected argument aggregate.
-/// @tparam Args Type satisfying ToolArguments.
-template <typename Args>
-inline constexpr std::string_view input_schema_v = detail::checked_input_schema<Args>();
-
-} // namespace scrydantic

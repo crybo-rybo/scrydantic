@@ -8,12 +8,12 @@
 #include <memory>
 #include <meta>
 #include <scrydantic/annotations.hpp>
-#include <scrydantic/detail/binding.hpp>
+#include <scrydantic/codec.hpp>
 #include <scrydantic/detail/meta.hpp>
-#include <scrydantic/detail/schema.hpp>
 #include <scrydantic/detail/tools.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -37,6 +37,121 @@
 /// of each entry point records that view; leave it defaulted, or, in a library
 /// that wraps these entry points, compute the same default on the wrapper with
 /// tools_of() or toolbox_tools_of() and forward it.
+namespace scrydantic {
+
+/// Callables accepted for a particular reflected argument aggregate.
+///
+/// Handlers receive Args by value, optionally preceded by a `const Context&` when
+/// `Context` is not void, and may return a supported value, a Result of one,
+/// `void`, or Status.
+/// @tparam Handler Callable to check.
+/// @tparam Args Argument aggregate satisfying ToolArguments.
+/// @tparam Context Call context a handler may take first, or void for none.
+template <typename Handler, typename Args, typename Context = void>
+concept ToolHandlerFor = ToolArguments<Args> &&
+                         detail::tool_handler_problem<Handler, Args, Context>().empty();
+
+/// Classes whose `[[= scrydantic::tool{...}]]` member functions bind() binds as
+/// tools of one object.
+///
+/// A toolbox is a complete class that declares at least one tool member function
+/// itself; inherited member functions are not considered. Every tool member must
+/// be a public, non-deleted, non-`&&`-qualified function with a valid tool
+/// signature, `const` when the toolbox is, and the tool names must be distinct.
+/// A member with an explicit object parameter is instead called on the toolbox as
+/// an lvalue, `const` when the toolbox is, which must initialize that parameter:
+/// it may not be an rvalue reference, nor a non-const reference when the toolbox
+/// is const, and a by-value parameter needs a toolbox it can copy.
+/// Binding reports the first violation with the member's name and the reason.
+/// @tparam Type Toolbox class, `const` for a const toolbox.
+/// @tparam Context Call context a tool member function may take first, or void.
+template <typename Type, typename Context = void>
+concept Toolbox = detail::toolbox_problem(^^Type, ^^Context).empty();
+
+/// Move-only type-erased handler of one bound tool.
+///
+/// It receives the canonical JSON argument object, preceded by a `const
+/// Context&` when `Context` is not void, and returns the JSON result, encoded as
+/// encode_verbatim() encodes it: valid JSON with keys in canonical order, and
+/// spliced `Json` payloads byte for byte. A result that cannot be JSON, such as a
+/// string holding invalid UTF-8, is a failure. A failure is an Error whose
+/// `model_message` is the text meant for the model, empty when the failure carries
+/// nothing the model could act on. Arguments that fail to decode also list their
+/// issues in `issues`.
+/// @tparam Context Call context passed to every invocation, or void for none.
+template <typename Context = void>
+using ToolFunction = typename detail::tool_function<Context>::type;
+
+/// One tool ready to list and call: its contract and its handler.
+/// @tparam Context Call context its handler receives, or void for none.
+template <typename Context = void> struct BoundTool {
+  /// Tool name the model sees.
+  std::string name{};
+  /// Tool description the model sees.
+  std::string description{};
+  /// Generated JSON Schema of the tool's argument object.
+  Json input_schema{};
+  /// Handler that decodes the arguments strictly, calls the C++ function, and
+  /// encodes what it returns.
+  ToolFunction<Context> invoke{};
+};
+
+/// One tool's contract without a handler, for hosts that only publish schemas.
+///
+/// Every view points at static storage, so a descriptor outlives any binding.
+struct ToolDescriptor {
+  /// Tool name the model sees.
+  std::string_view name{};
+  /// Tool description the model sees.
+  std::string_view description{};
+  /// Generated JSON Schema of the tool's argument object.
+  std::string_view input_schema{};
+};
+
+/// Reflects the tools bind<^^Entity, Context>() binds: the tool functions a
+/// namespace declares before the point of evaluation, or the one function.
+///
+/// This is the default of bind()'s `Tools` parameter. A library that wraps bind()
+/// computes the same default on its own entry point and forwards it, so the tools
+/// are the ones its caller's translation unit sees. An entity that cannot be bound
+/// yields the empty set, and bind() reports why.
+/// @param entity Reflection of a tool function, a static member function, or a
+/// namespace.
+/// @param context Reflection of the call context type, or of `void` for none.
+/// @return Reflection of the tool set type.
+consteval std::meta::info tools_of(const std::meta::info entity,
+                                   const std::meta::info context) {
+  if (!detail::entity_problem(entity, context).empty()) {
+    return ^^detail::tool_set<>;
+  }
+  return detail::tool_set_of(std::meta::is_namespace(entity)
+                                 ? detail::tool_functions_of(entity)
+                                 : std::vector{entity},
+                             context);
+}
+
+/// Reflects the tools bind<Context>(std::shared_ptr<Toolbox>) binds: the tool
+/// member functions of the toolbox class, in declaration order.
+///
+/// This is the default of that bind()'s `Tools` parameter; see tools_of().
+/// @param type Reflection of the toolbox type, `const` for a const toolbox.
+/// @param context Reflection of the call context type, or of `void` for none.
+/// @return Reflection of the tool set type.
+consteval std::meta::info toolbox_tools_of(const std::meta::info type,
+                                           const std::meta::info context) {
+  if (!detail::toolbox_problem(type, context).empty()) {
+    return ^^detail::tool_set<>;
+  }
+  return detail::tool_set_of(detail::tool_functions_of(detail::plain_type(type)),
+                             context);
+}
+
+} // namespace scrydantic
+
+// The entry points below call into detail/binding.hpp, which builds the types
+// declared above, so it is included after them.
+#include <scrydantic/detail/binding.hpp>
+
 namespace scrydantic {
 
 /// Binds a callable whose arguments are a reflected aggregate.

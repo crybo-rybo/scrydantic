@@ -605,7 +605,7 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 
 // Composed from std::expected's monadic operations, which build their failure
 // with std::unexpect: see decode_failed().
-template <ToolArguments Args>
+template <typename Args>
 [[nodiscard]] Result<Args> decode_arguments(const Json& input) {
   return JsonView::parse(input)
       .transform_error([](const Error&) {

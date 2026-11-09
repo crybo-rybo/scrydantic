@@ -6,11 +6,11 @@
 #include <functional>
 #include <memory>
 #include <meta>
+#include <scrydantic/codec.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
-#include <scrydantic/detail/schema.hpp>
 #include <scrydantic/detail/tools.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
@@ -20,65 +20,15 @@
 #include <utility>
 #include <vector>
 
-namespace scrydantic {
-
-namespace detail {
-
-template <typename Context> struct tool_function {
-  using type = std::move_only_function<Result<Json>(const Context&, Json)>;
-};
-
-template <> struct tool_function<void> {
-  using type = std::move_only_function<Result<Json>(Json)>;
-};
-
-} // namespace detail
-
-/// Move-only type-erased handler of one bound tool.
-///
-/// It receives the canonical JSON argument object, preceded by a `const
-/// Context&` when `Context` is not void, and returns the JSON result, encoded as
-/// encode_verbatim() encodes it: valid JSON with keys in canonical order, and
-/// spliced `Json` payloads byte for byte. A result that cannot be JSON, such as a
-/// string holding invalid UTF-8, is a failure. A failure is an Error whose
-/// `model_message` is the text meant for the model, empty when the failure carries
-/// nothing the model could act on. Arguments that fail to decode also list their
-/// issues in `issues`.
-/// @tparam Context Call context passed to every invocation, or void for none.
-template <typename Context = void>
-using ToolFunction = typename detail::tool_function<Context>::type;
-
-/// One tool ready to list and call: its contract and its handler.
-/// @tparam Context Call context its handler receives, or void for none.
-template <typename Context = void> struct BoundTool {
-  /// Tool name the model sees.
-  std::string name{};
-  /// Tool description the model sees.
-  std::string description{};
-  /// Generated JSON Schema of the tool's argument object.
-  Json input_schema{};
-  /// Handler that decodes the arguments strictly, calls the C++ function, and
-  /// encodes what it returns.
-  ToolFunction<Context> invoke{};
-};
-
-/// One tool's contract without a handler, for hosts that only publish schemas.
-///
-/// Every view points at static storage, so a descriptor outlives any binding.
-struct ToolDescriptor {
-  /// Tool name the model sees.
-  std::string_view name{};
-  /// Tool description the model sees.
-  std::string_view description{};
-  /// Generated JSON Schema of the tool's argument object.
-  std::string_view input_schema{};
-};
-
-} // namespace scrydantic
-
 // Turns reflected tool declarations and typed handlers into bound tools: a
 // generated schema plus a handler that decodes the arguments strictly, calls the
 // C++ function, and encodes what it returns.
+//
+// This is the implementation of tools.hpp, and it builds the public types
+// declared there: ToolFunction, BoundTool, and ToolDescriptor. tools.hpp declares
+// them before it includes this header, so that each public type and its
+// documentation are in the public header, and this header compiles only as part
+// of tools.hpp.
 namespace scrydantic::detail {
 
 template <typename Return>
@@ -146,8 +96,9 @@ template <typename Context, typename Body>
   }
 }
 
-template <ToolArguments Args, typename Context, typename Handler>
-  requires ToolHandlerFor<Handler, Args, Context>
+// bind_handler() has already checked `Args` and `Handler`, so neither is checked
+// again here.
+template <typename Args, typename Context, typename Handler>
 [[nodiscard]] ToolFunction<Context> make_tool_handler(Handler&& handler) {
   using Callable = std::decay_t<Handler>;
   return tool_function_of<Context>(
