@@ -39,11 +39,15 @@ template <> struct tool_function<void> {
 /// It receives the canonical JSON argument object, preceded by a `const
 /// Context&` when `Context` is not void, and returns the JSON result, encoded as
 /// encode_verbatim() encodes it: valid JSON with keys in canonical order, and
-/// spliced `Json` payloads byte for byte. A result that cannot be JSON, such as a
-/// string holding invalid UTF-8, is a failure. A failure is an Error whose
-/// `model_message` is the text meant for the model, empty when the failure carries
-/// nothing the model could act on. Arguments that fail to decode also list their
-/// issues in `issues`.
+/// spliced `Json` payloads byte for byte. A failure is an Error of one of three
+/// kinds. Arguments that fail to decode, including a validator's rejection, list
+/// their issues in `issues` and describe them in `model_message`. A refusal is the
+/// Error the tool returned, unchanged; one from tool_error() has empty `issues` and
+/// the tool's text for the model in `model_message`. A result that cannot be JSON,
+/// such as a string holding invalid UTF-8 or a NaN, is a host-side failure with
+/// empty `issues` and `model_message` and the reason in `message`. A tool that
+/// returns an Error with issues of its own, or with no model text, therefore reads
+/// as the first or the last kind.
 /// @tparam Context Call context passed to every invocation, or void for none.
 template <typename Context = void>
 using ToolFunction = typename detail::tool_function<Context>::type;
