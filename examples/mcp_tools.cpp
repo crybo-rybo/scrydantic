@@ -104,7 +104,7 @@ struct CallResult {
 };
 
 [[nodiscard]] CallResult call(std::vector<scrydantic::BoundTool<>>& tools,
-                              const scrydantic::Json& request_text) {
+                              const std::string_view request_text) {
   auto request = scrydantic::decode<CallRequest>(request_text);
   if (!request) {
     return {.content = {TextContent{request.error().model_message}}, .is_error = true};
@@ -190,8 +190,7 @@ int main() {
                                                          "write_note", "count_notes"};
 
   for (const auto& exchange : exchanges) {
-    const auto result = scrydantic::encode(
-        call(tools, scrydantic::Json{.text = std::string{exchange.request}}));
+    const auto result = scrydantic::encode(call(tools, exchange.request));
     if (!result) {
       std::cerr << result.error().message << '\n';
       return 1;

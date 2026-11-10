@@ -159,6 +159,57 @@ TEST_CASE("the public JSON view rejects malformed input") {
   CHECK(document.error().model_message.empty());
 }
 
+TEST_CASE("the public JSON view parses JSON text in each form it is held in") {
+  const auto read = [](const scrydantic::Result<JsonView>& document) {
+    REQUIRE(document);
+    return document->find("a")->unsigned_integer();
+  };
+  scrydantic::Json json{.text = R"({"a":1})"};
+  const scrydantic::Json& const_json = json;
+  std::string text = R"({"a":2})";
+  const std::string_view view = R"({"a":3})";
+  const char* const pointer = R"({"a":4})";
+
+  CHECK(read(JsonView::parse(json)) == std::uint64_t{1});
+  CHECK(read(JsonView::parse(const_json)) == std::uint64_t{1});
+  CHECK(read(JsonView::parse(scrydantic::Json{.text = R"({"a":1})"})) ==
+        std::uint64_t{1});
+  CHECK(read(JsonView::parse(text)) == std::uint64_t{2});
+  CHECK(read(JsonView::parse(std::string{R"({"a":2})"})) == std::uint64_t{2});
+  CHECK(read(JsonView::parse(view)) == std::uint64_t{3});
+  CHECK(read(JsonView::parse(pointer)) == std::uint64_t{4});
+  CHECK(read(JsonView::parse(R"({"a":5})")) == std::uint64_t{5});
+}
+
+TEST_CASE("the public JSON view parses exactly the viewed text") {
+  const std::string_view text = R"([1,2] and more)";
+
+  const auto document = JsonView::parse(text.substr(0, 5));
+  REQUIRE(document);
+  CHECK(document->size() == 2);
+  CHECK_FALSE(JsonView::parse(text));
+  CHECK_FALSE(JsonView::parse(std::string_view{"1\0", 2}));
+
+  const auto empty = JsonView::parse(std::string_view{});
+  REQUIRE_FALSE(empty);
+  CHECK(empty.error().message == "JSON text is not valid");
+  CHECK(empty.error().model_message.empty());
+}
+
+TEST_CASE("the public JSON view does not refer to the text it was parsed from") {
+  // The text is too long for the small-string buffer, so a view that kept
+  // pointing into it would read freed memory.
+  const auto document = [] {
+    const std::string text = R"({"key":["a value longer than the small buffer"]})";
+    return JsonView::parse(text);
+  }();
+
+  REQUIRE(document);
+  CHECK(document->key_at(0) == "key");
+  CHECK(document->find("key")->at(0)->string() ==
+        "a value longer than the small buffer");
+}
+
 TEST_CASE("escape_json_string quotes and escapes control characters") {
   CHECK(scrydantic::escape_json_string(
             std::string_view{"quote\" slash\\\b\f\n\r\t\x01"}) ==

@@ -54,9 +54,17 @@ public:
   JsonView() = default;
 
   /// Parses JSON text.
-  /// @param json JSON text to parse.
+  ///
+  /// The document holds its own copy of every key and string, so the text need
+  /// not outlive the view.
+  /// @param text JSON text to parse.
   /// @return The root view, or an Error whose message is `JSON text is not valid`
   /// and whose model_message is empty when the text is not valid JSON.
+  [[nodiscard]] static Result<JsonView> parse(std::string_view text);
+
+  /// Parses the text of a Json, as parse(std::string_view) does.
+  /// @param json JSON text to parse.
+  /// @return What parse(std::string_view) returns for `json.text`.
   [[nodiscard]] static Result<JsonView> parse(const Json& json);
 
   /// Reports the kind of the viewed value.

@@ -22,8 +22,8 @@ struct Drawing {
 constexpr std::string_view schema = scrydantic::schema_v<Drawing>;
 
 // Decoding is strict, and one call reports every issue it finds.
-auto drawing = scrydantic::decode<Drawing>(scrydantic::Json{
-    .text = R"({"shapes":[{"type":"circle","radius":"big"},{"type":"hex"}]})"});
+auto drawing = scrydantic::decode<Drawing>(
+    R"({"shapes":[{"type":"circle","radius":"big"},{"type":"hex"}]})");
 // drawing.error().message:
 //   $.shapes[0].radius must be a number
 //   $.shapes[1].type must be one of: circle, square
