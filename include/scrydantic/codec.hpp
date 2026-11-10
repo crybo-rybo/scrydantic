@@ -4,79 +4,88 @@
 #error "Scrydantic requires a compiler implementing P2996 (GCC 16.2 or newer)"
 #endif
 
-#include <array>
-#include <cstddef>
+#include <meta>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
 #include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/detail/meta.hpp>
-#include <scrydantic/detail/model.hpp>
 #include <scrydantic/detail/schema.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
-#include <string>
 #include <string_view>
 #include <type_traits>
-
-// The wire names of a reflected type, as keys_v and tags_v list them. Each
-// checks the type as encode() does, so a type outside Encodable fails with the
-// same diagnostic, and then reads the names the codec itself writes.
-namespace scrydantic::detail {
-
-template <typename Type> consteval std::string_view keys_diagnostic() {
-  if constexpr (kind_of(^^Type) != value_kind::aggregate) {
-    return static_string(display(^^Type) +
-                         " is not a plain aggregate, so it has no JSON object keys");
-  } else {
-    return encodable_diagnostic<Type>();
-  }
-}
-
-template <typename Type> consteval auto object_keys() {
-  constexpr std::string_view problem = keys_diagnostic<Type>();
-  static_assert(problem.empty(), problem);
-  if constexpr (!problem.empty()) {
-    return std::array<std::string_view, 0>{};
-  } else {
-    constexpr auto fields = fields_v<Type>;
-    std::array<std::string_view, fields.size()> keys{};
-    for (std::size_t index = 0; index < fields.size(); ++index) {
-      keys[index] = fields[index].key_view();
-    }
-    return keys;
-  }
-}
-
-template <typename Type> consteval std::string_view tags_diagnostic() {
-  if constexpr (kind_of(^^Type) != value_kind::variant) {
-    return static_string(display(^^Type) + " is not a std::variant, so it has no tags");
-  } else {
-    return encodable_diagnostic<Type>();
-  }
-}
-
-template <typename Type> consteval auto variant_tags() {
-  constexpr std::string_view problem = tags_diagnostic<Type>();
-  static_assert(problem.empty(), problem);
-  if constexpr (!problem.empty()) {
-    return std::array<std::string_view, 0>{};
-  } else {
-    constexpr auto alternatives = alternatives_v<Type>;
-    std::array<std::string_view, alternatives.size()> tags{};
-    for (std::size_t index = 0; index < alternatives.size(); ++index) {
-      tags[index] = *tag_of(alternatives[index]);
-    }
-    return tags;
-  }
-}
-
-} // namespace scrydantic::detail
 
 /// Scrydantic's reflected codec, built on P2996: strict encoding and decoding of
 /// reflected values, and the JSON Schema generated for them (schema_v and
 /// input_schema_v).
 namespace scrydantic {
+
+/// Values supported by reflected schema generation and strict marshalling.
+///
+/// Supported shapes are a deliberately closed matrix: booleans, bounded
+/// non-character integers, finite floats, strings, scoped enums, one optional layer,
+/// vectors except `vector<bool>`, fixed arrays, `std::indirect`, plain aggregates
+/// of supported members, and tagged variants of such aggregates, each alternative
+/// carrying a distinct scrydantic::tag. An indirect encodes, decodes, and has the
+/// schema of the value it owns, and `std::optional<std::indirect<T>>` is its
+/// nullable form. An aggregate may contain itself, through `std::vector` or
+/// `std::indirect`, when every such cycle passes through a `std::optional`, a
+/// `std::vector`, or a variant alternative after the first, so that
+/// default-constructing it ends; its schema refers to it with `$ref`. Every
+/// supported value has a generated schema, encodes, and decodes. A member's
+/// constraint annotations must apply to its type and admit a value, in this
+/// family and in the others. Reflected entry points report the member path and
+/// the reason a type falls outside this family.
+template <typename Type>
+concept SupportedValue =
+    detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::supported)
+        .empty();
+
+/// Values scrydantic::encode() accepts: SupportedValue plus the encode-only leaves.
+///
+/// `std::string_view` is written as a JSON string, for text the caller owns
+/// elsewhere. `Json` is checked for validity and spliced verbatim.
+/// Aggregates here need not be default-constructible, movable, or free of `const`
+/// members, and may borrow a member through a reference, since encoding only reads
+/// them; for the same reason, a cycle may pass through any variant alternative.
+/// Neither leaf has a schema.
+template <typename Type>
+concept Encodable =
+    detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::encodable)
+        .empty();
+
+/// Values scrydantic::decode() produces: SupportedValue plus `Json`.
+///
+/// A `Json` member captures the canonical text of whatever JSON value sits
+/// at its position, `null` included, so a document can carry an opaque payload through
+/// a typed decode. `Json` has no schema. Decoding produces a value, so the
+/// target itself must be a cv-unqualified object type, as scrydantic::decode()
+/// requires.
+template <typename Type>
+concept Decodable =
+    !detail::is_qualified(^^Type) &&
+    detail::value_problem(^^Type, detail::value_family::decodable).empty();
+
+/// Complete plain aggregates accepted as reflected tool arguments.
+template <typename Type>
+concept ToolArguments = detail::tool_arguments_problem(^^Type).empty();
+
+/// Canonical JSON Schema generated for any supported reflected value.
+///
+/// Handler result types are supported roots too. A tool binding never sends a
+/// result schema to a model; it is here so a host can export its own tool
+/// contracts. A member's constraint annotations add their keywords to its schema,
+/// and decoding checks every one of them but `pattern`. A type outside
+/// SupportedValue fails to compile with the offending member path and the reason.
+/// @tparam Value Type satisfying SupportedValue.
+template <typename Value>
+inline constexpr std::string_view schema_v = detail::checked_schema<Value>();
+
+/// Canonical JSON Schema generated for a reflected argument aggregate.
+/// @tparam Args Type satisfying ToolArguments.
+template <typename Args>
+inline constexpr std::string_view input_schema_v = detail::checked_input_schema<Args>();
 
 /// Encodes a reflected value as Scrydantic's canonical JSON.
 ///

@@ -5,8 +5,10 @@
 #endif
 
 #include <meta>
+#include <scrydantic/codec.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/tools.hpp>
+#include <scrydantic/tools.hpp>
 #include <string_view>
 
 /// The reason behind each of Scrydantic's compile-time checks, as text.

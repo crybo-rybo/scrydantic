@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <scrydantic/detail/binding.hpp>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <string_view>
