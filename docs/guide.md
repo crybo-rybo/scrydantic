@@ -367,7 +367,7 @@ for the first two, and logs the third as a failure of its own:
 ```cpp
 struct Reply { std::string text; bool is_error{}; };
 
-Reply call(scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
+Reply call(const scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
   auto result = tool.invoke(std::move(arguments));
   if (result) {
     return {.text = result->text};
@@ -444,9 +444,26 @@ set->tools();                       // every tool, in the order given, to list
 A set does not change once it is made. To add or remove tools, take them back
 with `release()`, which leaves the set empty, and make a new set from them.
 
+Calling a tool does not change the set either. A handler can be called through
+a `const` reference, so a `const` set, or a `const` vector of bound tools, can
+serve calls, and several threads can share one. Concurrent calls are then as
+safe as the tools' own code: a toolbox whose tools change it needs its own lock.
+
 **Without annotations.** `bind_handler<Args>(callable)` turns any callable
 that takes an `Args` aggregate into a handler, with `input_schema_v<Args>` as
-its schema.
+its schema. The handler calls it as `const`, so a `mutable` lambda, or a functor
+whose `operator()` is not `const`, is a compile error. Keep state that calls
+change outside the callable, in a toolbox or behind a pointer it captures:
+
+```cpp
+struct Ticket { std::string title; };
+
+auto next_id = std::make_shared<std::atomic<std::int64_t>>(1);
+const auto open_ticket = scrydantic::bind_handler<Ticket>(
+    [next_id](Ticket) { return next_id->fetch_add(1); });
+open_ticket(scrydantic::Json{.text = R"({"title":"Fix the lamp"})"})->text; // 1
+open_ticket(scrydantic::Json{.text = R"({"title":"Oil the door"})"})->text; // 2
+```
 
 **Without handlers.** `describe<^^ns>()`, or `describe<Toolbox>()` for a
 class, returns the name, description, and input schema of each tool as

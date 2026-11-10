@@ -622,13 +622,14 @@ consteval std::string_view toolbox_diagnostic() {
 
 // The type-erased handler that ToolFunction<Context> names in bound_tool.hpp. A
 // trait rather than a conditional type, because a handler type that took a
-// `const void&` could not even be named.
+// `const void&` could not even be named. Its call operator is const, so a const
+// table of tools can be called, and it calls what it stores as const.
 template <typename Context> struct tool_function {
-  using type = std::move_only_function<Result<Json>(const Context&, Json)>;
+  using type = std::move_only_function<Result<Json>(const Context&, Json) const>;
 };
 
 template <> struct tool_function<void> {
-  using type = std::move_only_function<Result<Json>(Json)>;
+  using type = std::move_only_function<Result<Json>(Json) const>;
 };
 
 } // namespace scrydantic::detail

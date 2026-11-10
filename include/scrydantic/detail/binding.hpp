@@ -84,28 +84,27 @@ using context_argument_t =
 template <typename Context, typename Body>
 [[nodiscard]] ToolFunction<Context> tool_function_of(Body body) {
   if constexpr (std::is_void_v<Context>) {
-    return ToolFunction<Context>{
-        [body = std::move(body)](Json input) mutable -> Result<Json> {
-          return body(no_context{}, std::move(input));
-        }};
+    return ToolFunction<Context>{[body = std::move(body)](Json input) -> Result<Json> {
+      return body(no_context{}, std::move(input));
+    }};
   } else {
     return ToolFunction<Context>{
-        [body = std::move(body)](const Context& context,
-                                 Json input) mutable -> Result<Json> {
+        [body = std::move(body)](const Context& context, Json input) -> Result<Json> {
           return body(context, std::move(input));
         }};
   }
 }
 
 // bind_handler() has already checked `Args` and `Handler`, so neither is checked
-// again here.
+// again here. The lambda's call operator is const, as a ToolFunction's is, so the
+// stored callable is invoked as const, which is the call ToolHandlerFor checked.
 template <typename Args, typename Context, typename Handler>
 [[nodiscard]] ToolFunction<Context> make_tool_handler(Handler&& handler) {
   using Callable = std::decay_t<Handler>;
   return tool_function_of<Context>(
       [callable = Callable{std::forward<Handler>(handler)}](
           [[maybe_unused]] const context_argument_t<Context>& context,
-          const Json& input) mutable -> Result<Json> {
+          const Json& input) -> Result<Json> {
         auto arguments = decode_arguments<Args>(input);
         if (!arguments) {
           return std::unexpected(std::move(arguments.error()));
@@ -181,7 +180,9 @@ decltype(auto) invoke_tool_function(Object* object,
 
 // The handler of one reflected function. `object` is the toolbox a member tool
 // is bound to; the handler shares ownership of it, so the toolbox lives as long
-// as any handler bound to it.
+// as any handler bound to it. The handler is called as const but reaches the
+// toolbox through the pointer, so a tool member function that is not const still
+// changes the toolbox: that state is the toolbox's own, not the handler's.
 template <typename Tool, typename Context, typename Object>
 [[nodiscard]] ToolFunction<Context>
 make_function_handler(std::shared_ptr<Object> object) {
