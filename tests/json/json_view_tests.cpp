@@ -155,8 +155,11 @@ TEST_CASE("the public JSON view rejects malformed input") {
   const auto document = JsonView::parse(scrydantic::Json{.text = "{"});
 
   REQUIRE_FALSE(document);
-  CHECK(document.error().message == "JSON text is not valid");
-  CHECK(document.error().model_message.empty());
+  // A fixed phrase and a position in the input: the model may see it too.
+  CHECK(document.error().message ==
+        "JSON text is not valid: unexpected end of input at line 1, column 2");
+  CHECK(document.error().model_message == document.error().message);
+  CHECK(document.error().issues.empty());
 }
 
 TEST_CASE("the public JSON view parses JSON text in each form it is held in") {
@@ -192,8 +195,15 @@ TEST_CASE("the public JSON view parses exactly the viewed text") {
 
   const auto empty = JsonView::parse(std::string_view{});
   REQUIRE_FALSE(empty);
-  CHECK(empty.error().message == "JSON text is not valid");
-  CHECK(empty.error().model_message.empty());
+  CHECK(empty.error().message ==
+        "JSON text is not valid: empty input at line 1, column 1");
+  CHECK(empty.error().model_message == empty.error().message);
+
+  // A position is counted within the viewed text, not the buffer it lies in.
+  const auto trailing = JsonView::parse(text.substr(1));
+  REQUIRE_FALSE(trailing);
+  CHECK(trailing.error().message ==
+        "JSON text is not valid: unexpected text after the value at line 1, column 2");
 }
 
 TEST_CASE("the public JSON view does not refer to the text it was parsed from") {

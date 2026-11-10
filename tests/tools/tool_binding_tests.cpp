@@ -339,8 +339,10 @@ TEST_CASE("bound handlers report decode and handler failures as Errors") {
 
   const auto malformed = tools[1].invoke(json("{"));
   REQUIRE_FALSE(malformed);
-  CHECK(malformed.error().message == "tool arguments are not valid JSON");
-  CHECK(malformed.error().model_message == "tool arguments are not valid JSON");
+  CHECK(
+      malformed.error().message ==
+      "tool arguments are not valid JSON: unexpected end of input at line 1, column 2");
+  CHECK(malformed.error().model_message == malformed.error().message);
 
   const auto refused = tools[2].invoke(json("{}"));
   REQUIRE_FALSE(refused);
@@ -379,11 +381,13 @@ TEST_CASE("bound handlers give the model every issue in their arguments") {
 
   // Arguments that are not JSON are one issue; the handler's own failures,
   // whether refusals or results that cannot be JSON, are none.
-  const auto malformed = tools[1].invoke(json("{"));
+  const auto malformed = tools[1].invoke(json(R"({"left":1,"right":2,})"));
   REQUIRE_FALSE(malformed);
-  CHECK(malformed.error().issues ==
-        std::vector<scrydantic::Issue>{{.kind = scrydantic::IssueKind::invalid_json,
-                                        .reason = "is not valid JSON"}});
+  CHECK(
+      malformed.error().issues ==
+      std::vector<scrydantic::Issue>{
+          {.kind = scrydantic::IssueKind::invalid_json,
+           .reason = "is not valid JSON: expected a string key at line 1, column 21"}});
   const auto refused = tools[2].invoke(json("{}"));
   REQUIRE_FALSE(refused);
   CHECK(refused.error().issues.empty());

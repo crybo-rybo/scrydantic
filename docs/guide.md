@@ -216,6 +216,20 @@ drawing.error().message;
 // $.shapes[1].type must be one of: circle, square
 ```
 
+Text that is not JSON at all is one `IssueKind::invalid_json` issue at `$`.
+The message says why and where reading stopped. Lines and columns count from
+1, and a column counts characters (code points), not bytes:
+
+```cpp
+auto broken = scrydantic::decode<Reading>(scrydantic::Json{.text = R"({"degrees" 3})"});
+broken.error().message;
+// JSON text is not valid JSON: expected ':' at line 1, column 12
+```
+
+Tool arguments that are not JSON fail the same way, as
+`tool arguments are not valid JSON: ...`, and so does `JsonView::parse`, as
+`JSON text is not valid: ...`. Its documentation lists the reasons.
+
 `Result<T>` is `std::expected<T, Error>`, and `Status` is `Result<void>`. Check
 a result before you use its value or its error. At `-O2`, GCC can give a false
 `-Wfree-nonheap-object` warning when you move the error out of a result that

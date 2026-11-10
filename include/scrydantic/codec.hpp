@@ -9,6 +9,7 @@
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
+#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <scrydantic/detail/schema.hpp>
@@ -167,19 +168,25 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 /// Parses JSON text and decodes it into a reflected value, strictly.
 ///
 /// A string literal or a std::string can be passed as it is. Text that is not
-/// JSON fails with `JSON text is not valid JSON` as both messages, and one
-/// IssueKind::invalid_json issue at `$`; every other failure is reported as
-/// decode(const JsonView&) reports it.
+/// JSON fails with one IssueKind::invalid_json issue at `$`, whose reason says
+/// why and where reading stopped, such as
+/// `is not valid JSON: expected ':' at line 1, column 7`, and with
+/// `JSON text is not valid JSON: expected ':' at line 1, column 7` as both
+/// messages. The column counts code points, not bytes; JsonView::parse() lists
+/// the reasons. Every other failure is reported as decode(const JsonView&)
+/// reports it.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param text JSON text to parse and decode.
 /// @return The decoded value, or the parse or decode failure.
 template <typename Type>
 [[nodiscard]] Result<Type> decode(const std::string_view text) {
   // Composed from std::expected's monadic operations, which build their failure
-  // with std::unexpect: see detail::decode_failed().
+  // with std::unexpect: see detail::decode_failed(). Text that is not JSON is
+  // read once more to describe it, which only a failure pays for.
   return JsonView::parse(text)
-      .transform_error([](const Error&) {
-        return detail::invalid_json_error("JSON text is not valid JSON");
+      .transform_error([text](const Error&) {
+        return detail::invalid_json_error("JSON text is not valid JSON",
+                                          detail::describe_invalid_json(text));
       })
       .and_then([](const JsonView& view) { return decode<Type>(view); });
 }
