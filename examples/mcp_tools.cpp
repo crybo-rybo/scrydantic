@@ -104,8 +104,9 @@ struct CallResult {
 };
 
 // tools/call: the named tool's result, or why the call failed, worded for the
-// model, including a name it was not given.
-[[nodiscard]] CallResult call(scrydantic::ToolSet<>& tools,
+// model, including a name it was not given. The set is const: a call can change
+// what a tool keeps, such as the notebook's notes, but not the set.
+[[nodiscard]] CallResult call(const scrydantic::ToolSet<>& tools,
                               const std::string_view request_text) {
   auto request = scrydantic::decode<CallRequest>(request_text);
   if (!request) {
@@ -177,7 +178,7 @@ int main() {
   for (auto& tool : scrydantic::bind(std::make_shared<Notebook>())) {
     bound.push_back(std::move(tool));
   }
-  auto tools = scrydantic::ToolSet<>::make(std::move(bound));
+  const auto tools = scrydantic::ToolSet<>::make(std::move(bound));
   if (!tools) {
     std::cerr << tools.error().message << '\n';
     return 1;

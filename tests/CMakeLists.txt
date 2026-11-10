@@ -133,7 +133,9 @@ set_tests_properties(
 )
 
 # The reflected codec, schemas, and tool binding, linked against Scrydantic and
-# Catch2 alone.
+# Catch2 alone, and the system's threads, on which one tool set test calls a set
+# from several threads at once.
+find_package(Threads REQUIRED)
 add_executable(
   scrydantic_tests
   codec/codec_boundary_tests.cpp
@@ -146,7 +148,11 @@ add_executable(
 )
 target_link_libraries(
   scrydantic_tests
-  PRIVATE Catch2::Catch2WithMain scrydantic::scrydantic scrydantic_project_options
+  PRIVATE
+    Catch2::Catch2WithMain
+    scrydantic::scrydantic
+    scrydantic_project_options
+    Threads::Threads
 )
 catch_discover_tests(
   scrydantic_tests
@@ -408,6 +414,11 @@ scrydantic_add_compile_fail_test(
   annotated-parameter
   annotated_parameter.cpp
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level` carrying a Scrydantic annotation, which a parameter cannot hold; take an argument aggregate and annotate its member"
+)
+scrydantic_add_compile_fail_test(
+  mutable-handler
+  mutable_handler.cpp
+  "is invocable only when it is not const; a handler is called as const, so its call operator must be const, and state it changes must live outside it, such as behind a pointer it captures"
 )
 scrydantic_add_compile_fail_test(
   keys-of-non-object

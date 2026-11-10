@@ -16,7 +16,14 @@
 /// describe()), so most code includes that one instead.
 namespace scrydantic {
 
-/// Move-only type-erased handler of one bound tool.
+/// Move-only type-erased handler of one bound tool, callable when const.
+///
+/// A const BoundTool, a const vector of them, and a const ToolSet can therefore
+/// be called. A call keeps no state of its own beyond the callable or the
+/// toolbox the handler shares: it decodes, calls, and encodes on values local to
+/// the call. Concurrent calls of one handler are as safe as that callable's or
+/// toolbox's own code; a toolbox whose tools change it, or a callable that
+/// changes state it points to, needs its own synchronization for them.
 ///
 /// It receives the canonical JSON argument object, preceded by a `const
 /// Context&` when `Context` is not void, and returns the JSON result, encoded as

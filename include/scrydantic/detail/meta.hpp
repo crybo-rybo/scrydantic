@@ -709,13 +709,28 @@ template <typename Context>
 concept with_context = !std::is_void_v<Context>;
 
 // Whether a handler accepts the context. A handler that does is invoked that way.
+// A handler is invoked as const, because the ToolFunction that stores it is.
 template <typename Callable, typename Context, typename Args>
 concept takes_context_first =
-    with_context<Context> && std::invocable<Callable&, const Context&, Args>;
+    with_context<Context> && std::invocable<const Callable&, const Context&, Args>;
+
+// Whether a handler can be invoked when it is not const, in either form. Asked
+// of one that cannot be invoked as const, it tells a mutable lambda, or a functor
+// whose call operator is not const, from a callable that takes other arguments.
+// A concept, so that `const Context&` is never formed for a void context.
+template <typename Callable, typename Context, typename Args>
+concept invocable_when_not_const =
+    std::invocable<Callable&, Args> ||
+    (with_context<Context> && std::invocable<Callable&, const Context&, Args>);
 
 template <typename Callable, typename Context, typename Args>
 consteval std::string not_invocable_problem(const std::string& handler) {
-  if constexpr (with_context<Context>) {
+  if constexpr (invocable_when_not_const<Callable, Context, Args>) {
+    return handler +
+           " is invocable only when it is not const; a handler is called as const, "
+           "so its call operator must be const, and state it changes must live "
+           "outside it, such as behind a pointer it captures";
+  } else if constexpr (with_context<Context>) {
     return handler + " is not invocable as (" + display(^^Args) + ") or as (" +
            display(^^const Context&) + ", " + display(^^Args) +
            "); a context parameter must come first";
@@ -736,9 +751,9 @@ consteval std::string tool_handler_problem() {
     // is the one that has to be encodable. Checking the plain form as well would
     // accept a callable whose two arities disagree about their return.
     return handler_result_problem<
-        std::invoke_result_t<Callable&, const Context&, Args>>(handler);
-  } else if constexpr (std::invocable<Callable&, Args>) {
-    return handler_result_problem<std::invoke_result_t<Callable&, Args>>(handler);
+        std::invoke_result_t<const Callable&, const Context&, Args>>(handler);
+  } else if constexpr (std::invocable<const Callable&, Args>) {
+    return handler_result_problem<std::invoke_result_t<const Callable&, Args>>(handler);
   } else {
     return not_invocable_problem<Callable, Context, Args>(handler);
   }

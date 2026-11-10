@@ -2,6 +2,7 @@
 // BoundTools whose handlers decode, call, and encode, with or without a call
 // context of the caller's choosing.
 
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -265,6 +267,22 @@ struct TakesText {
   }
 };
 
+// Area again, with a call operator that is not const: invocable only on a
+// mutable object, which a handler is not.
+struct MutableArea {
+  int operator()(const Position& position) { return position.x * position.y; }
+};
+
+// The same handler as a mutable lambda that counts its calls in a capture, and
+// as the lambda that may replace it, which keeps the count behind a pointer.
+using CountingInCapture = decltype([count = 0](Position) mutable { return ++count; });
+using CountingThroughPointer =
+    decltype([count = std::make_shared<int>(0)](Position) { return ++*count; });
+
+// The same, taking the context first, so that the contextual form is checked.
+using GreetingInCapture =
+    decltype([greeted = 0](const Session&, Position) mutable { return ++greeted; });
+
 } // namespace
 
 // Each diagnostic is empty exactly when its concept holds.
@@ -276,6 +294,22 @@ static_assert(mentions(scrydantic::toolbox_diagnostic<const Counter, Session>(),
 static_assert(scrydantic::tool_handler_diagnostic<Area, Position>().empty());
 static_assert(mentions(scrydantic::tool_handler_diagnostic<TakesText, Position>(),
                        "is not invocable as"));
+// A handler is called as const, so one invocable only when it is not const is
+// rejected with that reason, in either form, and the const twin is accepted.
+static_assert(!scrydantic::ToolHandlerFor<MutableArea, Position>);
+static_assert(!scrydantic::ToolHandlerFor<CountingInCapture, Position>);
+static_assert(!scrydantic::ToolHandlerFor<GreetingInCapture, Position, Session>);
+static_assert(scrydantic::ToolHandlerFor<Area, Position>);
+static_assert(scrydantic::ToolHandlerFor<CountingThroughPointer, Position>);
+static_assert(mentions(scrydantic::tool_handler_diagnostic<MutableArea, Position>(),
+                       "MutableArea is invocable only when it is not const; a "
+                       "handler is called as const"));
+static_assert(mentions(
+    scrydantic::tool_handler_diagnostic<GreetingInCapture, Position, Session>(),
+    "is invocable only when it is not const"));
+// A callable that is not invocable even when it is not const keeps its reason.
+static_assert(!mentions(scrydantic::tool_handler_diagnostic<TakesText, Position>(),
+                        "not const"));
 // An argument type that is not ToolArguments is the reason, as for the concept.
 static_assert(!scrydantic::ToolHandlerFor<TakesText, std::string>);
 static_assert(mentions(scrydantic::tool_handler_diagnostic<TakesText, std::string>(),
@@ -540,6 +574,76 @@ TEST_CASE("typed handlers bind with and without a context") {
   REQUIRE_FALSE(rejected);
   CHECK(rejected.error().model_message == "sign in first");
   CHECK(rejected.error().message == "sign in first");
+}
+
+// ---- Const handlers ----------------------------------------------------------
+
+// A handler is called through a const ToolFunction, with exactly the arguments
+// a host passes, and answers a Result<Json>.
+static_assert(std::is_invocable_v<const scrydantic::ToolFunction<>&, scrydantic::Json>);
+static_assert(std::is_same_v<
+              std::invoke_result_t<const scrydantic::ToolFunction<>&, scrydantic::Json>,
+              scrydantic::Result<scrydantic::Json>>);
+static_assert(std::is_invocable_v<const scrydantic::ToolFunction<Session>&,
+                                  const Session&, scrydantic::Json>);
+static_assert(
+    std::is_same_v<std::invoke_result_t<const scrydantic::ToolFunction<Session>&,
+                                        const Session&, scrydantic::Json>,
+                   scrydantic::Result<scrydantic::Json>>);
+static_assert(
+    !std::is_invocable_v<const scrydantic::ToolFunction<Session>&, scrydantic::Json>);
+
+TEST_CASE("a const bound tool and a const table of them can be called") {
+  const auto tools = scrydantic::bind<^^grid_tools>();
+  REQUIRE(tools.size() == 3);
+  const auto sum = tools[1].invoke(json(R"({"left":2,"right":40})"));
+  REQUIRE(sum);
+  CHECK(sum->text == "42");
+
+  const scrydantic::BoundTool<Session> greeter =
+      std::move(scrydantic::bind<^^session_tools, Session>().front());
+  const auto greeted =
+      greeter.invoke(Session{.user = "ada"}, json(R"({"greeting":"hi"})"));
+  REQUIRE(greeted);
+  CHECK(greeted->text == R"("hi, ada")");
+}
+
+TEST_CASE("a typed handler keeps the state its calls change outside itself") {
+  SECTION("behind a reference it captures") {
+    std::int32_t total = 0;
+    const auto handler = scrydantic::bind_handler<Position>(
+        [&total](Position position) { return total += position.x; });
+    REQUIRE(handler(json(R"({"x":3,"y":0})")));
+    const auto second = handler(json(R"({"x":4,"y":0})"));
+    REQUIRE(second);
+    CHECK(second->text == "7");
+    CHECK(total == 7);
+  }
+  SECTION("in an atomic it shares") {
+    auto calls = std::make_shared<std::atomic<std::int32_t>>(0);
+    const auto handler = scrydantic::bind_handler<Position, Session>(
+        [calls](const Session&, Position) { return calls->fetch_add(1) + 1; });
+    REQUIRE(handler(Session{}, json(R"({"x":0,"y":0})")));
+    const auto second = handler(Session{}, json(R"({"x":0,"y":0})"));
+    REQUIRE(second);
+    CHECK(second->text == "2");
+    CHECK(calls->load() == 2);
+  }
+}
+
+TEST_CASE("a const handler still changes a toolbox through a tool that is not const") {
+  // bump is not const, yet it binds: the handler reaches the toolbox through the
+  // pointer it shares, so its own constness does not reach the toolbox.
+  auto counter = std::make_shared<Counter>();
+  const auto tools = scrydantic::bind<Session>(counter);
+  REQUIRE(tools.size() == 2);
+
+  const Session session{.user = "cy"};
+  REQUIRE(tools[0].invoke(session, json(R"({"by":3})")));
+  const auto bumped = tools[0].invoke(session, json(R"({"by":4})"));
+  REQUIRE(bumped);
+  CHECK(bumped->text == "7");
+  CHECK(counter->total() == 7);
 }
 
 // ---- Results -----------------------------------------------------------------
