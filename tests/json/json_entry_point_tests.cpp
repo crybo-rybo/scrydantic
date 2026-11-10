@@ -35,12 +35,16 @@ namespace core = scrydantic::detail;
   REQUIRE(viewed.has_value() == document.has_value());
   REQUIRE(canonicalized == document.has_value());
   if (!document) {
-    // The whole error: the view's failure carries nothing for a model.
-    CHECK(viewed.error().message == "JSON text is not valid");
-    CHECK(viewed.error().model_message.empty());
+    // The whole error: the document's rejection, for the host and the model.
+    const auto description = json::describe(input, document.error());
+    CHECK(core::describe_invalid_json(input) == description);
+    CHECK(viewed.error().message == "JSON text is not valid: " + description);
+    CHECK(viewed.error().model_message == viewed.error().message);
+    CHECK(viewed.error().issues.empty());
     CHECK(appended.empty());
     return false;
   }
+  CHECK(core::describe_invalid_json(input).empty());
   const auto written = json::write(*document);
   CHECK(viewed->to_json().text == written);
   CHECK(appended == written);

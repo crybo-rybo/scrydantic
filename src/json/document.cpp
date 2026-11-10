@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -192,8 +193,10 @@ void canonicalize_members(Object& members) {
 }
 
 // One recursive-descent reader for both the parser and the validator, so the
-// two cannot disagree about the grammar. Build selects whether it produces a
-// Value; without it the reader touches no heap memory.
+// two cannot disagree about the grammar, nor about where and why they reject a
+// text. Build selects whether it produces a Value; without it the reader touches
+// no heap memory. Every failure goes through fail(), which records the
+// Rejection, so the success path does no work for it.
 template <bool Build> class Reader {
 public:
   using Out = std::conditional_t<Build, Value, Discard>;
@@ -202,22 +205,42 @@ public:
   using Members = std::conditional_t<Build, Object, Discard>;
 
   explicit Reader(const std::string_view text) noexcept
-      : cursor_(text.data()), end_(text.data() + text.size()) {}
+      : begin_(text.data()), cursor_(text.data()), end_(text.data() + text.size()) {}
 
   [[nodiscard]] bool document(Out& out) {
+    skip_whitespace();
+    if (at_end()) {
+      return fail(Fault::empty_input, cursor_);
+    }
     if (!value(out)) {
       return false;
     }
     skip_whitespace();
-    return cursor_ == end_;
+    return at_end() || fail(Fault::text_after_value, cursor_);
   }
 
-  // After document() fails: whether it stopped at a container opened past
-  // max_depth. Reading stops at the first problem, so the text may also break
-  // another rule further on.
-  [[nodiscard]] bool too_deep() const noexcept { return too_deep_; }
+  // After document() fails: where and why it stopped. Reading stops at the
+  // first problem, so the text may also break another rule further on.
+  [[nodiscard]] Rejection rejection() const noexcept {
+    return {.fault = fault_, .offset = static_cast<std::size_t>(stop_ - begin_)};
+  }
 
 private:
+  // Records why reading stops and at which byte, and fails the read. Cold, so
+  // that GCC lays out every path into it as the unlikely one.
+  [[gnu::cold]] [[nodiscard]] bool fail(const Fault fault,
+                                        const char* const at) noexcept {
+    fault_ = fault;
+    stop_ = at;
+    return false;
+  }
+
+  // Fails at the cursor with `fault`, or with end_of_input when the text ends
+  // there instead.
+  [[nodiscard]] bool fail_here(const Fault fault) noexcept {
+    return fail(at_end() ? Fault::end_of_input : fault, cursor_);
+  }
+
   [[nodiscard]] bool at_end() const noexcept { return cursor_ == end_; }
 
   // The bytes left between the cursor and the end of the text.
@@ -244,7 +267,7 @@ private:
   [[nodiscard]] bool value(Out& out) {
     skip_whitespace();
     if (at_end()) {
-      return false;
+      return fail(Fault::end_of_input, cursor_);
     }
     switch (*cursor_) {
     case '{':
@@ -268,17 +291,31 @@ private:
   [[nodiscard]] bool literal(const std::string_view word, Out& out, T data) {
     if (remaining() < word.size() ||
         std::memcmp(cursor_, word.data(), word.size()) != 0) {
-      return false;
+      return wrong_literal(word);
     }
     cursor_ += word.size();
     emit(out, data);
     return true;
   }
 
+  // Fails a literal whose bytes are not `word`: the text ends too early when
+  // all that is left of it begins the word, and otherwise there is no value at
+  // the literal's first byte.
+  [[nodiscard]] bool wrong_literal(const std::string_view word) noexcept {
+    const std::string_view rest{cursor_, remaining()};
+    if (rest.size() < word.size() && word.starts_with(rest)) {
+      return fail(Fault::end_of_input, end_);
+    }
+    return fail(Fault::expected_value, cursor_);
+  }
+
+  // Opens an array or object, the cursor on its bracket.
   [[nodiscard]] bool enter() noexcept {
+    if (++depth_ > max_depth) {
+      return fail(Fault::too_deep, cursor_);
+    }
     ++cursor_;
-    too_deep_ = ++depth_ > max_depth;
-    return !too_deep_;
+    return true;
   }
 
   // After an element or member: a comma continues the container and the
@@ -286,11 +323,17 @@ private:
   [[nodiscard]] bool separator(const char close, bool& closed) noexcept {
     skip_whitespace();
     if (at_end()) {
-      return false;
+      return fail(Fault::end_of_input, cursor_);
     }
-    const char character = *cursor_++;
+    const char character = *cursor_;
     closed = character == close;
-    return closed || character == ',';
+    if (!closed && character != ',') {
+      return fail(close == ']' ? Fault::expected_comma_or_bracket
+                               : Fault::expected_comma_or_brace,
+                  cursor_);
+    }
+    ++cursor_;
+    return true;
   }
 
   [[nodiscard]] bool array(Out& out) {
@@ -320,12 +363,15 @@ private:
   [[nodiscard]] bool member(Members& members) {
     skip_whitespace();
     Text key{};
-    if (!next_is('"') || !read_string(key)) {
+    if (!next_is('"')) {
+      return fail_here(Fault::expected_key);
+    }
+    if (!read_string(key)) {
       return false;
     }
     skip_whitespace();
     if (!next_is(':')) {
-      return false;
+      return fail_here(Fault::expected_colon);
     }
     ++cursor_;
     Out element{};
@@ -373,7 +419,7 @@ private:
   // Reads a string token, the cursor on its opening quote. Runs of bytes that
   // need no decoding are copied whole.
   [[nodiscard]] bool read_string(Text& text) {
-    ++cursor_;
+    const char* const quote = cursor_++;
     const char* run = cursor_;
     const auto flush = [&] {
       if constexpr (Build) {
@@ -393,56 +439,87 @@ private:
       }
       if (byte == '\\') {
         flush();
-        ++cursor_;
         if (!escape(text)) {
-          return false;
+          return fail_inside(quote);
         }
         run = cursor_;
         continue;
       }
       if (byte < 0x20U) {
-        return false;
+        return fail(Fault::control_character, cursor_);
       }
       if (byte < 0x80U) {
         ++cursor_;
       } else if (!utf8_sequence(byte)) {
-        return false;
+        return fail_inside(quote);
       }
     }
-    return false;
+    return fail(Fault::unterminated_string, quote);
   }
 
+  // Fails the string that opens at `quote` after an escape or a UTF-8 sequence
+  // in it failed. One that failed because the text ended leaves the string
+  // unterminated, which is what a model cut off mid-string needs to hear.
+  [[nodiscard]] bool fail_inside(const char* const quote) noexcept {
+    return fault_ == Fault::end_of_input && fail(Fault::unterminated_string, quote);
+  }
+
+  // The UTF-8 sequence that `lead`, at the cursor, starts.
   [[nodiscard]] bool utf8_sequence(const unsigned char lead) noexcept {
     const auto expected = utf8_lead(lead);
-    if (expected.length == 0 || remaining() < expected.length) {
-      return false;
+    if (expected.length == 0) {
+      return fail(Fault::invalid_utf8, cursor_);
     }
-    const auto second = static_cast<unsigned char>(cursor_[1]);
-    if (second < expected.low || second > expected.high) {
-      return false;
+    if (remaining() < expected.length) {
+      return cut_short(expected);
     }
-    for (std::size_t index = 2; index < expected.length; ++index) {
-      const auto continuation = static_cast<unsigned char>(cursor_[index]);
-      if (continuation < 0x80U || continuation > 0xBFU) {
-        return false;
-      }
+    if (!utf8_continues(expected, expected.length)) {
+      return fail(Fault::invalid_utf8, cursor_);
     }
     cursor_ += expected.length;
     return true;
   }
 
-  // The escape after a backslash, the cursor past the backslash.
-  [[nodiscard]] bool escape(Text& text) {
-    if (at_end()) {
+  // A sequence the text ends inside: the text ends too early only when what
+  // there is of the sequence is well formed.
+  [[nodiscard]] bool cut_short(const Utf8Lead& expected) noexcept {
+    return utf8_continues(expected, remaining()) ? fail(Fault::end_of_input, end_)
+                                                 : fail(Fault::invalid_utf8, cursor_);
+  }
+
+  // Whether the first `length` bytes at the cursor, its lead byte among them,
+  // follow the lead as `expected` requires.
+  [[nodiscard]] bool utf8_continues(const Utf8Lead& expected,
+                                    const std::size_t length) const noexcept {
+    if (length < 2) {
+      return true;
+    }
+    const auto second = static_cast<unsigned char>(cursor_[1]);
+    if (second < expected.low || second > expected.high) {
       return false;
+    }
+    for (std::size_t index = 2; index < length; ++index) {
+      const auto continuation = static_cast<unsigned char>(cursor_[index]);
+      if (continuation < 0x80U || continuation > 0xBFU) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // The escape whose backslash is at the cursor.
+  [[nodiscard]] bool escape(Text& text) {
+    const char* const backslash = cursor_++;
+    if (at_end()) {
+      return fail(Fault::end_of_input, cursor_);
     }
     const char escaped = *cursor_++;
     if (escaped == 'u') {
-      return unicode_escape(text);
+      return unicode_escape(text, backslash);
     }
     const char decoded = simple_escape(escaped);
     if (decoded == '\0') {
-      return false;
+      return fail(Fault::invalid_escape, backslash);
     }
     if constexpr (Build) {
       text.push_back(decoded);
@@ -450,41 +527,67 @@ private:
     return true;
   }
 
-  // Four hex digits, the cursor on the first; empty when malformed.
-  [[nodiscard]] std::optional<std::uint32_t> hex_quad() noexcept {
+  // The four hex digits of the \u escape at `backslash`, the cursor on the
+  // first.
+  [[nodiscard]] bool hex_quad(const char* const backslash,
+                              std::uint32_t& value) noexcept {
     if (remaining() < 4) {
-      return std::nullopt;
+      // The text ends too early, unless a byte before its end is no hex digit.
+      const bool digits_so_far = std::ranges::all_of(
+          std::string_view{cursor_, remaining()},
+          [](const char character) { return hex_value(character) >= 0; });
+      return digits_so_far ? fail(Fault::end_of_input, end_)
+                           : fail(Fault::invalid_escape, backslash);
     }
-    std::uint32_t value = 0;
+    value = 0;
     for (int index = 0; index < 4; ++index) {
       const int digit = hex_value(*cursor_++);
       if (digit < 0) {
-        return std::nullopt;
+        return fail(Fault::invalid_escape, backslash);
       }
       value = (value << 4U) | static_cast<std::uint32_t>(digit);
     }
-    return value;
+    return true;
   }
 
-  [[nodiscard]] bool unicode_escape(Text& text) {
-    auto code_point = hex_quad();
-    if (!code_point || (*code_point >= 0xDC00U && *code_point <= 0xDFFFU)) {
+  [[nodiscard]] bool unicode_escape(Text& text, const char* const backslash) {
+    std::uint32_t code_point = 0;
+    if (!hex_quad(backslash, code_point)) {
       return false;
     }
-    if (*code_point >= 0xD800U && *code_point <= 0xDBFFU) {
-      if (remaining() < 2 || cursor_[0] != '\\' || cursor_[1] != 'u') {
-        return false;
-      }
-      cursor_ += 2;
-      const auto low = hex_quad();
-      if (!low || *low < 0xDC00U || *low > 0xDFFFU) {
-        return false;
-      }
-      code_point = 0x10000U + ((*code_point - 0xD800U) << 10U) + (*low - 0xDC00U);
+    if (code_point >= 0xDC00U && code_point <= 0xDFFFU) {
+      return fail(Fault::invalid_escape, backslash);
+    }
+    if (code_point >= 0xD800U && code_point <= 0xDBFFU &&
+        !low_surrogate(backslash, code_point)) {
+      return false;
     }
     if constexpr (Build) {
-      append_utf8(text, *code_point);
+      append_utf8(text, code_point);
     }
+    return true;
+  }
+
+  // The \u escape of the low surrogate that must come straight after the high
+  // one, `code_point`, escaped at `backslash`; joins the pair into
+  // `code_point`. A broken pair is an invalid escape at the high surrogate.
+  [[nodiscard]] bool low_surrogate(const char* const backslash,
+                                   std::uint32_t& code_point) noexcept {
+    constexpr std::string_view introducer = "\\u";
+    const std::string_view next{cursor_, std::min(remaining(), introducer.size())};
+    if (next != introducer) {
+      return introducer.starts_with(next) ? fail(Fault::end_of_input, end_)
+                                          : fail(Fault::invalid_escape, backslash);
+    }
+    cursor_ += introducer.size();
+    std::uint32_t low = 0;
+    if (!hex_quad(backslash, low)) {
+      return false;
+    }
+    if (low < 0xDC00U || low > 0xDFFFU) {
+      return fail(Fault::invalid_escape, backslash);
+    }
+    code_point = 0x10000U + ((code_point - 0xD800U) << 10U) + (low - 0xDC00U);
     return true;
   }
 
@@ -497,28 +600,38 @@ private:
     return cursor_ != start;
   }
 
+  // The digits a number requires after a '-', a '.', or an exponent's 'e' and
+  // sign.
+  [[nodiscard]] bool required_digits() noexcept {
+    return digits() || fail_here(Fault::expected_digit);
+  }
+
   [[nodiscard]] bool exponent() noexcept {
     ++cursor_;
     if (next_is('+') || next_is('-')) {
       ++cursor_;
     }
-    return digits();
+    return required_digits();
   }
 
   // Scans the RFC 8259 number grammar; true when well formed. `plain` ends false
   // when the number has a fraction or an exponent.
   [[nodiscard]] bool scan_number(bool& plain) noexcept {
-    if (next_is('-')) {
+    const bool negative = next_is('-');
+    if (negative) {
       ++cursor_;
     }
     if (next_is('0')) {
       ++cursor_;
-    } else if (at_end() || *cursor_ < '1' || *cursor_ > '9' || !digits()) {
-      return false;
+    } else if (!digits()) {
+      // Past a '-' a digit is missing. Anywhere else this was never a number:
+      // value() sends here every byte that starts no other value.
+      return negative ? fail_here(Fault::expected_digit)
+                      : fail(Fault::expected_value, cursor_);
     }
     if (next_is('.')) {
       ++cursor_;
-      if (!digits()) {
+      if (!required_digits()) {
         return false;
       }
       plain = false;
@@ -542,7 +655,7 @@ private:
     }
     const auto converted = parse_double(start, cursor_);
     if (!converted) {
-      return false;
+      return fail(Fault::number_out_of_range, start);
     }
     emit(out, *converted);
     return true;
@@ -576,11 +689,30 @@ private:
     return true;
   }
 
+  const char* begin_{};
   const char* cursor_{};
   const char* end_{};
   std::size_t depth_{};
-  bool too_deep_{};
+  // What fail() recorded.
+  Fault fault_{};
+  const char* stop_{};
 };
+
+// Each fault's phrase, in Fault order. The phrases are short and fixed, so the
+// same text always gives a model the same words to act on.
+constexpr std::array<std::string_view, 15> fault_reasons{
+    "empty input",         "unexpected end of input", "unexpected text after the value",
+    "expected a value",    "expected a string key",   "expected ':'",
+    "expected ',' or ']'", "expected ',' or '}'",     "expected a digit",
+    "number out of range", "unterminated string",     "unescaped control character",
+    "invalid escape",      "invalid UTF-8",           "nesting deeper than 256",
+};
+static_assert(fault_reasons.size() == std::to_underlying(Fault::too_deep) + 1U);
+static_assert(max_depth == 256, "the too_deep phrase spells max_depth");
+
+[[nodiscard]] bool is_continuation(const char byte) noexcept {
+  return (static_cast<unsigned char>(byte) & 0xC0U) == 0x80U;
+}
 
 // ---------------------------------------------------------------------------
 // The canonical writer.
@@ -750,26 +882,60 @@ const Value* Value::find(const std::string_view key) const noexcept {
   return &found->second;
 }
 
-std::optional<Value> parse(const std::string_view text) {
+std::expected<Value, Rejection> parse(const std::string_view text) {
   Value value{};
   Reader<true> reader{text};
   if (!reader.document(value)) {
-    return std::nullopt;
+    return std::unexpected(reader.rejection());
   }
   return value;
 }
 
 bool validate(const std::string_view text) noexcept {
-  return check(text) == Validity::valid;
+  return !diagnose(text).has_value();
 }
 
-Validity check(const std::string_view text) noexcept {
+std::optional<Rejection> diagnose(const std::string_view text) noexcept {
   Discard discarded{};
   Reader<false> reader{text};
   if (reader.document(discarded)) {
+    return std::nullopt;
+  }
+  return reader.rejection();
+}
+
+Validity check(const std::string_view text) noexcept {
+  const auto rejection = diagnose(text);
+  if (!rejection) {
     return Validity::valid;
   }
-  return reader.too_deep() ? Validity::too_deep : Validity::invalid;
+  return rejection->fault == Fault::too_deep ? Validity::too_deep : Validity::invalid;
+}
+
+std::string_view reason(const Fault fault) noexcept {
+  return fault_reasons[std::to_underlying(fault)];
+}
+
+Position locate(const std::string_view text, const std::size_t offset) noexcept {
+  const auto before = text.substr(0, offset);
+  const auto line_feed = before.rfind('\n');
+  const auto line =
+      line_feed == std::string_view::npos ? before : before.substr(line_feed + 1);
+  return {
+      .line = 1U + static_cast<std::size_t>(std::ranges::count(before, '\n')),
+      .column = 1U + static_cast<std::size_t>(std::ranges::count_if(
+                         line, [](const char byte) { return !is_continuation(byte); })),
+  };
+}
+
+std::string describe(const std::string_view text, const Rejection rejection) {
+  const auto position = locate(text, rejection.offset);
+  std::string description{reason(rejection.fault)};
+  description.append(" at line ");
+  description.append(std::to_string(position.line));
+  description.append(", column ");
+  description.append(std::to_string(position.column));
+  return description;
 }
 
 void write(const Value& value, std::string& output) { write_value(value, output); }

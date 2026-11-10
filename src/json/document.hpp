@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/json.hpp>
@@ -107,18 +108,96 @@ private:
   Data data_{};
 };
 
-// Parses exactly one JSON document, or returns empty for anything the rules
-// above reject.
-[[nodiscard]] std::optional<Value> parse(std::string_view text);
+// Why the reader rejected a text: the first rule it found broken, reading from
+// the start. reason() gives each its phrase, written for a model to act on.
+enum class Fault : std::uint8_t {
+  // Nothing but whitespace.
+  empty_input,
+  // The text ends inside a value, outside a string.
+  end_of_input,
+  // A value is followed by something other than whitespace.
+  text_after_value,
+  // Where a value must start, a byte that starts none, or a literal other
+  // than true, false, or null.
+  expected_value,
+  // Where an object member must start, something other than a string.
+  expected_key,
+  expected_colon,
+  expected_comma_or_bracket,
+  expected_comma_or_brace,
+  // A number's '-', '.', or exponent not followed by a digit.
+  expected_digit,
+  // A number whose magnitude rounds to infinity, or a nonzero one that rounds
+  // to zero, as a double.
+  number_out_of_range,
+  // The text ends inside a string, an escape or a UTF-8 sequence included.
+  unterminated_string,
+  // A byte below 0x20 inside a string.
+  control_character,
+  // A backslash followed by anything but a JSON escape, a \u escape with a
+  // non-hex digit, or a surrogate escape that is not a high one followed at
+  // once by a low one.
+  invalid_escape,
+  invalid_utf8,
+  // The container that opens one level past max_depth.
+  too_deep,
+};
+
+// Where the reader stopped in a text it rejected, and why. The offset is that
+// of the first byte the reader could not accept, or the text's size when the
+// text ends before the document does. A fault in a token points at the token's
+// first byte instead: the opening quote of an unterminated string, the
+// backslash of an invalid escape (the high surrogate's, for a broken pair), the
+// lead byte of invalid UTF-8, and the first byte of a number out of range or of
+// a literal that is none of true, false, and null. Every byte before the offset
+// was read and accepted, so it is valid UTF-8.
+struct Rejection {
+  Fault fault{};
+  std::size_t offset{};
+
+  [[nodiscard]] bool operator==(const Rejection&) const = default;
+};
+
+// Parses exactly one JSON document, or says where and why the rules above
+// reject it.
+[[nodiscard]] std::expected<Value, Rejection> parse(std::string_view text);
 
 // True exactly when parse(text) would succeed, without allocating.
 [[nodiscard]] bool validate(std::string_view text) noexcept;
+
+// What parse(text) would reject, without allocating: the same rejection, or
+// empty when it would succeed.
+[[nodiscard]] std::optional<Rejection> diagnose(std::string_view text) noexcept;
 
 using Validity = json_validity;
 
 // What validate(text) decides, and when it rejects the text, whether reading
 // stopped at a container nested deeper than max_depth.
 [[nodiscard]] Validity check(std::string_view text) noexcept;
+
+// The phrase for a fault, such as `expected ':'` or `unterminated string`.
+[[nodiscard]] std::string_view reason(Fault fault) noexcept;
+
+// A position in text, both counted from 1. A line ends at each line feed, so a
+// carriage return before one is the last column of its line. The column counts
+// code points, not bytes, because a reader of the text, a model or a person,
+// counts characters rather than the bytes UTF-8 spends on them. A tab is one
+// column.
+struct Position {
+  std::size_t line{};
+  std::size_t column{};
+
+  [[nodiscard]] bool operator==(const Position&) const = default;
+};
+
+// The position of byte `offset` of `text`, or of its end when `offset` is its
+// size. Code points are counted as the bytes that are not UTF-8 continuation
+// bytes, which is exact for the valid UTF-8 that precedes a rejection.
+[[nodiscard]] Position locate(std::string_view text, std::size_t offset) noexcept;
+
+// A rejection of `text` as one phrase: `<reason> at line <line>, column
+// <column>`, such as `expected ':' at line 1, column 7`.
+[[nodiscard]] std::string describe(std::string_view text, Rejection rejection);
 
 // Appends the canonical text of `value`.
 void write(const Value& value, std::string& output);

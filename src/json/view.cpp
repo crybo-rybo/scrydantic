@@ -28,13 +28,21 @@ namespace {
 JsonView::JsonView(std::shared_ptr<const void> value) noexcept
     : value_(std::move(value)) {}
 
-Result<JsonView> JsonView::parse(const Json& json) {
-  auto document = detail::json::parse(json.text);
+Result<JsonView> JsonView::parse(const std::string_view text) {
+  auto document = detail::json::parse(text);
   if (!document) {
-    return std::unexpected(Error{.message = "JSON text is not valid"});
+    // A fixed phrase and a position in the input: nothing a model may not see.
+    auto message =
+        "JSON text is not valid: " + detail::json::describe(text, document.error());
+    return std::unexpected(
+        Error{.message = message, .model_message = std::move(message)});
   }
   return JsonView{std::shared_ptr<const void>{
       std::make_shared<const detail::json::Value>(std::move(*document))}};
+}
+
+Result<JsonView> JsonView::parse(const Json& json) {
+  return parse(std::string_view{json.text});
 }
 
 JsonKind JsonView::kind() const noexcept {

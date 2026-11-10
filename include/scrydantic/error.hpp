@@ -13,7 +13,10 @@ namespace scrydantic {
 
 /// What kind of failure one decode Issue is.
 enum class IssueKind : std::uint8_t {
-  /// The input text is not one JSON document, so nothing was decoded.
+  /// The input text is not one JSON document, so nothing was decoded. The
+  /// issue is at the root, and its reason says why and where reading stopped,
+  /// such as `is not valid JSON: expected ':' at line 1, column 7`, as
+  /// JsonView::parse() describes.
   invalid_json,
   /// A JSON value of a type the schema does not allow there, such as a string
   /// where a number is required.
@@ -99,15 +102,17 @@ struct Error {
   /// saying that further issues were not reported when decoding stopped past
   /// max_issues. The line of an IssueKind::failed_check issue gives the
   /// validator's own `message` as its reason, where it has one. Text that is not
-  /// JSON is one sentence naming the input instead, such as
-  /// `JSON text is not valid JSON`.
+  /// JSON is one sentence instead, naming the input and saying why and where
+  /// reading stopped, such as
+  /// `JSON text is not valid JSON: expected ':' at line 1, column 7`.
   std::string message{};
   /// Text meant for a model, or empty when the failure carries nothing a model
   /// could act on. Scrydantic fills it for strict decode failures with the same
   /// lines as `message`, but each with its issue's reason, whose every word comes
   /// from a schema the model was already given, from the input, or from a
   /// validator's own `model_message`. So it differs from `message` only where a
-  /// validator gave the host text of its own. A tool handler fills it through
+  /// validator gave the host text of its own. For text that is not JSON, from
+  /// JsonView::parse() too, it is `message`. A tool handler fills it through
   /// tool_error().
   std::string model_message{};
   /// The issues a decode found, in the order it visited them: an object's

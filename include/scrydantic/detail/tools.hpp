@@ -3,11 +3,14 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <meta>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
+#include <scrydantic/error.hpp>
+#include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -617,63 +620,15 @@ consteval std::string_view toolbox_diagnostic() {
   return unsatisfied(display(^^Type), "Toolbox", toolbox_problem(^^Type, ^^Context));
 }
 
+// The type-erased handler that ToolFunction<Context> names in bound_tool.hpp. A
+// trait rather than a conditional type, because a handler type that took a
+// `const void&` could not even be named.
+template <typename Context> struct tool_function {
+  using type = std::move_only_function<Result<Json>(const Context&, Json)>;
+};
+
+template <> struct tool_function<void> {
+  using type = std::move_only_function<Result<Json>(Json)>;
+};
+
 } // namespace scrydantic::detail
-
-namespace scrydantic {
-
-/// Reflects the tools bind<^^Entity, Context>() binds: the tool functions a
-/// namespace declares before the point of evaluation, or the one function.
-///
-/// This is the default of bind()'s `Tools` parameter. A library that wraps bind()
-/// computes the same default on its own entry point and forwards it, so the tools
-/// are the ones its caller's translation unit sees. An entity that cannot be bound
-/// yields the empty set, and bind() reports why.
-/// @param entity Reflection of a tool function, a static member function, or a
-/// namespace.
-/// @param context Reflection of the call context type, or of `void` for none.
-/// @return Reflection of the tool set type.
-consteval std::meta::info tools_of(const std::meta::info entity,
-                                   const std::meta::info context) {
-  if (!detail::entity_problem(entity, context).empty()) {
-    return ^^detail::tool_set<>;
-  }
-  return detail::tool_set_of(std::meta::is_namespace(entity)
-                                 ? detail::tool_functions_of(entity)
-                                 : std::vector{entity},
-                             context);
-}
-
-/// Reflects the tools bind<Context>(std::shared_ptr<Toolbox>) binds: the tool
-/// member functions of the toolbox class, in declaration order.
-///
-/// This is the default of that bind()'s `Tools` parameter; see tools_of().
-/// @param type Reflection of the toolbox type, `const` for a const toolbox.
-/// @param context Reflection of the call context type, or of `void` for none.
-/// @return Reflection of the tool set type.
-consteval std::meta::info toolbox_tools_of(const std::meta::info type,
-                                           const std::meta::info context) {
-  if (!detail::toolbox_problem(type, context).empty()) {
-    return ^^detail::tool_set<>;
-  }
-  return detail::tool_set_of(detail::tool_functions_of(detail::plain_type(type)),
-                             context);
-}
-
-/// Classes whose `[[= scrydantic::tool{...}]]` member functions bind() binds as
-/// tools of one object.
-///
-/// A toolbox is a complete class that declares at least one tool member function
-/// itself; inherited member functions are not considered. Every tool member must
-/// be a public, non-deleted, non-`&&`-qualified function with a valid tool
-/// signature, `const` when the toolbox is, and the tool names must be distinct.
-/// A member with an explicit object parameter is instead called on the toolbox as
-/// an lvalue, `const` when the toolbox is, which must initialize that parameter:
-/// it may not be an rvalue reference, nor a non-const reference when the toolbox
-/// is const, and a by-value parameter needs a toolbox it can copy.
-/// Binding reports the first violation with the member's name and the reason.
-/// @tparam Type Toolbox class, `const` for a const toolbox.
-/// @tparam Context Call context a tool member function may take first, or void.
-template <typename Type, typename Context = void>
-concept Toolbox = detail::toolbox_problem(^^Type, ^^Context).empty();
-
-} // namespace scrydantic

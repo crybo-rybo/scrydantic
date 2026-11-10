@@ -1016,8 +1016,10 @@ TEST_CASE("JsonView serializes the viewed node canonically") {
 TEST_CASE("public decoding reports path-based messages") {
   auto decoded = decode_text<Renamed>("{");
   REQUIRE_FALSE(decoded);
-  CHECK(decoded.error().message == "JSON text is not valid JSON");
-  CHECK(decoded.error().model_message == "JSON text is not valid JSON");
+  CHECK(decoded.error().message ==
+        "JSON text is not valid JSON: unexpected end of input at line 1, column 2");
+  CHECK(decoded.error().model_message ==
+        "JSON text is not valid JSON: unexpected end of input at line 1, column 2");
 
   decoded = decode_text<Renamed>("[]");
   REQUIRE_FALSE(decoded);
@@ -1332,12 +1334,86 @@ TEST_CASE("a variant reports its alternative's issues, or one issue for its tag"
 }
 
 TEST_CASE("text that is not JSON is one issue at the root") {
-  const auto decoded = decode_text<Account>(R"({"name":)");
+  // The reason says why and where reading stopped, with the column in code
+  // points: the e with diaeresis is two bytes but one column.
+  const auto decoded =
+      decode_text<Account>("{\n  \"name\": \"Zo\xC3\xAB\" \"age\": 3\n}");
   REQUIRE_FALSE(decoded);
-  CHECK(decoded.error().issues ==
-        Issues{{.kind = IssueKind::invalid_json, .reason = "is not valid JSON"}});
-  CHECK(decoded.error().message == "JSON text is not valid JSON");
-  CHECK(decoded.error().model_message == "JSON text is not valid JSON");
+  const std::string where = "expected ',' or '}' at line 2, column 17";
+  CHECK(decoded.error().issues == Issues{{.kind = IssueKind::invalid_json,
+                                          .reason = "is not valid JSON: " + where}});
+  CHECK(decoded.error().message == "JSON text is not valid JSON: " + where);
+  CHECK(decoded.error().model_message == decoded.error().message);
+}
+
+TEST_CASE("decode() takes JSON text in each form it is held in, or a parsed view") {
+  const auto zed = [](const scrydantic::Result<Renamed>& decoded) {
+    REQUIRE(decoded);
+    return decoded->zed;
+  };
+  scrydantic::Json json{.text = R"({"a_first":"json"})"};
+  const scrydantic::Json& const_json = json;
+  std::string text = R"({"a_first":"string"})";
+  const std::string_view view = R"({"a_first":"view"})";
+  const char* const pointer = R"({"a_first":"pointer"})";
+  const auto parsed = scrydantic::JsonView::parse(R"({"a_first":"parsed"})");
+  REQUIRE(parsed);
+
+  CHECK(zed(scrydantic::decode<Renamed>(json)) == "json");
+  CHECK(zed(scrydantic::decode<Renamed>(const_json)) == "json");
+  CHECK(zed(scrydantic::decode<Renamed>(scrydantic::Json{.text = json.text})) ==
+        "json");
+  CHECK(zed(scrydantic::decode<Renamed>(text)) == "string");
+  CHECK(zed(scrydantic::decode<Renamed>(std::string{text})) == "string");
+  CHECK(zed(scrydantic::decode<Renamed>(view)) == "view");
+  CHECK(zed(scrydantic::decode<Renamed>(pointer)) == "pointer");
+  CHECK(zed(scrydantic::decode<Renamed>(R"({"a_first":"literal"})")) == "literal");
+  CHECK(zed(scrydantic::decode<Renamed>(*parsed)) == "parsed");
+  CHECK(zed(scrydantic::decode<Renamed>(scrydantic::JsonView{*parsed})) == "parsed");
+
+  // Only the viewed characters are read, so a view into a larger buffer ends
+  // where the view does.
+  const std::string_view buffer = "[1,2] and more";
+  CHECK(scrydantic::decode<std::vector<int>>(buffer.substr(0, 5)).value() ==
+        std::vector<int>{1, 2});
+}
+
+TEST_CASE("decode() reports the same failures for JSON text as for a Json") {
+  for (const std::string_view text : {R"({"name":)", "[]", R"({"a_first":1})"}) {
+    const auto from_text = scrydantic::decode<Renamed>(text);
+    const auto from_json =
+        scrydantic::decode<Renamed>(scrydantic::Json{.text = std::string{text}});
+    REQUIRE_FALSE(from_text);
+    REQUIRE_FALSE(from_json);
+    CHECK(from_text.error().message == from_json.error().message);
+    CHECK(from_text.error().model_message == from_json.error().model_message);
+    CHECK(from_text.error().issues == from_json.error().issues);
+  }
+
+  const auto truncated = scrydantic::decode<Account>(R"({"name":)");
+  REQUIRE_FALSE(truncated);
+  const std::string where = "unexpected end of input at line 1, column 9";
+  CHECK(truncated.error().issues == Issues{{.kind = IssueKind::invalid_json,
+                                            .reason = "is not valid JSON: " + where}});
+  CHECK(truncated.error().message == "JSON text is not valid JSON: " + where);
+  CHECK(truncated.error().model_message == truncated.error().message);
+}
+
+TEST_CASE("decode<Json>() reads text, a Json, and a view as the same value") {
+  // A Json argument is JSON text to parse, not the value to return, so decoding
+  // it into a Json captures its canonical text as decoding any other text does.
+  constexpr std::string_view text = R"({"b":[1, 2.50],"a":null})";
+  constexpr std::string_view canonical = R"({"a":null,"b":[1,2.5]})";
+  const auto parsed = scrydantic::JsonView::parse(text);
+  REQUIRE(parsed);
+
+  CHECK(scrydantic::decode<scrydantic::Json>(text)->text == canonical);
+  CHECK(scrydantic::decode<scrydantic::Json>(std::string{text})->text == canonical);
+  CHECK(
+      scrydantic::decode<scrydantic::Json>(scrydantic::Json{.text = std::string{text}})
+          ->text == canonical);
+  CHECK(scrydantic::decode<scrydantic::Json>(*parsed)->text == canonical);
+  CHECK_FALSE(scrydantic::decode<scrydantic::Json>("{"));
 }
 
 TEST_CASE("paths quote keys that are not identifiers") {
@@ -2192,7 +2268,9 @@ TEST_CASE("recursion nests as deep as the parser reads and no deeper") {
   // One link more is past the parser's limit, and the writer stops there too.
   const auto too_deep = decode_text<recursive::Chain>(chain_text(257));
   REQUIRE_FALSE(too_deep);
-  CHECK(too_deep.error().message == "JSON text is not valid JSON");
+  // The 257th object opens after 256 openings of `{"next":`, eight bytes each.
+  CHECK(too_deep.error().message ==
+        "JSON text is not valid JSON: nesting deeper than 256 at line 1, column 2049");
   const auto encoded = scrydantic::encode(chain_of(257));
   REQUIRE_FALSE(encoded);
   CHECK(encoded.error().message ==

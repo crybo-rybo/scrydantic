@@ -251,13 +251,25 @@ template <typename Reason>
   };
 }
 
-// Text that is not JSON: one issue at the root. `message` names the input, as
-// the operation that read it calls it.
-[[nodiscard]] inline Error invalid_json_error(std::string message) {
+// Text that is not JSON: one issue at the root. `verdict` names the input as the
+// operation that read it calls it, such as `tool arguments are not valid JSON`,
+// and `description` is describe_invalid_json()'s, such as `expected ':' at line
+// 1, column 7`. Both messages are `<verdict>: <description>`, and the issue's
+// reason is `is not valid JSON: <description>`.
+[[nodiscard]] inline Error invalid_json_error(const std::string_view verdict,
+                                              const std::string_view description) {
+  const auto explained = [description](const std::string_view what) {
+    std::string text{what};
+    text.append(": ");
+    text.append(description);
+    return text;
+  };
+  auto message = explained(verdict);
   return Error{
       .message = message,
       .model_message = std::move(message),
-      .issues = {Issue{.kind = IssueKind::invalid_json, .reason = "is not valid JSON"}},
+      .issues = {Issue{.kind = IssueKind::invalid_json,
+                       .reason = explained("is not valid JSON")}},
   };
 }
 

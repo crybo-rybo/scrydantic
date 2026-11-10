@@ -54,9 +54,34 @@ public:
   JsonView() = default;
 
   /// Parses JSON text.
+  ///
+  /// The document holds its own copy of every key and string, so the text need
+  /// not outlive the view.
+  ///
+  /// Text that is not valid JSON fails with an Error whose message and
+  /// model_message are the same sentence, saying why and where reading stopped,
+  /// such as `JSON text is not valid: expected ':' at line 1, column 7`. Lines
+  /// and columns count from 1. A line ends at each line feed, and the column
+  /// counts code points, not bytes, so `é` is one column. The position is that
+  /// of the first character that cannot be read, or of the end of the text when
+  /// it ends too early; for an unterminated string it is the opening quote, and
+  /// for a misspelled literal, a number out of range, an invalid escape, or
+  /// invalid UTF-8, its first character. The reason is one of `empty input`,
+  /// `unexpected end of input`,
+  /// `unexpected text after the value`, `expected a value`,
+  /// `expected a string key`, `expected ':'`, `expected ',' or ']'`,
+  /// `expected ',' or '}'`, `expected a digit`, `number out of range`,
+  /// `unterminated string`, `unescaped control character`, `invalid escape`,
+  /// `invalid UTF-8`, and `nesting deeper than 256`. The sentence holds nothing
+  /// but those words and the position, so a model may see it. The Error has no
+  /// issues.
+  /// @param text JSON text to parse.
+  /// @return The root view, or the Error described above.
+  [[nodiscard]] static Result<JsonView> parse(std::string_view text);
+
+  /// Parses the text of a Json, as parse(std::string_view) does.
   /// @param json JSON text to parse.
-  /// @return The root view, or an Error whose message is `JSON text is not valid`
-  /// and whose model_message is empty when the text is not valid JSON.
+  /// @return What parse(std::string_view) returns for `json.text`.
   [[nodiscard]] static Result<JsonView> parse(const Json& json);
 
   /// Reports the kind of the viewed value.

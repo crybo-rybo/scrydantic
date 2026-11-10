@@ -32,12 +32,25 @@ constructors of its own. Its members can be any of these types:
 | `std::indirect<T>` | whatever `T` is |
 | another aggregate | an object |
 | `std::variant<A, B, ...>` of tagged aggregates | an object with a `"type"` member |
-| `scrydantic::Json` | any JSON value, kept as text |
+| `scrydantic::Json` | any JSON value, held as its canonical text |
 
 `std::int8_t` and `std::uint8_t` are character types in C++, so they are
 rejected. Use `std::int16_t`. `char` and the other character types are rejected
 too. Encoding also accepts `std::string_view` and reference members, which
 decoding cannot fill.
+
+A decoded `Json` member holds the canonical text of its value, not the input's
+own bytes. Keys are sorted, whitespace is dropped, and each number is read as a
+64-bit integer or a `double`, so a number that neither holds exactly loses
+digits:
+
+```cpp
+struct Message { scrydantic::Json payload; };
+
+auto message = scrydantic::decode<Message>(
+    R"({"payload":{"id":123456789012345678901234,"b":1,"a":2.50}})");
+message->payload.text; // {"a":2.5,"b":1,"id":1.2345678901234569E23}
+```
 
 **Which members are required.** A member without a default member initializer
 must be present in the input. A member with one, even `{}`, is optional, and
@@ -161,17 +174,20 @@ enum value that is not a declared enumerator, a string that is not UTF-8, an
 invalid `Json` payload, or nesting deeper than 256 levels. It does not check
 constraints or validators, because the value is the program's own.
 
-`encode_verbatim(value)` is the same, except that a `Json` member is copied
-byte for byte rather than re-spelled. Use it when a payload holds numbers that
-a `double` cannot hold exactly. Tool results are encoded this way.
+`encode` re-spells a `Json` member canonically, as decoding does, so a number
+in it that a `double` cannot hold exactly loses digits. `encode_verbatim(value)`
+is the same, except that a `Json` member is copied byte for byte. Use it when
+your program builds a payload with such numbers. It cannot bring back digits
+that decoding already lost. Tool results are encoded this way.
 
 ## Decoding and errors
 
-`decode<T>(json)` parses JSON text and returns a `Result<T>`. It also accepts
-a `JsonView` that you have already parsed.
+`decode<T>(text)` parses JSON text and returns a `Result<T>`. The text can be
+a string literal, a `std::string`, a `std::string_view`, or a `Json`. It also
+accepts a `JsonView` that you have already parsed.
 
 ```cpp
-auto reading = scrydantic::decode<Reading>(scrydantic::Json{.text = R"({"degrees":3,"label":null})"});
+auto reading = scrydantic::decode<Reading>(R"({"degrees":3,"label":null})");
 if (reading) {
   reading->degrees; // 3
 }
@@ -192,13 +208,27 @@ A failure is an `Error` with three parts:
   path, such as `$.shapes[0].radius`.
 
 ```cpp
-auto drawing = scrydantic::decode<Drawing>(scrydantic::Json{
-    .text = R"({"shapes":[{"type":"circle","radius":"big"},{"type":"hex"}],"extra":1})"});
+auto drawing = scrydantic::decode<Drawing>(
+    R"({"shapes":[{"type":"circle","radius":"big"},{"type":"hex"}],"extra":1})");
 drawing.error().message;
 // $ contains unknown member "extra"
 // $.shapes[0].radius must be a number
 // $.shapes[1].type must be one of: circle, square
 ```
+
+Text that is not JSON at all is one `IssueKind::invalid_json` issue at `$`.
+The message says why and where reading stopped. Lines and columns count from
+1, and a column counts characters (code points), not bytes:
+
+```cpp
+auto broken = scrydantic::decode<Reading>(R"({"degrees" 3})");
+broken.error().message;
+// JSON text is not valid JSON: expected ':' at line 1, column 12
+```
+
+Tool arguments that are not JSON fail the same way, as
+`tool arguments are not valid JSON: ...`, and so does `JsonView::parse`, as
+`JSON text is not valid: ...`. Its documentation lists the reasons.
 
 `Result<T>` is `std::expected<T, Error>`, and `Status` is `Result<void>`. Check
 a result before you use its value or its error. At `-O2`, GCC can give a false
@@ -297,6 +327,70 @@ annotations on parameters themselves are a compile error.
 `void`, or `Status`. `void` and a successful `Status` return `{}`. To refuse a
 call with a message for the model, return `std::unexpected(tool_error("..."))`.
 
+**Failures.** `invoke` returns the same `Error` type for three kinds of
+failure. A host tells them apart by `issues` and `model_message`:
+
+| Failure | `issues` | `model_message` |
+|---|---|---|
+| The arguments did not decode, or a validator rejected them. | not empty | describes the issues |
+| The tool refused the call with `tool_error()`. | empty | the tool's text for the model |
+| The result could not be encoded. This is a host-side bug. | empty | empty |
+
+`message` has the host's text. For example:
+
+```cpp
+namespace notes {
+[[= scrydantic::tool{"Read a note"}]]
+scrydantic::Result<std::string> read(std::int32_t id) {
+  if (id == 0) {
+    return std::unexpected(
+        scrydantic::tool_error("no note has id 0", "notes table has no row 0"));
+  }
+  return std::string{"\xC3"}; // a stored note cut off inside a character
+}
+}
+```
+
+```text
+arguments     issues  model_message            message
+{"id":"one"}  1       $.id must be an integer  $.id must be an integer
+{"id":0}      0       no note has id 0         notes table has no row 0
+{"id":1}      0                                the value holds a string that is not valid UTF-8, so it cannot be JSON
+```
+
+An MCP-style host sets `isError` for all three. It returns the model's text
+for the first two, and logs the third as a failure of its own:
+
+```cpp
+struct Reply { std::string text; bool is_error{}; };
+
+Reply call(scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
+  auto result = tool.invoke(std::move(arguments));
+  if (result) {
+    return {.text = result->text};
+  }
+  const scrydantic::Error& error = result.error();
+  if (!error.issues.empty()) {
+    // Bad arguments: the model can correct them and call again.
+    return {.text = error.model_message, .is_error = true};
+  }
+  if (!error.model_message.empty()) {
+    // The tool refused. `message` can say more than the model is told.
+    std::clog << "refused: " << error.message << '\n';
+    return {.text = error.model_message, .is_error = true};
+  }
+  // The result could not be encoded.
+  std::cerr << "tool failed: " << error.message << '\n';
+  return {.text = "the tool failed", .is_error = true};
+}
+```
+
+`invoke` returns a tool's own `Error` unchanged, so the table holds only when a
+tool refuses with `tool_error()` and gives the model some text. If a tool returns
+the error from its own `decode` call, it looks like bad arguments. If it calls
+`tool_error("")`, it looks like an encoding failure. To avoid this, wrap the
+error in `tool_error()` with text of your own.
+
 **Toolboxes.** `bind(std::shared_ptr<T>)` binds the tool member functions of
 an object. Each handler keeps the object alive:
 
@@ -329,6 +423,24 @@ auto tools = scrydantic::bind<^^session_tools, Session>();
 tools[0].invoke(Session{"ada"}, scrydantic::Json{.text = "{}"}); // "ada"
 ```
 
+**Dispatching by name.** `ToolSet<Context>::make(tools)` gathers bound tools,
+such as the results of several `bind` calls, so a host can call them by the name
+the model used. It fails if two tools share a name, or if one has no handler.
+A name the set does not hold gets a refusal that lists the names it does:
+
+```cpp
+auto set = scrydantic::ToolSet<>::make(scrydantic::bind<^^weather>());
+set->invoke("forecast", scrydantic::Json{.text = R"({"city":"Oslo","days":2})"});
+set->invoke("fly", scrydantic::Json{.text = "{}"}).error().model_message;
+// unknown tool "fly"; known tools: forecast
+
+set->find("forecast")->description; // Get the forecast for a city
+set->tools();                       // every tool, in the order given, to list
+```
+
+A set does not change once it is made. To add or remove tools, take them back
+with `release()`, which leaves the set empty, and make a new set from them.
+
 **Without annotations.** `bind_handler<Args>(callable)` turns any callable
 that takes an `Args` aggregate into a handler, with `input_schema_v<Args>` as
 its schema.
@@ -340,9 +452,11 @@ compile-time constants, for a manifest that needs no handlers.
 ## Working with raw JSON
 
 - `Json` holds JSON text in its `text` member. Making one does not parse it.
-- `JsonView::parse(json)` parses text into a read-only view, with `kind()`,
+- `JsonView::parse(text)` parses text into a read-only view, with `kind()`,
   `find(key)`, `at(index)`, `key_at(index)`, `string()`, `number()`,
-  `boolean()`, and `to_json()`. Object keys are visited in sorted order.
+  `boolean()`, and `to_json()`. Object keys are visited in sorted order. The
+  view holds its own copy of every key and string, so the text need not
+  outlive it.
 - `is_valid_json(text)` checks text without building a document.
 - `escape_json_string(text)` and `format_json_number(value)` spell a string or
   a number exactly as the encoder does, for JSON built by hand.

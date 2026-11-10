@@ -103,30 +103,26 @@ struct CallResult {
   [[= scrydantic::name{"isError"}]] bool is_error{};
 };
 
-[[nodiscard]] CallResult call(std::vector<scrydantic::BoundTool<>>& tools,
-                              const scrydantic::Json& request_text) {
+// tools/call: the named tool's result, or why the call failed, worded for the
+// model, including a name it was not given.
+[[nodiscard]] CallResult call(scrydantic::ToolSet<>& tools,
+                              const std::string_view request_text) {
   auto request = scrydantic::decode<CallRequest>(request_text);
   if (!request) {
     return {.content = {TextContent{request.error().model_message}}, .is_error = true};
   }
-  for (auto& tool : tools) {
-    if (tool.name == request->name) {
-      auto result = tool.invoke(std::move(request->arguments));
-      if (!result) {
-        return {.content = {TextContent{result.error().model_message}},
-                .is_error = true};
-      }
-      return {.content = {TextContent{std::move(result->text)}}};
-    }
+  auto result = tools.invoke(request->name, std::move(request->arguments));
+  if (!result) {
+    return {.content = {TextContent{result.error().model_message}}, .is_error = true};
   }
-  return {.content = {TextContent{"unknown tool " + request->name}}, .is_error = true};
+  return {.content = {TextContent{std::move(result->text)}}};
 }
 
 // tools/list: each tool's name, description, and input schema.
 [[nodiscard]] scrydantic::Result<scrydantic::Json>
-list(const std::vector<scrydantic::BoundTool<>>& tools) {
+list(const scrydantic::ToolSet<>& tools) {
   ToolList listing{};
-  for (const auto& tool : tools) {
+  for (const auto& tool : tools.tools()) {
     listing.tools.push_back(ListedTool{
         .name = tool.name,
         .description = tool.description,
@@ -155,7 +151,8 @@ struct Exchange {
 
 // What a client would check, after the four tools in declaration order: a decoded
 // and converted reading, a schema-derived refusal the model can act on, a rounded
-// number, and a value the schema allows but the tool refuses to round.
+// number, a value the schema allows but the tool refuses to round, and a tool
+// that does not exist, answered with the ones that do.
 constexpr Exchange exchanges[] = {
     {R"({"name":"convert","arguments":{"degrees":100,"scale":"celsius"}})",
      R"({"content":[{"text":"{\"degrees\":212,\"scale\":\"fahrenheit\"}",)"
@@ -168,17 +165,25 @@ constexpr Exchange exchanges[] = {
     {R"({"name":"round_number","arguments":{"value":1e100}})",
      R"({"content":[{"text":"the rounded value does not fit in 64 bits",)"
      R"("type":"text"}],"isError":true})"},
+    {R"({"name":"fly","arguments":{}})",
+     R"({"content":[{"text":"unknown tool \"fly\"; known tools: convert, )"
+     R"(round_number, write_note, count_notes","type":"text"}],"isError":true})"},
 };
 
 } // namespace
 
 int main() {
-  auto tools = scrydantic::bind<^^unit_tools>();
+  auto bound = scrydantic::bind<^^unit_tools>();
   for (auto& tool : scrydantic::bind(std::make_shared<Notebook>())) {
-    tools.push_back(std::move(tool));
+    bound.push_back(std::move(tool));
+  }
+  auto tools = scrydantic::ToolSet<>::make(std::move(bound));
+  if (!tools) {
+    std::cerr << tools.error().message << '\n';
+    return 1;
   }
 
-  const auto listed = list(tools);
+  const auto listed = list(*tools);
   if (!listed) {
     std::cerr << listed.error().message << '\n';
     return 1;
@@ -190,8 +195,7 @@ int main() {
                                                          "write_note", "count_notes"};
 
   for (const auto& exchange : exchanges) {
-    const auto result = scrydantic::encode(
-        call(tools, scrydantic::Json{.text = std::string{exchange.request}}));
+    const auto result = scrydantic::encode(call(*tools, exchange.request));
     if (!result) {
       std::cerr << result.error().message << '\n';
       return 1;

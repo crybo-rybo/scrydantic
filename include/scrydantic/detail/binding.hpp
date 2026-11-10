@@ -1,84 +1,35 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstddef>
 #include <functional>
 #include <memory>
 #include <meta>
+#include <scrydantic/bound_tool.hpp>
+#include <scrydantic/codec.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
+#include <scrydantic/detail/json_string.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
-#include <scrydantic/detail/schema.hpp>
 #include <scrydantic/detail/tools.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-namespace scrydantic {
-
-namespace detail {
-
-template <typename Context> struct tool_function {
-  using type = std::move_only_function<Result<Json>(const Context&, Json)>;
-};
-
-template <> struct tool_function<void> {
-  using type = std::move_only_function<Result<Json>(Json)>;
-};
-
-} // namespace detail
-
-/// Move-only type-erased handler of one bound tool.
-///
-/// It receives the canonical JSON argument object, preceded by a `const
-/// Context&` when `Context` is not void, and returns the JSON result, encoded as
-/// encode_verbatim() encodes it: valid JSON with keys in canonical order, and
-/// spliced `Json` payloads byte for byte. A result that cannot be JSON, such as a
-/// string holding invalid UTF-8, is a failure. A failure is an Error whose
-/// `model_message` is the text meant for the model, empty when the failure carries
-/// nothing the model could act on. Arguments that fail to decode also list their
-/// issues in `issues`.
-/// @tparam Context Call context passed to every invocation, or void for none.
-template <typename Context = void>
-using ToolFunction = typename detail::tool_function<Context>::type;
-
-/// One tool ready to list and call: its contract and its handler.
-/// @tparam Context Call context its handler receives, or void for none.
-template <typename Context = void> struct BoundTool {
-  /// Tool name the model sees.
-  std::string name{};
-  /// Tool description the model sees.
-  std::string description{};
-  /// Generated JSON Schema of the tool's argument object.
-  Json input_schema{};
-  /// Handler that decodes the arguments strictly, calls the C++ function, and
-  /// encodes what it returns.
-  ToolFunction<Context> invoke{};
-};
-
-/// One tool's contract without a handler, for hosts that only publish schemas.
-///
-/// Every view points at static storage, so a descriptor outlives any binding.
-struct ToolDescriptor {
-  /// Tool name the model sees.
-  std::string_view name{};
-  /// Tool description the model sees.
-  std::string_view description{};
-  /// Generated JSON Schema of the tool's argument object.
-  std::string_view input_schema{};
-};
-
-} // namespace scrydantic
-
 // Turns reflected tool declarations and typed handlers into bound tools: a
 // generated schema plus a handler that decodes the arguments strictly, calls the
 // C++ function, and encodes what it returns.
+//
+// This is the implementation of tools.hpp. It builds the public types that
+// bound_tool.hpp declares: ToolFunction, BoundTool, and ToolDescriptor.
 namespace scrydantic::detail {
 
 template <typename Return>
@@ -146,8 +97,9 @@ template <typename Context, typename Body>
   }
 }
 
-template <ToolArguments Args, typename Context, typename Handler>
-  requires ToolHandlerFor<Handler, Args, Context>
+// bind_handler() has already checked `Args` and `Handler`, so neither is checked
+// again here.
+template <typename Args, typename Context, typename Handler>
 [[nodiscard]] ToolFunction<Context> make_tool_handler(Handler&& handler) {
   using Callable = std::decay_t<Handler>;
   return tool_function_of<Context>(
@@ -286,6 +238,73 @@ template <typename... Tools>
 [[nodiscard]] constexpr std::array<ToolDescriptor, sizeof...(Tools)>
 tool_descriptors(tool_set<Tools...>) {
   return {tool_descriptor<Tools>()...};
+}
+
+// ---- Dispatch by name --------------------------------------------------------
+
+// Whether a tool name reads as one word in a list: ASCII letters, digits, `_`,
+// `-`, and `.`, and at least one of them. That covers the names model APIs
+// accept, and none of them holds the list's own `, `.
+[[nodiscard]] constexpr bool is_plain_tool_name(const std::string_view name) noexcept {
+  constexpr auto is_plain = [](const char character) {
+    return (character >= 'a' && character <= 'z') ||
+           (character >= 'A' && character <= 'Z') ||
+           (character >= '0' && character <= '9') || character == '_' ||
+           character == '-' || character == '.';
+  };
+  return !name.empty() && std::ranges::all_of(name, is_plain);
+}
+
+// Why ToolSet::invoke() found no tool. The requested name came from the model, so
+// it is spelled as a JSON string literal, as decode echoes an unknown member's
+// key: a name holding a quote or a control character still reads as one name.
+// The known names are the ones the model was given, in the order it was given
+// them. A plain one is written as it is, and any other as a JSON string literal
+// too, so that a name holding `, ` cannot read as two.
+template <typename Context>
+[[nodiscard]] Error
+unknown_tool_error(const std::string_view name,
+                   const std::span<const BoundTool<Context>> tools) {
+  std::string message{"unknown tool "};
+  append_json_string(message, name);
+  if (tools.empty()) {
+    message += "; there are no tools";
+  }
+  std::string_view separator = "; known tools: ";
+  for (const auto& tool : tools) {
+    message += separator;
+    if (is_plain_tool_name(tool.name)) {
+      message += tool.name;
+    } else {
+      append_json_string(message, tool.name);
+    }
+    separator = ", ";
+  }
+  return tool_error(std::move(message));
+}
+
+// Why ToolSet::make() refused its tools. Either fault is the host's bug, which
+// the model, not yet given the tools, cannot act on, so the error has no
+// model_message.
+[[nodiscard]] inline Error refused_tool_error(const std::string_view prefix,
+                                              const std::string_view name,
+                                              const std::string_view suffix = {}) {
+  std::string message{prefix};
+  append_json_string(message, name);
+  message += suffix;
+  return Error{.message = std::move(message)};
+}
+
+// Two tools of one name: a model that calls by name could never reach the
+// second.
+[[nodiscard]] inline Error duplicate_tool_error(const std::string_view name) {
+  return refused_tool_error("two tools are named ", name);
+}
+
+// A tool whose handler is empty, as a default-constructed BoundTool's is.
+// Calling it is undefined behavior, so the set refuses to hold it.
+[[nodiscard]] inline Error missing_handler_error(const std::string_view name) {
+  return refused_tool_error("tool ", name, " has no handler");
 }
 
 } // namespace scrydantic::detail
