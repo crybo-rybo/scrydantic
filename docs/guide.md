@@ -423,6 +423,21 @@ auto tools = scrydantic::bind<^^session_tools, Session>();
 tools[0].invoke(Session{"ada"}, scrydantic::Json{.text = "{}"}); // "ada"
 ```
 
+**Dispatching by name.** `ToolSet<Context>::make(tools)` gathers bound tools,
+such as the results of several `bind` calls, so a host can call them by the name
+the model used. It fails if two tools share a name. A name the set does not
+hold gets a refusal that lists the names it does:
+
+```cpp
+auto set = scrydantic::ToolSet<>::make(scrydantic::bind<^^weather>());
+set->invoke("forecast", scrydantic::Json{.text = R"({"city":"Oslo","days":2})"});
+set->invoke("fly", scrydantic::Json{.text = "{}"}).error().model_message;
+// unknown tool "fly"; known tools: forecast
+
+set->find("forecast")->description; // Get the forecast for a city
+set->tools();                       // every tool, in the order given, to list
+```
+
 **Without annotations.** `bind_handler<Args>(callable)` turns any callable
 that takes an `Args` aggregate into a handler, with `input_schema_v<Args>` as
 its schema.

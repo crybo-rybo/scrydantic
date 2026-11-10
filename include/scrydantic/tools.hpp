@@ -4,17 +4,24 @@
 #error "Scrydantic requires a compiler implementing P2996 (GCC 16.2 or newer)"
 #endif
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
+#include <expected>
+#include <functional>
 #include <memory>
 #include <meta>
+#include <numeric>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/tools.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
+#include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -286,5 +293,140 @@ template <typename Toolbox, typename Context = void,
   static_assert(problem.empty(), problem);
   return detail::tool_descriptors(Tools{});
 }
+
+/// Bound tools gathered to be called by name, as a host serving a model's tool
+/// calls looks them up.
+///
+/// A set owns its tools and keeps them in the order it was given them, so
+/// tools() lists them as they were bound; it also indexes them by name, so find()
+/// and invoke() take logarithmic time. Names are unique within a set, which
+/// make() enforces, since a model that calls a tool by name could never reach the
+/// second of two. The set lends its tools out read-only, so that no caller can
+/// rename one under the index, and invoke() is the way to call one. invoke() is
+/// not const, because a handler may change state of its own, such as a
+/// toolbox's. A set is move-only, as its handlers are, and moving it keeps its
+/// index.
+/// @tparam Context Call context every tool's handler receives, or void for none.
+template <typename Context = void> class ToolSet {
+public:
+  /// Builds a set with no tools, in which every name is unknown.
+  ToolSet() = default;
+  /// Deleted: the handlers are move-only, and spelling it out keeps
+  /// std::is_copy_constructible honest, which a vector of them alone does not.
+  ToolSet(const ToolSet&) = delete;
+  /// Deleted, as the copy constructor is.
+  ToolSet& operator=(const ToolSet&) = delete;
+  /// Takes the other set's tools and index, leaving it empty.
+  ToolSet(ToolSet&&) noexcept = default;
+  /// Replaces this set's tools and index with the other set's, leaving it empty.
+  /// @return This set.
+  ToolSet& operator=(ToolSet&&) noexcept = default;
+
+  /// Gathers tools, typically the concatenated results of bind() calls, into a
+  /// set.
+  ///
+  /// It fails when two tools share a name, with an Error whose `message` names
+  /// one such name, such as `two tools are named "count"`, as a JSON string
+  /// literal, and whose `model_message` is empty: the model has not been given
+  /// the tools yet, and could not act on a fault of the host's.
+  /// @param tools Tools to own, in the order to list them. A failure destroys
+  /// them.
+  /// @return The set, or the duplicate-name error.
+  [[nodiscard]] static Result<ToolSet> make(std::vector<BoundTool<Context>> tools) {
+    ToolSet set{};
+    set.tools_ = std::move(tools);
+    set.by_name_.resize(set.tools_.size());
+    std::iota(set.by_name_.begin(), set.by_name_.end(), std::size_t{0});
+    std::ranges::sort(set.by_name_, {}, set.name_at());
+    const auto duplicate = std::ranges::adjacent_find(set.by_name_, {}, set.name_at());
+    if (duplicate != set.by_name_.end()) {
+      return std::unexpected(detail::duplicate_tool_error(set.tools_[*duplicate].name));
+    }
+    return set;
+  }
+
+  /// Looks a tool up by name, to read its contract without calling it.
+  /// @param name Exact tool name; there is no prefix or case-insensitive match.
+  /// @return The tool named `name`, valid while the set lives and is not moved
+  /// from or assigned to, or nullptr when there is none.
+  [[nodiscard]] const BoundTool<Context>*
+  find(const std::string_view name) const noexcept {
+    const std::size_t position = position_of(name);
+    return position == tools_.size() ? nullptr : &tools_[position];
+  }
+
+  /// Calls the tool named `name` with `arguments`.
+  ///
+  /// A name the set does not hold fails with a tool_error() that tells the model
+  /// which names it does, such as `unknown tool "fly"; known tools: eat, look`:
+  /// the requested name as a JSON string literal, as a decode echoes an unknown
+  /// member, and the known names in set order. An empty set answers `unknown
+  /// tool "fly"; there are no tools`. Any other result, failure included, is the
+  /// tool's own.
+  /// @param name Tool name the model called.
+  /// @param arguments JSON argument object the model supplied.
+  /// @return What the tool returned, or the unknown-tool error.
+  [[nodiscard]] Result<Json> invoke(const std::string_view name, Json arguments)
+    requires std::is_void_v<Context>
+  {
+    const std::size_t position = position_of(name);
+    if (position == tools_.size()) {
+      return std::unexpected(detail::unknown_tool_error(name, tools()));
+    }
+    return tools_[position].invoke(std::move(arguments));
+  }
+
+  /// Calls the tool named `name` with the call context and `arguments`.
+  ///
+  /// It answers an unknown name as invoke(name, arguments) does for a set
+  /// without a context.
+  /// @param name Tool name the model called.
+  /// @param context Call context passed through to the tool.
+  /// @param arguments JSON argument object the model supplied.
+  /// @return What the tool returned, or the unknown-tool error.
+  [[nodiscard]] Result<Json> invoke(const std::string_view name,
+                                    const detail::context_argument_t<Context>& context,
+                                    Json arguments)
+    requires(!std::is_void_v<Context>)
+  {
+    const std::size_t position = position_of(name);
+    if (position == tools_.size()) {
+      return std::unexpected(detail::unknown_tool_error(name, tools()));
+    }
+    return tools_[position].invoke(context, std::move(arguments));
+  }
+
+  /// Lists the tools, for publishing them to a model.
+  /// @return Every tool, in the order make() was given them.
+  [[nodiscard]] std::span<const BoundTool<Context>> tools() const noexcept {
+    return tools_;
+  }
+
+private:
+  // Projects a position in tools_ onto its tool's name, the key by_name_ is
+  // sorted by.
+  [[nodiscard]] auto name_at() const noexcept {
+    return [this](const std::size_t position) noexcept -> std::string_view {
+      return tools_[position].name;
+    };
+  }
+
+  // The position in tools_ of the tool named `name`, or tools_.size() when there
+  // is none. A position rather than a pointer, so that invoke() reaches a
+  // mutable tool and find() a const one through the same const lookup.
+  [[nodiscard]] std::size_t position_of(const std::string_view name) const noexcept {
+    const auto found = std::ranges::lower_bound(by_name_, name, {}, name_at());
+    if (found == by_name_.end() || tools_[*found].name != name) {
+      return tools_.size();
+    }
+    return *found;
+  }
+
+  std::vector<BoundTool<Context>> tools_{};
+  // Positions in tools_, sorted by name, so that a lookup is a binary search and
+  // make() finds a duplicate name next to its twin. Positions rather than views
+  // of the names, so the index stays valid when the set moves.
+  std::vector<std::size_t> by_name_{};
+};
 
 } // namespace scrydantic
