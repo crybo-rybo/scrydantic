@@ -64,27 +64,32 @@ template <typename Integer>
 template <typename Float>
 [[nodiscard]] decode_result<Float> read_float(const JsonView& view,
                                               const decode_cursor& here) {
-  long double value = 0.0L;
+  // Every 64-bit integer is within the range of a float, let alone a double, so
+  // an integer converts straight to the member's type: one rounding, to the
+  // nearest value, and never to zero or to infinity. Going through a wider type
+  // first would round twice where that type cannot hold the integer exactly.
+  static_assert(std::numeric_limits<Float>::max_exponent > 64);
+  double value = 0.0;
   switch (view.kind()) {
   case JsonKind::signed_integer:
-    value = static_cast<long double>(*view.signed_integer());
-    break;
+    return static_cast<Float>(*view.signed_integer());
   case JsonKind::unsigned_integer:
-    value = static_cast<long double>(*view.unsigned_integer());
-    break;
+    return static_cast<Float>(*view.unsigned_integer());
   case JsonKind::number:
-    value = static_cast<long double>(*view.number());
+    value = *view.number();
     break;
   default:
     return here.fail(IssueKind::wrong_type, "must be a number");
   }
 
-  const auto maximum = static_cast<long double>(std::numeric_limits<Float>::max());
+  // The range is checked on the double the parser read, which holds every
+  // Float's maximum exactly; a double past it does not convert to a Float.
+  constexpr auto maximum = static_cast<double>(std::numeric_limits<Float>::max());
   if (!std::isfinite(value) || value < -maximum || value > maximum) {
     return here.fail(IssueKind::out_of_range, "must be a finite in-range number");
   }
   const auto converted = static_cast<Float>(value);
-  if (!std::isfinite(converted) || (value != 0.0L && converted == Float{0})) {
+  if (value != 0.0 && converted == Float{0}) {
     return here.fail(IssueKind::out_of_range, "must be a finite in-range number");
   }
   return converted;
