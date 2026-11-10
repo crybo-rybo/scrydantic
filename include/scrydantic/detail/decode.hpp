@@ -82,11 +82,25 @@ template <typename Float>
     return here.fail(IssueKind::wrong_type, "must be a number");
   }
 
-  // The range is checked on the double the parser read, which holds every
-  // Float's maximum exactly; a double past it does not convert to a Float.
-  constexpr auto maximum = static_cast<double>(std::numeric_limits<Float>::max());
-  if (!std::isfinite(value) || value < -maximum || value > maximum) {
+  // The parser reads no number as a double that is not finite, so only a
+  // narrower Float has a range to check. It holds every double that rounds to
+  // one of its values: those of a magnitude below `past`, the midpoint of its
+  // largest value and the value one step beyond that, which a double holds
+  // exactly. The midpoint itself rounds away from the largest value, whose
+  // significand is odd. So the shortest text of the largest float,
+  // 3.4028235e38, decodes to it, though as a double it is a little more.
+  if (!std::isfinite(value)) {
     return here.fail(IssueKind::out_of_range, "must be a finite in-range number");
+  }
+  if constexpr (!std::same_as<Float, double>) {
+    constexpr Float largest = std::numeric_limits<Float>::max();
+    constexpr auto maximum = static_cast<double>(largest);
+    constexpr double past =
+        maximum +
+        ((maximum - static_cast<double>(std::nextafter(largest, Float{0}))) / 2.0);
+    if (value <= -past || value >= past) {
+      return here.fail(IssueKind::out_of_range, "must be a finite in-range number");
+    }
   }
   const auto converted = static_cast<Float>(value);
   if (value != 0.0 && converted == Float{0}) {

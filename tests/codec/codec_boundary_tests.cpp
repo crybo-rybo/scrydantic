@@ -180,6 +180,35 @@ TEST_CASE("a float's range ends at its largest and smallest values") {
   CHECK(rejection<float>("3.5e38") == "$ must be a finite in-range number");
   CHECK(rejection<float>("-3.5e38") == "$ must be a finite in-range number");
 
+  // Its shortest text, which encoding writes, reads as a double a little above
+  // it that still rounds to it. So does every double below the midpoint of the
+  // largest float and 2^128, the value one step beyond; the midpoint and
+  // anything past it round to no float.
+  for (const float largest :
+       {std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest()}) {
+    CAPTURE(largest);
+    const auto canonical = scrydantic::encode(largest);
+    const auto verbatim = scrydantic::encode_verbatim(largest);
+    REQUIRE(canonical);
+    REQUIRE(verbatim);
+    CHECK(decoded<float>(canonical->text) == largest);
+    CHECK(decoded<float>(verbatim->text) == largest);
+  }
+  CHECK(scrydantic::encode(std::numeric_limits<float>::max())->text == "3.4028235E38");
+  CHECK(decoded<float>("3.4028235e38") == std::numeric_limits<float>::max());
+  CHECK(decoded<float>("-3.4028235e38") == std::numeric_limits<float>::lowest());
+  CHECK(decoded<float>("3.4028235677973362e38") == std::numeric_limits<float>::max());
+  CHECK(rejection<float>("3.4028235677973366e38") ==
+        "$ must be a finite in-range number");
+  CHECK(rejection<float>("-3.4028235677973366e38") ==
+        "$ must be a finite in-range number");
+  CHECK(rejection<float>("3.4028236e38") == "$ must be a finite in-range number");
+  CHECK(rejection<Reading>(R"({"fixed":[1,2],"floating":3.4028236e38})") ==
+        "$.floating must be a finite in-range number");
+  const auto widest = decoded<Reading>(R"({"fixed":[1,2],"floating":3.4028235e38})");
+  REQUIRE(widest);
+  CHECK(widest->floating == std::numeric_limits<float>::max());
+
   // The smallest subnormal float is about 1.4e-45: a number that rounds to it
   // decodes, and one that rounds to zero does not.
   CHECK(decoded<float>("1e-45") == std::numeric_limits<float>::denorm_min());
