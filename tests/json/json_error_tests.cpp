@@ -1,5 +1,6 @@
 // The error vocabulary of error.hpp as a C++23 consumer sees it: how a path is
-// spelled, and that failures which are not decode failures carry no issues.
+// spelled, that failures which are not decode failures carry no issues, and what
+// rejection() and tool_error() build.
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
@@ -7,6 +8,7 @@
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -59,4 +61,35 @@ TEST_CASE("failures other than decoding carry no issues") {
   REQUIRE_FALSE(parsed);
   CHECK(parsed.error().issues.empty());
   CHECK(scrydantic::tool_error("not today").issues.empty());
+}
+
+TEST_CASE("rejection tells the host the model's text unless it is given its own") {
+  const auto alone = scrydantic::rejection("must be a known city");
+  CHECK(alone.model_message == "must be a known city");
+  CHECK(alone.message == "must be a known city");
+  CHECK(alone.issues.empty());
+
+  const auto both =
+      scrydantic::rejection("must be a known city", "has no row in cities");
+  CHECK(both.model_message == "must be a known city");
+  CHECK(both.message == "has no row in cities");
+  CHECK(both.issues.empty());
+}
+
+TEST_CASE("rejection and tool_error build the same error from the same text") {
+  // Error has no operator==, so each member is compared. The empty texts are the
+  // edges of the host text's fallback.
+  const std::vector<std::pair<std::string, std::string>> texts{
+      {"must be a known city", ""},
+      {"must be a known city", "has no row in cities"},
+      {"", "has no row in cities"},
+      {"", ""},
+  };
+  for (const auto& [model, host] : texts) {
+    const auto rejected = scrydantic::rejection(model, host);
+    const auto refused = scrydantic::tool_error(model, host);
+    CHECK(rejected.message == refused.message);
+    CHECK(rejected.model_message == refused.model_message);
+    CHECK(rejected.issues == refused.issues);
+  }
 }
