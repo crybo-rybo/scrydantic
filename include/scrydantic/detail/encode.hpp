@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -25,6 +26,20 @@
 // is a choice are numbers and spliced Json payloads; `spelling` makes that choice.
 // Every function here is reached only through an entry point that has already
 // checked the type against a value family.
+//
+// What the writer appends is JSON as the parser accepts it, by construction, so
+// no pass over the finished text checks it:
+//
+// - Structure, `true`, `false`, and `null` are the writer's own bytes.
+// - A number is std::to_chars' text of an integer or of a finite float or
+//   double, or the canonical spelling of one; a non-finite number is refused.
+// - A string is checked to be UTF-8 as it is escaped. Keys, tags, and
+//   enumerator names are escaped at compile time, and checked then.
+// - A Json payload is read by the parser's own rules, with the arrays and
+//   objects open around it counted toward the depth limit.
+// - The writer refuses the array or object that would pass the depth limit.
+//
+// tests/codec/codec_tests.cpp holds the output to the parser's rules.
 namespace scrydantic::detail {
 
 // How the writer spells floating-point numbers and spliced Json payloads.
@@ -34,9 +49,8 @@ namespace scrydantic::detail {
 // it, as do hosts that must keep stored payload bytes as they are.
 //
 // `canonical` writes what canonicalizing the verbatim text would write, so
-// encode() needs only an allocation-free validating pass after it, rather than a
-// canonicalizing parse of the whole text. tests/codec/codec_tests.cpp holds the
-// two to the same bytes.
+// encode() needs no canonicalizing parse of the whole text.
+// tests/codec/codec_tests.cpp holds the two to the same bytes.
 enum class spelling : std::uint8_t {
   verbatim,
   canonical,
@@ -55,6 +69,19 @@ template <typename Type, spelling Spelling = spelling::verbatim>
   return encode_fail("is an array or object nested more than " +
                      std::to_string(json_max_depth) +
                      " deep, so the value cannot be JSON");
+}
+
+// The two failures that are about the value as a whole. Their words say what a
+// check of the finished text would find, which is how they were first reported.
+[[nodiscard]] inline std::unexpected<encode_failure> not_utf8() {
+  return encode_fail_whole("the value holds a string that is not valid UTF-8, so it "
+                           "cannot be JSON");
+}
+
+[[nodiscard]] inline std::unexpected<encode_failure> text_too_deep() {
+  return encode_fail_whole("the value nests arrays and objects more than " +
+                           std::to_string(json_max_depth) +
+                           " deep, so it cannot be JSON");
 }
 
 // Whether the parser reads `text`, std::to_chars' spelling of a finite number,
@@ -121,8 +148,28 @@ template <spelling Spelling, typename Number>
   return {};
 }
 
+// A string is escaped and checked to be UTF-8 in one pass over it.
+[[nodiscard]] inline encode_result<void> write_string(std::string& output,
+                                                      const std::string_view value) {
+  if (!append_utf8_json_string(output, value)) [[unlikely]] {
+    return not_utf8();
+  }
+  return {};
+}
+
+// Whether every enumerator of Enum has a name that is UTF-8. An identifier is,
+// wherever the ordinary literal encoding is UTF-8.
+template <typename Enum>
+inline constexpr bool utf8_names_v =
+    std::ranges::all_of(enumerators_v<Enum>, [](const std::meta::info enumerator) {
+      return is_utf8(std::meta::identifier_of(enumerator));
+    });
+
 template <typename Enum>
 [[nodiscard]] encode_result<void> write_enum(std::string& output, const Enum value) {
+  if constexpr (!utf8_names_v<Enum>) {
+    return not_utf8();
+  }
   template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
     if (value == [:enumerator:]) {
       output.append(quoted(std::meta::identifier_of(enumerator)));
@@ -133,21 +180,32 @@ template <typename Enum>
 }
 
 // A Json value is checked and then written byte for byte, or canonicalized; the
-// caller owns its verbatim spelling.
+// caller owns its verbatim spelling. `depth` arrays and objects are open around
+// it, and the ones it nests are counted on top of them, in the text that is
+// written: canonical text keeps only the last of an object's members of one
+// key, so it can be within the limit where the payload's own text is not.
 template <spelling Spelling>
-[[nodiscard]] encode_result<void> write_json_value(std::string& output,
-                                                   const Json& value) {
+[[nodiscard]] encode_result<void>
+write_json_value(std::string& output, const Json& value, const std::size_t depth) {
+  json_validity validity{};
   if constexpr (Spelling == spelling::canonical) {
-    if (!append_canonical_json(output, value.text)) {
-      return encode_fail("is not valid JSON");
-    }
+    validity = append_canonical_json(output, value.text, depth);
   } else {
-    if (!is_valid_json(value.text)) {
-      return encode_fail("is not valid JSON");
+    validity = check_json(value.text, depth);
+    if (validity == json_validity::valid) {
+      output.append(value.text);
     }
-    output.append(value.text);
   }
-  return {};
+  if (validity == json_validity::valid) [[likely]] {
+    return {};
+  }
+  // Reading stopped where the payload nests too deep for where it stands, but
+  // it may not be JSON anywhere: it may nest too deep alone, or break another
+  // rule further on.
+  if (validity == json_validity::too_deep && depth != 0 && is_valid_json(value.text)) {
+    return text_too_deep();
+  }
+  return encode_fail("is not valid JSON");
 }
 
 template <spelling Spelling, typename Sequence>
@@ -171,6 +229,15 @@ write_sequence(std::string& output, const Sequence& value, const std::size_t dep
   return {};
 }
 
+// Whether the keys of Type's members are UTF-8, and its tag too when Tagged. A
+// scrydantic::name or scrydantic::tag can hold any bytes.
+template <typename Type, bool Tagged>
+inline constexpr bool utf8_keys_v =
+    (!Tagged || is_utf8(tag_of(^^Type).value_or(""))) &&
+    std::ranges::all_of(fields_v<Type>, [](const field_layout& field) {
+      return is_utf8(field.key_view());
+    });
+
 // Tagged is true when the object is a variant alternative, whose tag member joins
 // its members at its lexical position: before the first key that sorts after it,
 // or last.
@@ -179,6 +246,9 @@ template <typename Type, bool Tagged, spelling Spelling>
                                                const std::size_t depth) {
   if (depth == json_max_depth) [[unlikely]] {
     return nested_too_deep();
+  }
+  if constexpr (!utf8_keys_v<Type, Tagged>) {
+    return not_utf8();
   }
   output.push_back('{');
   bool first = true;
@@ -260,10 +330,9 @@ encode_result<void> write_value(std::string& output, const Type& value,
   } else if constexpr (kind == value_kind::integer || kind == value_kind::floating) {
     return write_number<Spelling>(output, value);
   } else if constexpr (kind == value_kind::string || kind == value_kind::string_view) {
-    append_json_string(output, value);
-    return {};
+    return write_string(output, value);
   } else if constexpr (kind == value_kind::json) {
-    return write_json_value<Spelling>(output, value);
+    return write_json_value<Spelling>(output, value, depth);
   } else if constexpr (kind == value_kind::enumeration) {
     return write_enum(output, value);
   } else if constexpr (kind == value_kind::optional) {
@@ -284,10 +353,10 @@ encode_result<void> write_value(std::string& output, const Type& value,
 }
 
 // Encodes a value checked against a family. Failures are host-only diagnostics,
-// with no model_message, rooted at `$`. The text is valid JSON except where a
-// string value holds invalid UTF-8, the one thing the writer copies unchecked,
-// or where spliced Json payloads, each valid alone, nest past the parser's depth
-// limit together; validate_encoded_json catches both.
+// with no model_message: the value is the program's own, not the model's. They
+// are rooted at `$`, but for a string that is not UTF-8 and for Json payloads
+// that nest too deep where they stand, which are reported of the whole value.
+// The text is valid JSON, as the top of this file explains.
 //
 // `Type` may be a reference or cv-qualified, as `encode<T>(value)` with a
 // forwarded T makes it; the writer sees the value type alone.
@@ -299,28 +368,6 @@ template <typename Type, spelling Spelling = spelling::verbatim>
     return std::unexpected(encode_failure_error(std::move(status.error())));
   }
   return Json{.text = std::move(output)};
-}
-
-// The check every encoding ends with. It builds no document, so a host can
-// still bound an oversized tool result before paying for a canonicalizing parse.
-// The writer escapes every control character, rejects non-finite numbers, checks
-// each spliced Json payload, and bounds its own nesting, so its text can fail
-// here only by a payload that nests too deep within what encloses it, or by
-// holding a string, key, or tag that is not valid UTF-8. Both failures are
-// host-only diagnostics: the value is the program's own, not the model's.
-[[nodiscard]] inline Result<Json> validate_encoded_json(Json&& json) {
-  switch (check_json(json.text)) {
-  case json_validity::valid:
-    return std::move(json);
-  case json_validity::too_deep:
-    return std::unexpected(Error{
-        .message = "the value nests arrays and objects more than " +
-                   std::to_string(json_max_depth) + " deep, so it cannot be JSON"});
-  case json_validity::invalid:
-    break;
-  }
-  return std::unexpected(Error{.message = "the value holds a string that is not "
-                                          "valid UTF-8, so it cannot be JSON"});
 }
 
 } // namespace scrydantic::detail

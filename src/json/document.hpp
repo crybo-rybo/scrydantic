@@ -166,14 +166,21 @@ struct Rejection {
 [[nodiscard]] bool validate(std::string_view text) noexcept;
 
 // What parse(text) would reject, without allocating: the same rejection, or
-// empty when it would succeed.
-[[nodiscard]] std::optional<Rejection> diagnose(std::string_view text) noexcept;
+// empty when it would succeed. `depth` is how many arrays and objects are open
+// around the text where it is to stand; they count toward max_depth, so with a
+// depth above zero the text may be found too deep where parse(text) accepts it.
+[[nodiscard]] std::optional<Rejection> diagnose(std::string_view text,
+                                                std::size_t depth = 0) noexcept;
 
 using Validity = json_validity;
 
-// What validate(text) decides, and when it rejects the text, whether reading
-// stopped at a container nested deeper than max_depth.
-[[nodiscard]] Validity check(std::string_view text) noexcept;
+// What diagnose(text, depth) decides, and when it rejects the text, whether
+// reading stopped at a container nested deeper than max_depth.
+[[nodiscard]] Validity check(std::string_view text, std::size_t depth = 0) noexcept;
+
+// How deep `value` nests arrays and objects, counting an empty one: zero for a
+// scalar, and at most max_depth.
+[[nodiscard]] std::size_t nesting(const Value& value) noexcept;
 
 // The phrase for a fault, such as `expected ':'` or `unterminated string`.
 [[nodiscard]] std::string_view reason(Fault fault) noexcept;
@@ -209,5 +216,9 @@ void write(const Value& value, std::string& output);
 void append_quoted(std::string& output, std::string_view text);
 
 [[nodiscard]] std::string quote(std::string_view text);
+
+// append_quoted() for text that may not be UTF-8: false, with `output`
+// unchanged, when it is not, by the rules the parser holds a string to.
+[[nodiscard]] bool append_quoted_utf8(std::string& output, std::string_view text);
 
 } // namespace scrydantic::detail::json

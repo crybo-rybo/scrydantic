@@ -32,12 +32,23 @@ namespace scrydantic::detail {
 struct encode_failure {
   std::string reason{};
   std::vector<PathSegment> path{};
+  // Whether `reason` is the whole message, about the value as a whole, rather
+  // than what is wrong at `path`.
+  bool whole{};
 };
 
 template <typename Type> using encode_result = std::expected<Type, encode_failure>;
 
 [[nodiscard]] inline std::unexpected<encode_failure> encode_fail(std::string reason) {
   return std::unexpected(encode_failure{.reason = std::move(reason)});
+}
+
+// A failure that says only that the value as a whole cannot be JSON. Invalid
+// UTF-8 and payloads nested too deep read this way, without a path, as they did
+// when a check of the finished text found them.
+[[nodiscard]] inline std::unexpected<encode_failure>
+encode_fail_whole(std::string message) {
+  return std::unexpected(encode_failure{.reason = std::move(message), .whole = true});
 }
 
 [[nodiscard]] inline encode_failure at_member(encode_failure failure,
@@ -56,6 +67,9 @@ template <typename Type> using encode_result = std::expected<Type, encode_failur
 // schema the model never sees, so nothing about it is text the model could act
 // on, and it is no decode issue.
 [[nodiscard]] inline Error encode_failure_error(encode_failure failure) {
+  if (failure.whole) {
+    return Error{.message = std::move(failure.reason)};
+  }
   std::ranges::reverse(failure.path);
   return Error{.message = located(json_path(failure.path), failure.reason)};
 }

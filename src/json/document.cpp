@@ -14,6 +14,7 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
@@ -91,38 +92,6 @@ constexpr std::uint64_t byte_highs = 0x8080808080808080U;
 // Eight bytes a string body may hold as they are: ASCII needing no escape.
 [[nodiscard]] constexpr bool word_is_plain(const std::uint64_t word) noexcept {
   return (word & byte_highs) == 0 && !word_needs_escape(word);
-}
-
-// A UTF-8 lead byte's sequence length and the range its second byte must fall
-// in (Unicode Table 3-7, "Well-Formed UTF-8 Byte Sequences"). Length zero marks
-// a byte that cannot start a sequence: a continuation byte, an overlong lead
-// (C0, C1), or one beyond U+10FFFF (F5 and up).
-struct Utf8Lead {
-  std::size_t length{};
-  unsigned int low{};
-  unsigned int high{};
-};
-
-[[nodiscard]] Utf8Lead utf8_lead(const unsigned char byte) noexcept {
-  if (byte < 0xC2U) {
-    return {};
-  }
-  if (byte <= 0xDFU) {
-    return {.length = 2, .low = 0x80U, .high = 0xBFU};
-  }
-  if (byte <= 0xEFU) {
-    // E0 would be overlong below A0; ED above 9F encodes a surrogate.
-    return {.length = 3,
-            .low = byte == 0xE0U ? 0xA0U : 0x80U,
-            .high = byte == 0xEDU ? 0x9FU : 0xBFU};
-  }
-  if (byte <= 0xF4U) {
-    // F0 would be overlong below 90; F4 above 8F is past U+10FFFF.
-    return {.length = 4,
-            .low = byte == 0xF0U ? 0x90U : 0x80U,
-            .high = byte == 0xF4U ? 0x8FU : 0xBFU};
-  }
-  return {};
 }
 
 void append_utf8(std::string& output, const std::uint32_t code_point) {
@@ -204,8 +173,10 @@ public:
   using Elements = std::conditional_t<Build, Array, Discard>;
   using Members = std::conditional_t<Build, Object, Discard>;
 
-  explicit Reader(const std::string_view text) noexcept
-      : begin_(text.data()), cursor_(text.data()), end_(text.data() + text.size()) {}
+  // `depth` arrays and objects are already open around the text.
+  explicit Reader(const std::string_view text, const std::size_t depth = 0) noexcept
+      : begin_(text.data()), cursor_(text.data()), end_(text.data() + text.size()),
+        depth_(depth) {}
 
   [[nodiscard]] bool document(Out& out) {
     skip_whitespace();
@@ -466,14 +437,14 @@ private:
 
   // The UTF-8 sequence that `lead`, at the cursor, starts.
   [[nodiscard]] bool utf8_sequence(const unsigned char lead) noexcept {
-    const auto expected = utf8_lead(lead);
+    const auto expected = utf8_lead_of(lead);
     if (expected.length == 0) {
       return fail(Fault::invalid_utf8, cursor_);
     }
     if (remaining() < expected.length) {
       return cut_short(expected);
     }
-    if (!utf8_continues(expected, expected.length)) {
+    if (!utf8_follows(cursor_, expected, expected.length)) {
       return fail(Fault::invalid_utf8, cursor_);
     }
     cursor_ += expected.length;
@@ -482,29 +453,10 @@ private:
 
   // A sequence the text ends inside: the text ends too early only when what
   // there is of the sequence is well formed.
-  [[nodiscard]] bool cut_short(const Utf8Lead& expected) noexcept {
-    return utf8_continues(expected, remaining()) ? fail(Fault::end_of_input, end_)
-                                                 : fail(Fault::invalid_utf8, cursor_);
-  }
-
-  // Whether the first `length` bytes at the cursor, its lead byte among them,
-  // follow the lead as `expected` requires.
-  [[nodiscard]] bool utf8_continues(const Utf8Lead& expected,
-                                    const std::size_t length) const noexcept {
-    if (length < 2) {
-      return true;
-    }
-    const auto second = static_cast<unsigned char>(cursor_[1]);
-    if (second < expected.low || second > expected.high) {
-      return false;
-    }
-    for (std::size_t index = 2; index < length; ++index) {
-      const auto continuation = static_cast<unsigned char>(cursor_[index]);
-      if (continuation < 0x80U || continuation > 0xBFU) {
-        return false;
-      }
-    }
-    return true;
+  [[nodiscard]] bool cut_short(const utf8_lead& expected) noexcept {
+    return utf8_follows(cursor_, expected, remaining())
+               ? fail(Fault::end_of_input, end_)
+               : fail(Fault::invalid_utf8, cursor_);
   }
 
   // The escape whose backslash is at the cursor.
@@ -895,21 +847,39 @@ bool validate(const std::string_view text) noexcept {
   return !diagnose(text).has_value();
 }
 
-std::optional<Rejection> diagnose(const std::string_view text) noexcept {
+std::optional<Rejection> diagnose(const std::string_view text,
+                                  const std::size_t depth) noexcept {
   Discard discarded{};
-  Reader<false> reader{text};
+  Reader<false> reader{text, depth};
   if (reader.document(discarded)) {
     return std::nullopt;
   }
   return reader.rejection();
 }
 
-Validity check(const std::string_view text) noexcept {
-  const auto rejection = diagnose(text);
+Validity check(const std::string_view text, const std::size_t depth) noexcept {
+  const auto rejection = diagnose(text, depth);
   if (!rejection) {
     return Validity::valid;
   }
   return rejection->fault == Fault::too_deep ? Validity::too_deep : Validity::invalid;
+}
+
+std::size_t nesting(const Value& value) noexcept {
+  std::size_t deepest = 0;
+  if (const auto* elements = value.array()) {
+    for (const auto& element : *elements) {
+      deepest = std::max(deepest, nesting(element));
+    }
+    return deepest + 1;
+  }
+  if (const auto* members = value.object()) {
+    for (const auto& member : *members) {
+      deepest = std::max(deepest, nesting(member.second));
+    }
+    return deepest + 1;
+  }
+  return 0;
 }
 
 std::string_view reason(const Fault fault) noexcept {
@@ -965,6 +935,39 @@ void append_quoted(std::string& output, const std::string_view text) {
   }
   output.append(run, end);
   output.push_back('"');
+}
+
+bool append_quoted_utf8(std::string& output, const std::string_view text) {
+  const auto size = output.size();
+  output.push_back('"');
+  const auto* run = text.data();
+  const auto* const end = text.data() + text.size();
+  for (const auto* cursor = run; cursor != end;) {
+    if (std::cmp_greater_equal(end - cursor, word_size) &&
+        word_is_plain(load_word(cursor))) {
+      cursor += word_size;
+      continue;
+    }
+    const auto byte = static_cast<unsigned char>(*cursor);
+    if (byte >= 0x80U) {
+      const auto length = utf8_sequence_length({cursor, end});
+      if (length == 0) {
+        output.resize(size);
+        return false;
+      }
+      cursor += length;
+      continue;
+    }
+    if (needs_escape(*cursor)) {
+      output.append(run, cursor);
+      append_escape(output, byte);
+      run = cursor + 1;
+    }
+    ++cursor;
+  }
+  output.append(run, end);
+  output.push_back('"');
+  return true;
 }
 
 std::string quote(const std::string_view text) {

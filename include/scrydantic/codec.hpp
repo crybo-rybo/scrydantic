@@ -103,15 +103,15 @@ inline constexpr std::string_view input_schema_v = detail::checked_input_schema<
 /// non-finite number, an undeclared enumerator value, an invalid Json, or a
 /// valueless variant or std::indirect, or says that a string is not valid UTF-8
 /// or that the value nests arrays and objects deeper than JsonView::parse
-/// accepts, and whose `model_message` is empty.
+/// accepts, and whose `model_message` is empty. Encoding stops at the first
+/// such failure, in the order the text is written.
 template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
   constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
   if constexpr (!problem.empty()) {
     return {};
   } else {
-    return detail::encode_value<Type, detail::spelling::canonical>(value).and_then(
-        detail::validate_encoded_json);
+    return detail::encode_value<Type, detail::spelling::canonical>(value);
   }
 }
 
@@ -123,14 +123,15 @@ template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
 /// document or a number wider than a double reaches the output unchanged. A
 /// float or double is written as std::to_chars' shortest text, such as `1e-07`
 /// where encode() writes `1E-7`. Keys are still in canonical order, strings still
-/// use the canonical escapes, and the whole text is checked as encode()'s is. As
+/// use the canonical escapes, and the text is valid JSON as encode()'s is. As
 /// with encode(), constraint annotations and validators are not checked.
 /// Reflected tool handlers encode their results this way.
 ///
-/// The check reads this function's own output, so encode() succeeding does not
-/// imply that this does. A payload with a duplicate key keeps both members here,
-/// where encode() keeps only the last, so a deeply nested earlier value can take
-/// this output past the nesting limit when encode()'s is within it.
+/// The nesting limit applies to the text each function writes, so encode()
+/// succeeding does not imply that this does. A payload with a duplicate key
+/// keeps both members here, where encode() keeps only the last, so a deeply
+/// nested earlier value can take this output past the nesting limit when
+/// encode()'s is within it.
 /// @tparam Type Value from the Encodable family.
 /// @param value Value to encode without modifying it.
 /// @return JSON text, or an Error of the kinds encode() reports, for this
@@ -141,8 +142,7 @@ template <typename Type> [[nodiscard]] Result<Json> encode_verbatim(const Type& 
   if constexpr (!problem.empty()) {
     return {};
   } else {
-    return detail::encode_value<Type, detail::spelling::verbatim>(value).and_then(
-        detail::validate_encoded_json);
+    return detail::encode_value<Type, detail::spelling::verbatim>(value);
   }
 }
 

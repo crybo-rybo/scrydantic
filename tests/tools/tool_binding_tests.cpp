@@ -400,8 +400,8 @@ TEST_CASE("bound handlers refuse a result that is not valid JSON") {
   constexpr std::string_view reason =
       "the value holds a string that is not valid UTF-8, so it cannot be JSON";
   const std::string invalid(1, '\xff');
-  // Invalid UTF-8 is the one thing a supported value can hold that the writer
-  // passes through, so the public encoder is the reference for the verdict.
+  // A bound handler encodes its result as the public encoder does, so that is
+  // the reference for the verdict.
   REQUIRE_FALSE(scrydantic::encode(invalid));
   REQUIRE(scrydantic::encode(invalid).error().message == reason);
 
