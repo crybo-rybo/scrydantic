@@ -16,7 +16,7 @@ if(DEFINED SCRYDANTIC_SOURCE_DIR)
     DEFINITION PROJECT_VERSION
   )
 else()
-  find_package(scrydantic 0.2 CONFIG REQUIRED)
+  find_package(scrydantic 0.3 CONFIG REQUIRED)
   set(SCRYDANTIC_CONSUMED_VERSION "${scrydantic_VERSION}")
 endif()
 
