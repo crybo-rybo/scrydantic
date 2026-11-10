@@ -10,6 +10,7 @@
 
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
 #include <limits>
 #include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/error.hpp>
@@ -28,7 +29,8 @@ namespace core = scrydantic::detail;
   const auto document = json::parse(input);
   const auto viewed = JsonView::parse(scrydantic::Json{.text = std::string{input}});
   std::string appended{};
-  const bool canonicalized = core::append_canonical_json(appended, input);
+  const bool canonicalized =
+      core::append_canonical_json(appended, input) == core::json_validity::valid;
   REQUIRE(scrydantic::is_valid_json(input) == document.has_value());
   REQUIRE((core::check_json(input) == core::json_validity::valid) ==
           document.has_value());
@@ -205,10 +207,248 @@ TEST_CASE("a formatted number is the spelling the canonical writer gives it") {
 }
 
 TEST_CASE("appending canonical JSON leaves the output alone on a rejection") {
+  using core::json_validity;
   std::string output{"prefix:"};
-  CHECK(core::append_canonical_json(output, R"( { "b" : 1.0 , "a" : [ ] } )"));
+  CHECK(core::append_canonical_json(output, R"( { "b" : 1.0 , "a" : [ ] } )") ==
+        json_validity::valid);
   CHECK(output == R"(prefix:{"a":[],"b":1})");
-  CHECK_FALSE(core::append_canonical_json(output, R"({"a":1} 2)"));
-  CHECK_FALSE(core::append_canonical_json(output, ""));
+  CHECK(core::append_canonical_json(output, R"({"a":1} 2)") == json_validity::invalid);
+  CHECK(core::append_canonical_json(output, "") == json_validity::invalid);
+  CHECK(core::append_canonical_json(output, "[[0]]", core::json_max_depth - 1) ==
+        json_validity::too_deep);
   CHECK(output == R"(prefix:{"a":[],"b":1})");
+}
+
+namespace {
+
+[[nodiscard]] std::string nested_arrays(const std::size_t depth) {
+  return std::string(depth, '[') + "0" + std::string(depth, ']');
+}
+
+} // namespace
+
+TEST_CASE("text is checked as it stands inside open arrays and objects") {
+  using core::json_validity;
+  constexpr auto limit = core::json_max_depth;
+  CHECK(core::check_json("0", limit) == json_validity::valid);
+  CHECK(core::check_json(R"("[")", limit) == json_validity::valid);
+  CHECK(core::check_json("[]", limit) == json_validity::too_deep);
+  CHECK(core::check_json("{}", limit) == json_validity::too_deep);
+  CHECK(core::check_json("[]", limit - 1) == json_validity::valid);
+  CHECK(core::check_json(R"({"a":[]})", limit - 1) == json_validity::too_deep);
+
+  for (const std::size_t depth : {0UZ, 1UZ, 17UZ, limit - 1, limit}) {
+    CAPTURE(depth);
+    CHECK(core::check_json(nested_arrays(limit - depth), depth) ==
+          json_validity::valid);
+    CHECK(core::check_json(nested_arrays(limit - depth + 1), depth) ==
+          json_validity::too_deep);
+    // Text that breaks a rule before it nests too deep is invalid, not too deep.
+    CHECK(core::check_json("1 " + nested_arrays(limit + 1), depth) ==
+          json_validity::invalid);
+  }
+  // Standing at depth zero is the plain check.
+  CHECK(core::check_json(nested_arrays(limit + 1)) == json_validity::too_deep);
+  CHECK_FALSE(scrydantic::is_valid_json(nested_arrays(limit + 1)));
+}
+
+TEST_CASE("canonical JSON is measured as it is written") {
+  using core::json_validity;
+  constexpr auto limit = core::json_max_depth;
+  for (const std::size_t depth : {0UZ, 1UZ, 17UZ, limit - 1, limit}) {
+    CAPTURE(depth);
+    std::string output{};
+    CHECK(core::append_canonical_json(output, nested_arrays(limit - depth), depth) ==
+          json_validity::valid);
+    CHECK(output == nested_arrays(limit - depth));
+    output.clear();
+    // One level more is too deep where it stands, unless it is too deep alone,
+    // which is not JSON at all.
+    CHECK(
+        core::append_canonical_json(output, nested_arrays(limit - depth + 1), depth) ==
+        (depth == 0 ? json_validity::invalid : json_validity::too_deep));
+    CHECK(output.empty());
+  }
+
+  // The earlier `x` nests as deep as the parser allows. Canonical text keeps
+  // only the later one, so it fits where the text itself would not.
+  const auto duplicate = R"({"x":)" + nested_arrays(limit - 1) + R"(,"x":[0]})";
+  REQUIRE(core::check_json(duplicate) == json_validity::valid);
+  CHECK(core::check_json(duplicate, 1) == json_validity::too_deep);
+  std::string output{};
+  CHECK(core::append_canonical_json(output, duplicate, limit - 2) ==
+        json_validity::valid);
+  CHECK(output == R"({"x":[0]})");
+  CHECK(core::append_canonical_json(output, duplicate, limit - 1) ==
+        json_validity::too_deep);
+  CHECK(output == R"({"x":[0]})");
+}
+
+TEST_CASE("a document knows how deep it nests") {
+  const auto nesting = [](const std::string_view text) {
+    const auto document = json::parse(text);
+    REQUIRE(document);
+    return json::nesting(*document);
+  };
+  CHECK(nesting("0") == 0);
+  CHECK(nesting(R"("[[]]")") == 0);
+  CHECK(nesting("[]") == 1);
+  CHECK(nesting("{}") == 1);
+  CHECK(nesting(R"([1,{"a":[2,[3]],"b":{}},[]])") == 4);
+  CHECK(nesting(R"({"a":[[[0]]],"a":0})") == 1);
+  CHECK(nesting(nested_arrays(core::json_max_depth)) == core::json_max_depth);
+}
+
+namespace {
+
+// Whether the parser accepts `bytes` as the content of a string. The bytes are
+// never a quote, a backslash, or a control character here.
+[[nodiscard]] bool parser_accepts_string(const std::string_view bytes) {
+  return scrydantic::is_valid_json('"' + std::string{bytes} + '"');
+}
+
+// Every writer of a string must refuse exactly what the parser refuses in one.
+void check_utf8_verdicts(const std::string_view bytes) {
+  const bool accepted = parser_accepts_string(bytes);
+  std::string output{"prefix:"};
+  const bool appended = core::append_utf8_json_string(output, bytes);
+  if (core::is_utf8(bytes) != accepted || appended != accepted ||
+      output != (accepted ? "prefix:" + scrydantic::escape_json_string(bytes)
+                          : std::string{"prefix:"})) {
+    CAPTURE(bytes, accepted, appended, output);
+    FAIL_CHECK("a string writer disagrees with the parser about UTF-8");
+  }
+}
+
+} // namespace
+
+TEST_CASE("a string is written only when the parser would read it back") {
+  std::string output{};
+  REQUIRE(core::append_utf8_json_string(output,
+                                        "a\"b\\c\n\x01 caf\xc3\xa9 \xf0\x9f\x98\x80"));
+  CHECK(output == "\"a\\\"b\\\\c\\n\\u0001 caf\xc3\xa9 \xf0\x9f\x98\x80\"");
+  const auto read_back = JsonView::parse(output);
+  REQUIRE(read_back);
+  CHECK(read_back->string() == "a\"b\\c\n\x01 caf\xc3\xa9 \xf0\x9f\x98\x80");
+
+  // Every lead byte with every second byte, and with each boundary of Unicode's
+  // Table 3-7 as its second, third, and fourth bytes.
+  constexpr std::string_view bounds{"\x7f\x80\x8f\x90\x9f\xa0\xbf\xc0\xff", 9};
+  for (int lead = 0x80; lead <= 0xFF; ++lead) {
+    const std::string first(1, static_cast<char>(lead));
+    check_utf8_verdicts(first);
+    for (int second = 0x20; second <= 0xFF; ++second) {
+      if (second != '"' && second != '\\') {
+        check_utf8_verdicts(first + static_cast<char>(second));
+      }
+    }
+    for (const char second : bounds) {
+      for (const char third : bounds) {
+        check_utf8_verdicts(first + second + third);
+        for (const char fourth : bounds) {
+          check_utf8_verdicts(first + second + third + fourth);
+        }
+      }
+    }
+  }
+
+  // The word-at-a-time scan must not skip a sequence at any offset, nor read a
+  // sequence that the text ends inside as whole.
+  for (const std::string_view sequence :
+       {"\xc3\xa9", "\xe2\x82\xac", "\xf0\x9f\x98\x80", "\xff", "\xc3", "\xe2\x82",
+        "\xf0\x9f\x98", "\xed\xa0\x80", "\xc0\x80"}) {
+    for (std::size_t before = 0; before <= 17; ++before) {
+      for (std::size_t after = 0; after <= 9; ++after) {
+        check_utf8_verdicts(std::string(before, 'a') + std::string{sequence} +
+                            std::string(after, 'b'));
+      }
+    }
+  }
+}
+
+namespace {
+
+// Walks `view` and `node` together: the node must read, at every value under
+// it, what the view reads there.
+void check_same_value(const JsonView& view, const core::json_node node) {
+  REQUIRE(node);
+  REQUIRE(node.kind() == view.kind());
+  CHECK(node.boolean() == view.boolean());
+  CHECK(node.signed_integer() == view.signed_integer());
+  CHECK(node.unsigned_integer() == view.unsigned_integer());
+  CHECK(node.number() == view.number());
+  CHECK(node.string() == view.string());
+  CHECK(node.to_json().text == view.to_json().text);
+  REQUIRE(node.size() == view.size());
+  for (std::size_t index = 0; index < view.size(); ++index) {
+    if (view.kind() == scrydantic::JsonKind::array) {
+      check_same_value(*view.at(index), node.at(index));
+    } else {
+      const auto key = *view.key_at(index);
+      REQUIRE(node.key_at(index) == key);
+      check_same_value(*view.find(key), node.find(key));
+    }
+  }
+}
+
+} // namespace
+
+TEST_CASE("a borrowed node reads what its view reads") {
+  for (const std::string_view text : {
+           "null",
+           "true",
+           "-7",
+           "18446744073709551615",
+           "-0",
+           "1.5e300",
+           R"("text with \"escapes\" and caf\u00e9")",
+           "[]",
+           "{}",
+           R"([1,[2,[3,{"deep":[null,false]}]],"x"])",
+           R"({"b":{"z":1,"a":[true,{"k":"v"}]},"a":-2.5,"dup":1,"dup":{"kept":[]}})",
+       }) {
+    CAPTURE(text);
+    const auto view = JsonView::parse(text);
+    REQUIRE(view);
+    check_same_value(*view, core::json_node{*view});
+  }
+}
+
+TEST_CASE("a borrowed node finds no value where its view finds none") {
+  const auto view = JsonView::parse(R"({"a":[1,2],"b":"text"})");
+  REQUIRE(view);
+  const core::json_node node{*view};
+  CHECK_FALSE(node.find("c"));
+  CHECK_FALSE(node.find(""));
+  CHECK_FALSE(node.find("aa"));
+  // Only an object has members.
+  CHECK_FALSE(node.find("a").find("0"));
+  CHECK_FALSE(node.find("b").find("text"));
+  CHECK(node.find("a").size() == 2);
+  CHECK(node.find("b").size() == 0);
+}
+
+TEST_CASE("a borrowed node of an empty view is a null") {
+  const core::json_node node{JsonView{}};
+  REQUIRE(node);
+  CHECK(node.kind() == scrydantic::JsonKind::null);
+  CHECK_FALSE(node.boolean());
+  CHECK_FALSE(node.number());
+  CHECK_FALSE(node.string());
+  CHECK(node.size() == 0);
+  CHECK_FALSE(node.find("key"));
+  CHECK(node.to_json().text == "null");
+}
+
+TEST_CASE("a borrowed node outlives the view it came from while another view lives") {
+  const auto document = JsonView::parse(R"({"outer":{"inner":["kept"]}})");
+  REQUIRE(document);
+  const auto node = [&] {
+    // A child view shares the document; the node borrowed from it stays valid
+    // for as long as `document` keeps the document alive.
+    const auto outer = *document->find("outer");
+    return core::json_node{outer}.find("inner");
+  }();
+  REQUIRE(node);
+  CHECK(node.at(0).string() == "kept");
 }

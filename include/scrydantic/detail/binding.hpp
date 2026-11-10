@@ -43,9 +43,9 @@ template <typename Return>
     if (!result) {
       return std::unexpected(std::forward<Return>(result).error());
     }
-    return encode_value<Value>(*result).and_then(validate_encoded_json);
+    return encode_value<Value>(*result);
   } else {
-    return encode_value<ResultType>(result).and_then(validate_encoded_json);
+    return encode_value<ResultType>(result);
   }
 }
 

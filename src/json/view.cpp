@@ -7,6 +7,7 @@
 #include <expected>
 #include <memory>
 #include <optional>
+#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
@@ -119,5 +120,56 @@ Json JsonView::to_json() const {
 std::string escape_json_string(const std::string_view value) {
   return detail::json::quote(value);
 }
+
+namespace detail {
+namespace {
+
+// What a default-constructed view shows.
+const json::Value null_value{};
+
+} // namespace
+
+json_node::json_node(const JsonView& view) noexcept
+    : value_{view.value_ ? view.value_.get() : &null_value} {}
+
+JsonKind json_node::kind() const noexcept { return node(value_)->kind(); }
+
+std::optional<bool> json_node::boolean() const noexcept {
+  return node(value_)->boolean();
+}
+
+std::optional<std::int64_t> json_node::signed_integer() const noexcept {
+  return node(value_)->signed_integer();
+}
+
+std::optional<std::uint64_t> json_node::unsigned_integer() const noexcept {
+  return node(value_)->unsigned_integer();
+}
+
+std::optional<double> json_node::number() const noexcept {
+  return node(value_)->number();
+}
+
+std::optional<std::string_view> json_node::string() const noexcept {
+  return node(value_)->string();
+}
+
+std::size_t json_node::size() const noexcept { return node(value_)->size(); }
+
+json_node json_node::find(const std::string_view name) const noexcept {
+  return json_node{node(value_)->find(name)};
+}
+
+Json json_node::to_json() const { return Json{.text = json::write(*node(value_))}; }
+
+json_node json_node::at(const std::size_t index) const noexcept {
+  return json_node{&(*node(value_)->array())[index]};
+}
+
+std::string_view json_node::key_at(const std::size_t index) const noexcept {
+  return (*node(value_)->object())[index].first;
+}
+
+} // namespace detail
 
 } // namespace scrydantic

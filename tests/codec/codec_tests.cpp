@@ -938,6 +938,135 @@ TEST_CASE("encode_verbatim() checks the depth of the text it writes") {
         "the value nests arrays and objects more than 256 deep, so it cannot be JSON");
 }
 
+// ---- The writer's text, held to the parser's rules ----------------------------
+//
+// Neither encoder reads its finished text back: each part is checked as it is
+// written. These tests hold the text to what the parser accepts all the same.
+
+namespace {
+
+struct ByteKey {
+  [[= scrydantic::name{"k\xff"}]] std::int32_t value{};
+};
+
+struct[[= scrydantic::tag{"t\xff"}]] ByteTag {
+  std::int32_t value{};
+};
+
+struct[[= scrydantic::tag{"plain"}]] PlainTag {
+  std::string text{};
+};
+
+struct Texts {
+  std::vector<std::string> list{};
+  std::optional<std::string> maybe{};
+  DocText nested{};
+  std::string_view view{};
+};
+
+constexpr std::string_view not_utf8 =
+    "the value holds a string that is not valid UTF-8, so it cannot be JSON";
+
+// What both encoders make of `value`: "accepted" when both write text that the
+// parser reads, or the failure both report.
+template <typename Type> [[nodiscard]] std::string written(const Type& value) {
+  const auto canonical = scrydantic::encode(value);
+  const auto verbatim = scrydantic::encode_verbatim(value);
+  REQUIRE(canonical.has_value() == verbatim.has_value());
+  if (!canonical) {
+    CHECK(canonical.error().model_message.empty());
+    CHECK(canonical.error().issues.empty());
+    CHECK(verbatim.error().message == canonical.error().message);
+    return canonical.error().message;
+  }
+  CHECK(scrydantic::is_valid_json(canonical->text));
+  CHECK(scrydantic::is_valid_json(verbatim->text));
+  return "accepted";
+}
+
+} // namespace
+
+TEST_CASE("a string that is not UTF-8 is refused wherever the value holds it") {
+  const std::string good = "caf\xc3\xa9 \xe2\x82\xac \xf0\x9f\x98\x80";
+  const std::string bad = "caf\xc3";
+  CHECK(written(good) == "accepted");
+  CHECK(written(std::string_view{good}) == "accepted");
+  CHECK(written(Texts{.list = {good, good},
+                      .maybe = good,
+                      .nested = {.text = good},
+                      .view = good}) == "accepted");
+
+  CHECK(written(bad) == not_utf8);
+  CHECK(written(std::string_view{bad}) == not_utf8);
+  CHECK(written(std::optional<std::string>{bad}) == not_utf8);
+  CHECK(written(std::array<std::string, 2>{good, bad}) == not_utf8);
+  CHECK(written(Texts{.list = {good, bad}}) == not_utf8);
+  CHECK(written(Texts{.maybe = bad}) == not_utf8);
+  CHECK(written(Texts{.nested = {.text = bad}}) == not_utf8);
+  CHECK(written(Texts{.view = bad}) == not_utf8);
+  CHECK(written(DocBlock{DocText{.text = bad}}) == not_utf8);
+
+  // The forms UTF-8 forbids: an overlong form, an encoded surrogate, a code
+  // point past U+10FFFF, a stray continuation byte, and a sequence cut short
+  // before the end of the text and by it.
+  for (const std::string_view text :
+       {"\xc0\x80", "\xe0\x9f\xbf", "\xed\xa0\x80", "\xf4\x90\x80\x80",
+        "\xf8\x88\x80\x80\x80", "\x80", "\xe2\x82 ", "\xf0\x9f\x98"}) {
+    CAPTURE(text);
+    CHECK(written(text) == not_utf8);
+    CHECK(written("a long enough run of plain text " + std::string{text}) == not_utf8);
+  }
+  // The last code point before the surrogates, and the last of all.
+  CHECK(written(std::string_view{"\xed\x9f\xbf\xf4\x8f\xbf\xbf"}) == "accepted");
+}
+
+TEST_CASE("a key or a tag that is not UTF-8 is refused") {
+  CHECK(written(ByteKey{.value = 1}) == not_utf8);
+  CHECK(written(std::vector<ByteKey>{{.value = 1}}) == not_utf8);
+  using Tagged = std::variant<PlainTag, ByteTag>;
+  CHECK(written(Tagged{ByteTag{.value = 1}}) == not_utf8);
+  // No object of the type is written, so nothing of it reaches the text.
+  CHECK(written(std::vector<ByteKey>{}) == "accepted");
+  CHECK(written(Tagged{PlainTag{.text = "fine"}}) == "accepted");
+  // Outside a variant the tag is not written.
+  CHECK(written(ByteTag{.value = 1}) == "accepted");
+}
+
+TEST_CASE("encoding reports the first failure in the order it writes") {
+  // `body` is written before `text` would be, were there one; in a vector, the
+  // elements are written in order.
+  const scrydantic::Json invalid{.text = "{"};
+  const std::string bad = "\xff";
+  const auto payload_first = scrydantic::encode(std::vector<DocBlock>{
+      DocToolResult{.result = invalid, .tool_call_id = "c"}, DocText{.text = bad}});
+  REQUIRE_FALSE(payload_first);
+  CHECK(payload_first.error().message == "$[0].result is not valid JSON");
+  const auto text_first = scrydantic::encode(std::vector<DocBlock>{
+      DocText{.text = bad}, DocToolResult{.result = invalid, .tool_call_id = "c"}});
+  REQUIRE_FALSE(text_first);
+  CHECK(text_first.error().message == not_utf8);
+}
+
+TEST_CASE("a payload that is not JSON is not valid, however deep it stands") {
+  // A payload one level too deep for where it stands is reported as nesting,
+  // but only when it is JSON: one that also breaks another rule further on, or
+  // that nests too deep even alone, is not valid JSON.
+  const auto nest = [](const std::size_t depth) {
+    return std::string(depth, '[') + "0" + std::string(depth, ']');
+  };
+  constexpr std::string_view too_deep =
+      "the value nests arrays and objects more than 256 deep, so it cannot be JSON";
+  const auto in_result = [](std::string text) {
+    return DocToolResult{.result = {.text = std::move(text)}, .tool_call_id = "c"};
+  };
+  CHECK(written(in_result(nest(255))) == "accepted");
+  CHECK(written(in_result(nest(256))) == too_deep);
+  CHECK(written(in_result(nest(256) + "]")) == "$.result is not valid JSON");
+  CHECK(written(in_result(nest(257))) == "$.result is not valid JSON");
+  CHECK(written(scrydantic::Json{.text = nest(256)}) == "accepted");
+  CHECK(written(scrydantic::Json{.text = nest(257)}) == "$ is not valid JSON");
+}
+
 TEST_CASE("encode() takes a reference or cv-qualified type argument") {
   // As a generic wrapper forwarding its own T writes it: the value type decides.
   std::optional<int> value{42};
@@ -1040,6 +1169,42 @@ TEST_CASE("public decoding reports path-based messages") {
   REQUIRE_FALSE(role);
   CHECK(role.error().model_message ==
         "$ is not a declared enumerator; must be one of: user, assistant");
+}
+
+TEST_CASE("decode() reads the value its view shows and owns what it returns") {
+  // A child view decodes the value it shows, not the document's root.
+  const auto document = scrydantic::JsonView::parse(
+      R"({"items":[{"a_first":"first"},{"a_first":"second","max_tokens":7}]})");
+  REQUIRE(document);
+  const auto second = scrydantic::decode<Renamed>(*document->find("items")->at(1));
+  REQUIRE(second);
+  CHECK(second->zed == "second");
+  CHECK(second->limit == 7U);
+  const auto items = scrydantic::decode<std::vector<Renamed>>(*document->find("items"));
+  REQUIRE(items);
+  REQUIRE(items->size() == 2);
+  CHECK(items->front().zed == "first");
+
+  // The decoded value keeps nothing of the document: the only view of this one
+  // is gone before the value is read. Both strings are too long for the
+  // small-string buffer, so a borrowed one would read freed memory.
+  const auto owned = scrydantic::decode<std::vector<std::string>>(
+      *scrydantic::JsonView::parse(R"(["a string longer than the small buffer"])"));
+  REQUIRE(owned);
+  CHECK(owned->front() == "a string longer than the small buffer");
+  const auto payload =
+      scrydantic::decode<scrydantic::Json>(*scrydantic::JsonView::parse(
+          R"( { "key" : "a string longer than the small buffer" } )"));
+  REQUIRE(payload);
+  CHECK(payload->text == R"({"key":"a string longer than the small buffer"})");
+
+  // An empty view shows a null.
+  const scrydantic::JsonView empty{};
+  CHECK(scrydantic::decode<std::optional<std::int32_t>>(empty).value() == std::nullopt);
+  CHECK(scrydantic::decode<scrydantic::Json>(empty).value().text == "null");
+  const auto refused = scrydantic::decode<Renamed>(empty);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().message == "$ must be an object");
 }
 
 TEST_CASE("encoding reports a valueless variant instead of throwing") {
@@ -2314,7 +2479,7 @@ TEST_CASE("payloads in a recursive value count toward its nesting") {
         R"({"next":{"note":{"a":1.5,"b":2}},"note":[1]})");
 
   // 256 links nest 256 objects, which the writer accepts. A payload that is an
-  // array in the last link is one level more, which only the final check sees.
+  // array in the last link is one level more than the text may nest.
   CHECK(scrydantic::encode(noted_chain(256, "0")));
   CHECK(scrydantic::encode_verbatim(noted_chain(256, "0")));
   constexpr std::string_view reason =
@@ -2325,4 +2490,110 @@ TEST_CASE("payloads in a recursive value count toward its nesting") {
   const auto verbatim = scrydantic::encode_verbatim(noted_chain(256, "[0]"));
   REQUIRE_FALSE(verbatim);
   CHECK(verbatim.error().message == reason);
+}
+
+namespace {
+
+// Pseudo-random strings and payloads, many of them not UTF-8 or not JSON.
+class Scramble {
+public:
+  [[nodiscard]] std::size_t pick(const std::size_t count) {
+    return static_cast<std::size_t>(random_()) % count;
+  }
+
+  [[nodiscard]] std::string text() {
+    constexpr std::array<std::string_view, 16> pieces{
+        "plain text, long enough to scan by the word ",
+        "\"",
+        "\\",
+        "\n",
+        "\x01",
+        "\x7f",
+        "caf\xc3\xa9",
+        "\xe2\x82\xac",
+        "\xf0\x9f\x98\x80",
+        "",
+        "\xff",
+        "\xc3",
+        "\xe2\x82",
+        "\xed\xa0\x80",
+        "\xc0\x80",
+        "\xf0\x9f\x98",
+    };
+    std::string built{};
+    for (std::size_t count = pick(5); count > 0; --count) {
+      // The last six pieces are not UTF-8; most strings hold none of them.
+      built += pieces[pick(pick(4) == 0 ? pieces.size() : pieces.size() - 6)];
+    }
+    return built;
+  }
+
+  // Now and then nested about as deep as the parser allows.
+  [[nodiscard]] std::string payload() {
+    const std::size_t depth = pick(8) == 0 ? 250 + pick(8) : pick(4);
+    const auto nested = std::string(depth, '[') + "1.50" + std::string(depth, ']');
+    switch (pick(6)) {
+    case 0:
+      return R"( { "b" : 1e2 , "a" : )" + nested + " } ";
+    case 1:
+      return R"({"x":)" + nested + R"(,"x":"kept"})";
+    case 2:
+      return nested + "]";
+    case 3:
+      return "\"" + text() + "\"";
+    default:
+      return nested;
+    }
+  }
+
+  [[nodiscard]] std::vector<DocBlock> blocks() {
+    std::vector<DocBlock> built{};
+    for (std::size_t count = pick(4); count > 0; --count) {
+      if (pick(2) == 0) {
+        built.emplace_back(DocText{.text = text()});
+      } else {
+        built.emplace_back(
+            DocToolResult{.result = {.text = payload()}, .tool_call_id = text()});
+      }
+    }
+    return built;
+  }
+
+private:
+  std::minstd_rand random_{20261110};
+};
+
+// Counts what the two encoders make of `value`, and fails a success whose text
+// the parser does not read.
+struct Tally {
+  std::size_t accepted{};
+  std::size_t refused{};
+
+  template <typename Type> void encode(const Type& value) {
+    for (const auto& result :
+         {scrydantic::encode(value), scrydantic::encode_verbatim(value)}) {
+      if (!result) {
+        ++refused;
+      } else if (++accepted; !scrydantic::is_valid_json(result->text)) {
+        CAPTURE(result->text);
+        FAIL_CHECK("an encoder wrote text that the parser does not read");
+      }
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("whatever the encoders write, the parser reads") {
+  // The strings and payloads stand at several depths: in the blocks of a
+  // vector, and at the end of a chain of objects.
+  Scramble scramble{};
+  Tally tally{};
+  for (int round = 0; round < 3000; ++round) {
+    tally.encode(scramble.blocks());
+    tally.encode(noted_chain(1 + scramble.pick(6), scramble.payload()));
+  }
+  // Both outcomes are common, so the loop tests what it means to.
+  CHECK(tally.accepted > 2000);
+  CHECK(tally.refused > 2000);
 }

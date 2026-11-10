@@ -10,7 +10,12 @@
 //   - canonicalization is idempotent: the canonical text writes back as itself;
 //   - every object's keys are strictly increasing and find() reaches each one;
 //   - quoting the raw input yields a JSON string that, when it parses at all,
-//     holds exactly the input, and always parses when the input is ASCII.
+//     holds exactly the input, and always parses when the input is ASCII;
+//   - the checked string writer writes that same string exactly when it parses,
+//     which is exactly when the input is UTF-8, and otherwise writes nothing;
+//   - an accepted document's canonical text is accepted inside as many open
+//     arrays and objects as its nesting leaves room for, and one more is too
+//     deep.
 
 #include "json/document.hpp"
 
@@ -23,6 +28,7 @@
 #include <cstdlib>
 #include <format>
 #include <print>
+#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
@@ -188,6 +194,36 @@ void check_quoting(const std::string_view input) {
   if (parsed ? parsed->string() != input : is_ascii(input)) {
     fail("a quoted string does not read back as itself", input);
   }
+  // Quoting passes bytes from 0x80 up through unchanged, so the quoted text
+  // parses exactly when the input is UTF-8: what the checked writer decides.
+  std::string checked{"kept"};
+  const bool written = json::append_quoted_utf8(checked, input);
+  if (written != parsed.has_value() ||
+      scrydantic::detail::is_utf8(input) != parsed.has_value()) {
+    fail("the checked string writer disagrees with the parser about UTF-8", input);
+  }
+  if (checked != (written ? "kept" + quoted : std::string{"kept"})) {
+    fail("the checked string writer wrote something other than the quoted string",
+         input);
+  }
+}
+
+// The canonical text of `document` nests exactly as deep as it does: it stands
+// inside as many open containers as that leaves room for, and no more.
+void check_depth(const json::Value& document, const std::string_view input) {
+  const auto canonical = json::write(document);
+  const auto nesting = json::nesting(document);
+  if (nesting > json::max_depth) {
+    fail("a document nests deeper than the parser accepts", input);
+  }
+  const auto room = json::max_depth - nesting;
+  if (json::diagnose(canonical, room)) {
+    fail("canonical text is refused where its nesting fits", input);
+  }
+  const auto past = json::diagnose(canonical, room + 1);
+  if (nesting == 0 ? past.has_value() : !past || past->fault != json::Fault::too_deep) {
+    fail("canonical text is not too deep one level past where it fits", input);
+  }
 }
 
 } // namespace
@@ -218,5 +254,6 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
   if (json::write(*reparsed) != canonical) {
     fail("canonicalization is not idempotent", input);
   }
+  check_depth(*parsed, input);
   return 0;
 }

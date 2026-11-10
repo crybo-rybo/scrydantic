@@ -52,6 +52,9 @@ auto message = scrydantic::decode<Message>(
 message->payload.text; // {"a":2.5,"b":1,"id":1.2345678901234569E23}
 ```
 
+Keeping the input's own text instead is tracked in
+[issue #28](https://github.com/crybo-rybo/scrydantic/issues/28).
+
 **Which members are required.** A member without a default member initializer
 must be present in the input. A member with one, even `{}`, is optional, and
 keeps its default when it is absent:

@@ -149,6 +149,80 @@ TEST_CASE("floating-point values decode from every numeric kind within range") {
         "$.floating must be a finite in-range number");
 }
 
+TEST_CASE("an integer decodes to the nearest floating-point value") {
+  // Halfway between two floats, an integer goes to the one with an even
+  // significand, and past halfway to the nearer one.
+  CHECK(decoded<float>("16777217") == 16777216.0F);
+  CHECK(decoded<float>("16777219") == 16777220.0F);
+  CHECK(decoded<float>("-16777217") == -16777216.0F);
+  CHECK(decoded<double>("9007199254740993") == 9007199254740992.0);
+  CHECK(decoded<double>("9007199254740995") == 9007199254740996.0);
+  CHECK(decoded<double>("-9007199254740993") == -9007199254740992.0);
+
+  // 2^60 + 2^36 + 1 is just past halfway between two floats, so it rounds up.
+  // Rounded to a double first it would sit exactly halfway, and round down.
+  CHECK(decoded<float>("1152921573326323713") == 0x1.000002p60F);
+  CHECK(decoded<float>("-1152921573326323713") == -0x1.000002p60F);
+
+  // The widest integers of each sign are within a float's range.
+  CHECK(decoded<float>("18446744073709551615") == 0x1p64F);
+  CHECK(decoded<float>("-9223372036854775808") == -0x1p63F);
+  CHECK(decoded<double>("-9223372036854775808") == -0x1p63);
+}
+
+TEST_CASE("a float's range ends at its largest and smallest values") {
+  // The largest float, spelled exactly and as the double it widens to.
+  CHECK(decoded<float>("340282346638528859811704183484516925440") ==
+        std::numeric_limits<float>::max());
+  CHECK(decoded<float>("3.4028234663852886e38") == std::numeric_limits<float>::max());
+  CHECK(decoded<float>("-3.4028234663852886e38") ==
+        std::numeric_limits<float>::lowest());
+  CHECK(rejection<float>("3.5e38") == "$ must be a finite in-range number");
+  CHECK(rejection<float>("-3.5e38") == "$ must be a finite in-range number");
+
+  // Its shortest text, which encoding writes, reads as a double a little above
+  // it that still rounds to it. So does every double below the midpoint of the
+  // largest float and 2^128, the value one step beyond; the midpoint and
+  // anything past it round to no float.
+  for (const float largest :
+       {std::numeric_limits<float>::max(), std::numeric_limits<float>::lowest()}) {
+    CAPTURE(largest);
+    const auto canonical = scrydantic::encode(largest);
+    const auto verbatim = scrydantic::encode_verbatim(largest);
+    REQUIRE(canonical);
+    REQUIRE(verbatim);
+    CHECK(decoded<float>(canonical->text) == largest);
+    CHECK(decoded<float>(verbatim->text) == largest);
+  }
+  CHECK(scrydantic::encode(std::numeric_limits<float>::max())->text == "3.4028235E38");
+  CHECK(decoded<float>("3.4028235e38") == std::numeric_limits<float>::max());
+  CHECK(decoded<float>("-3.4028235e38") == std::numeric_limits<float>::lowest());
+  CHECK(decoded<float>("3.4028235677973362e38") == std::numeric_limits<float>::max());
+  CHECK(rejection<float>("3.4028235677973366e38") ==
+        "$ must be a finite in-range number");
+  CHECK(rejection<float>("-3.4028235677973366e38") ==
+        "$ must be a finite in-range number");
+  CHECK(rejection<float>("3.4028236e38") == "$ must be a finite in-range number");
+  CHECK(rejection<Reading>(R"({"fixed":[1,2],"floating":3.4028236e38})") ==
+        "$.floating must be a finite in-range number");
+  const auto widest = decoded<Reading>(R"({"fixed":[1,2],"floating":3.4028235e38})");
+  REQUIRE(widest);
+  CHECK(widest->floating == std::numeric_limits<float>::max());
+
+  // The smallest subnormal float is about 1.4e-45: a number that rounds to it
+  // decodes, and one that rounds to zero does not.
+  CHECK(decoded<float>("1e-45") == std::numeric_limits<float>::denorm_min());
+  CHECK(decoded<float>("-1e-45") == -std::numeric_limits<float>::denorm_min());
+  CHECK(rejection<float>("7e-46") == "$ must be a finite in-range number");
+  CHECK(decoded<float>("0.0") == 0.0F);
+  CHECK(decoded<float>("0e-400") == 0.0F);
+
+  // A double holds whatever the parser accepts.
+  CHECK(decoded<double>("5e-324") == std::numeric_limits<double>::denorm_min());
+  CHECK(decoded<double>("-1.7976931348623157e308") ==
+        std::numeric_limits<double>::lowest());
+}
+
 TEST_CASE("fixed arrays require their exact size before their elements") {
   using Fixed = std::array<std::int32_t, 2>;
   CHECK(decoded<Fixed>("[1,2]") == Fixed{1, 2});
