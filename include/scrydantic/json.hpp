@@ -10,6 +10,10 @@
 
 namespace scrydantic {
 
+namespace detail {
+class json_node;
+} // namespace detail
+
 /// Serialized JSON boundary value.
 ///
 /// Constructing this value does not parse or validate its text. Each consuming
@@ -141,6 +145,9 @@ public:
   [[nodiscard]] Json to_json() const;
 
 private:
+  // The reflected decoder's borrowed handle on the value a view shows.
+  friend class detail::json_node;
+
   explicit JsonView(std::shared_ptr<const void> value) noexcept;
 
   // Owns the parsed document and points at this view's node within it.

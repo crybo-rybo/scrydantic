@@ -28,6 +28,10 @@
 // point that has already checked the type against a value family, so none of them
 // repeats the check.
 //
+// The decoder walks the document through json_node, the JSON core's borrowed
+// handle on a value, under the JsonView that its entry point was given: `view`
+// names the node a function reads.
+//
 // A failure does not end the decode. Each function reports what it finds through
 // its cursor and goes on to the siblings of a value that failed, so one decode
 // reports every issue until max_issues stops it. Every loop checks for that stop
@@ -40,11 +44,11 @@
 namespace scrydantic::detail {
 
 template <typename Type>
-[[nodiscard]] decode_result<Type> read_value(const JsonView& view,
+[[nodiscard]] decode_result<Type> read_value(const json_node view,
                                              const decode_cursor& here);
 
 template <typename Integer>
-[[nodiscard]] decode_result<Integer> read_integer(const JsonView& view,
+[[nodiscard]] decode_result<Integer> read_integer(const json_node view,
                                                   const decode_cursor& here) {
   const auto narrow = [&here](const auto value) -> decode_result<Integer> {
     if (!std::in_range<Integer>(value)) {
@@ -62,7 +66,7 @@ template <typename Integer>
 }
 
 template <typename Float>
-[[nodiscard]] decode_result<Float> read_float(const JsonView& view,
+[[nodiscard]] decode_result<Float> read_float(const json_node view,
                                               const decode_cursor& here) {
   // Every 64-bit integer is within the range of a float, let alone a double, so
   // an integer converts straight to the member's type: one rounding, to the
@@ -112,7 +116,7 @@ template <typename Float>
 // The enumerator names are already in the generated schema's `enum` array, so
 // repeating them in the failure keeps a retrying model from having to guess.
 template <typename Enum>
-[[nodiscard]] decode_result<Enum> read_enum(const JsonView& view,
+[[nodiscard]] decode_result<Enum> read_enum(const json_node view,
                                             const decode_cursor& here) {
   if (view.kind() != JsonKind::string) {
     return here.fail(IssueKind::wrong_type, "must be an enumerator name");
@@ -163,7 +167,7 @@ compare_exactly(const Integer integer, const double number) noexcept {
 // How the number in `view` compares with `bound`, as the parser read the number,
 // which is what the schema bounds: an integer as itself, and anything else as the
 // double that its text rounds to.
-[[nodiscard]] inline std::partial_ordering compare_parsed(const JsonView& view,
+[[nodiscard]] inline std::partial_ordering compare_parsed(const json_node view,
                                                           const double bound) noexcept {
   if (const auto integer = view.signed_integer()) {
     return compare_exactly(*integer, bound);
@@ -192,7 +196,7 @@ compare_exactly(const Integer integer, const double number) noexcept {
 template <typename Number>
 [[nodiscard]] bool
 meets_end(const Number value, const Number limit, const checked_end& end,
-          [[maybe_unused]] const JsonView& view, const decode_cursor& here) {
+          [[maybe_unused]] const json_node view, const decode_cursor& here) {
   if constexpr (std::floating_point<Number>) {
     if (!within(compare_parsed(view, static_cast<double>(limit)), end)) {
       here.report(IssueKind::violated_constraint, end.reason);
@@ -210,7 +214,7 @@ meets_end(const Number value, const Number limit, const checked_end& end,
 }
 
 template <std::meta::info Constraint, typename Number>
-[[nodiscard]] bool meets_range(const Number value, const JsonView& view,
+[[nodiscard]] bool meets_range(const Number value, const json_node view,
                                const decode_cursor& here) {
   constexpr checked_range limits = checked_range_of(Constraint, ^^Number);
   if constexpr (limits.lower.present) {
@@ -247,7 +251,7 @@ template <std::meta::info Constraint, typename Number>
 
 // Whether the number in `view`, as the parser read it, is a multiple of
 // `factor`. For a double, fmod is exact.
-[[nodiscard]] inline bool is_parsed_multiple(const JsonView& view,
+[[nodiscard]] inline bool is_parsed_multiple(const json_node view,
                                              const checked_multiple& multiple,
                                              const double factor) noexcept {
   if (const auto integer = view.signed_integer()) {
@@ -267,7 +271,7 @@ template <std::meta::info Constraint, typename Number>
 // read the number and then as converted, as meets_end explains.
 template <std::meta::info Constraint, typename Number>
 [[nodiscard]] bool meets_multiple(const Number value,
-                                  [[maybe_unused]] const JsonView& view,
+                                  [[maybe_unused]] const json_node view,
                                   const decode_cursor& here) {
   constexpr checked_multiple multiple = checked_multiple_of(Constraint, ^^Number);
   constexpr auto factor = bound_value<Number>(multiple.value);
@@ -307,7 +311,7 @@ template <std::meta::info Constraint>
 
 // `view` is the JSON value that `value` decoded from.
 template <std::meta::info Constraint, typename Value>
-[[nodiscard]] bool meets(const Value& value, const JsonView& view,
+[[nodiscard]] bool meets(const Value& value, const json_node view,
                          const decode_cursor& here) {
   if constexpr (annotation_matches(Constraint, ^^range)) {
     return meets_range<Constraint>(value, view, here);
@@ -341,7 +345,7 @@ template <std::meta::info Entity, typename Value>
 // optional and an indirect as constrained_type() does, so the validators take the
 // value they own; a decoded indirect always owns one.
 template <std::meta::info Member, typename Value>
-[[nodiscard]] bool accepts_member(const Value& value, const JsonView& view,
+[[nodiscard]] bool accepts_member(const Value& value, const json_node view,
                                   const decode_cursor& here) {
   if constexpr (kind_of(^^Value) == value_kind::optional) {
     return !value.has_value() || accepts_member<Member>(*value, view, here);
@@ -375,12 +379,12 @@ template <typename Type>
 // returns false if there was one. Tagged is true when the object is a variant
 // alternative, whose discriminator member the variant has already read.
 template <typename Type, bool Tagged>
-[[nodiscard]] bool report_unknown_keys(const JsonView& view,
+[[nodiscard]] bool report_unknown_keys(const json_node view,
                                        const decode_cursor& here) {
   bool known = true;
-  // key_at cannot be empty here: the view is an object and index is in range.
-  for (std::size_t index = 0; index < view.size() && !here.stopped(); ++index) {
-    const auto key = *view.key_at(index);
+  const std::size_t size = view.size();
+  for (std::size_t index = 0; index < size && !here.stopped(); ++index) {
+    const auto key = view.key_at(index);
     if ((!Tagged || key != tag_key) && !is_declared_key<Type>(key)) {
       std::string reason{"contains unknown member "};
       append_json_string(reason, key);
@@ -396,20 +400,20 @@ template <typename Type, bool Tagged>
 // required and absent. A member that keeps its default is the program's own
 // value, so it is not checked.
 template <typename Type, std::meta::info Member>
-[[nodiscard]] bool read_member(Type& object, const JsonView& view,
+[[nodiscard]] bool read_member(Type& object, const json_node view,
                                const decode_cursor& parent) {
   constexpr field_layout field = field_of(^^Type, Member);
   constexpr std::string_view key = field.key_view();
   using Value = std::remove_cv_t<typename[:std::meta::type_of(Member):]>;
   const decode_cursor here = parent.member(key);
   if (const auto found = view.find(key)) {
-    auto decoded = read_value<Value>(*found, here);
+    auto decoded = read_value<Value>(found, here);
     if (!decoded) {
       return false;
     }
     if constexpr (!checked_constraints_v<Member>.empty() ||
                   !validators_v<Member>.empty()) {
-      if (!accepts_member<Member>(*decoded, *found, here)) {
+      if (!accepts_member<Member>(*decoded, found, here)) {
         return false;
       }
     }
@@ -427,7 +431,7 @@ template <typename Type, std::meta::info Member>
 // validators run last, and see only an object whose every member is valid; in a
 // recursive model each level's run once the levels inside it have passed theirs.
 template <typename Type, bool Tagged>
-[[nodiscard]] bool read_object(Type& object, const JsonView& view,
+[[nodiscard]] bool read_object(Type& object, const json_node view,
                                const decode_cursor& here) {
   if (view.kind() != JsonKind::object) {
     here.report(IssueKind::wrong_type, "must be an object");
@@ -453,7 +457,7 @@ template <typename Type, bool Tagged>
 // would copy-initialize a member without an initializer from `{}`, which
 // std::indirect's explicit default constructor does not allow.
 template <typename Type, bool Tagged>
-[[nodiscard]] decode_result<Type> read_in_place(const JsonView& view,
+[[nodiscard]] decode_result<Type> read_in_place(const json_node view,
                                                 const decode_cursor& here) {
   Type value = Type();
   if (!read_object<Type, Tagged>(value, view, here)) {
@@ -467,7 +471,7 @@ template <typename Type, bool Tagged>
 // tag selects rather than read in place, which would default-construct its
 // first alternative only to replace it, so it builds its failures itself.
 template <typename Variant>
-[[nodiscard]] decode_result<Variant> read_variant(const JsonView& view,
+[[nodiscard]] decode_result<Variant> read_variant(const json_node view,
                                                   const decode_cursor& here) {
   static constexpr std::string_view tags = tag_names(^^Variant);
   if (view.kind() != JsonKind::object) {
@@ -476,14 +480,14 @@ template <typename Variant>
   }
   const decode_cursor tag = here.member(tag_key);
   const auto discriminator = view.find(tag_key);
-  if (!discriminator.has_value()) {
+  if (!discriminator) {
     tag.report(IssueKind::missing_tag,
                std::string{"is a required member; must be one of: "} +
                    std::string{tags});
     return decode_failed<Variant>();
   }
 
-  const auto selected = discriminator->string();
+  const auto selected = discriminator.string();
   template for (constexpr std::meta::info alternative : alternatives_v<Variant>) {
     using Alternative = typename[:alternative:];
     if (selected == *tag_of(alternative)) {
@@ -499,7 +503,7 @@ template <typename Variant>
 }
 
 template <typename Optional>
-[[nodiscard]] decode_result<Optional> read_optional(const JsonView& view,
+[[nodiscard]] decode_result<Optional> read_optional(const json_node view,
                                                     const decode_cursor& here) {
   if (view.kind() == JsonKind::null) {
     return Optional{std::nullopt};
@@ -511,7 +515,7 @@ template <typename Optional>
 }
 
 template <typename Indirect>
-[[nodiscard]] decode_result<Indirect> read_indirect(const JsonView& view,
+[[nodiscard]] decode_result<Indirect> read_indirect(const json_node view,
                                                     const decode_cursor& here) {
   using Owned = typename Indirect::value_type;
   return read_value<Owned>(view, here).transform([](Owned&& value) {
@@ -520,16 +524,17 @@ template <typename Indirect>
 }
 
 template <typename Vector>
-[[nodiscard]] decode_result<Vector> read_vector(const JsonView& view,
+[[nodiscard]] decode_result<Vector> read_vector(const json_node view,
                                                 const decode_cursor& here) {
   if (view.kind() != JsonKind::array) {
     return here.fail(IssueKind::wrong_type, "must be an array");
   }
   Vector values{};
-  values.reserve(view.size());
+  const std::size_t size = view.size();
+  values.reserve(size);
   bool valid = true;
-  for (std::size_t index = 0; index < view.size() && !here.stopped(); ++index) {
-    if (auto decoded = read_value<typename Vector::value_type>(*view.at(index),
+  for (std::size_t index = 0; index < size && !here.stopped(); ++index) {
+    if (auto decoded = read_value<typename Vector::value_type>(view.at(index),
                                                                here.element(index))) {
       values.push_back(std::move(*decoded));
     } else {
@@ -543,7 +548,7 @@ template <typename Vector>
 }
 
 template <typename Array>
-[[nodiscard]] decode_result<Array> read_array(const JsonView& view,
+[[nodiscard]] decode_result<Array> read_array(const json_node view,
                                               const decode_cursor& here) {
   constexpr std::string_view reason = "must be an array of the declared fixed size";
   // Value-initialized for the reason read_in_place's value is.
@@ -556,7 +561,7 @@ template <typename Array>
   }
   bool valid = true;
   for (std::size_t index = 0; index < values.size() && !here.stopped(); ++index) {
-    if (auto decoded = read_value<typename Array::value_type>(*view.at(index),
+    if (auto decoded = read_value<typename Array::value_type>(view.at(index),
                                                               here.element(index))) {
       values[index] = std::move(*decoded);
     } else {
@@ -571,7 +576,7 @@ template <typename Array>
 
 // Booleans, strings, and raw JSON: the leaves that need no numeric range.
 template <typename Type>
-[[nodiscard]] decode_result<Type> read_plain_leaf(const JsonView& view,
+[[nodiscard]] decode_result<Type> read_plain_leaf(const json_node view,
                                                   const decode_cursor& here) {
   if constexpr (std::same_as<Type, bool>) {
     if (view.kind() != JsonKind::boolean) {
@@ -589,7 +594,7 @@ template <typename Type>
 }
 
 template <typename Type>
-decode_result<Type> read_value(const JsonView& view, const decode_cursor& here) {
+decode_result<Type> read_value(const json_node view, const decode_cursor& here) {
   constexpr auto kind = kind_of(^^Type);
   if constexpr (kind == value_kind::integer) {
     return read_integer<Type>(view, here);
@@ -618,7 +623,7 @@ decode_result<Type> read_value(const JsonView& view, const decode_cursor& here) 
 // a schema-derived model_message.
 template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view) {
   decode_report report{};
-  return read_value<Type>(view, decode_cursor{report})
+  return read_value<Type>(json_node{view}, decode_cursor{report})
       .transform_error(
           [&report](decode_failure) { return decode_error(std::move(report)); });
 }

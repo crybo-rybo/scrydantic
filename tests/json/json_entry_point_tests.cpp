@@ -365,3 +365,90 @@ TEST_CASE("a string is written only when the parser would read it back") {
     }
   }
 }
+
+namespace {
+
+// Walks `view` and `node` together: the node must read, at every value under
+// it, what the view reads there.
+void check_same_value(const JsonView& view, const core::json_node node) {
+  REQUIRE(node);
+  REQUIRE(node.kind() == view.kind());
+  CHECK(node.boolean() == view.boolean());
+  CHECK(node.signed_integer() == view.signed_integer());
+  CHECK(node.unsigned_integer() == view.unsigned_integer());
+  CHECK(node.number() == view.number());
+  CHECK(node.string() == view.string());
+  CHECK(node.to_json().text == view.to_json().text);
+  REQUIRE(node.size() == view.size());
+  for (std::size_t index = 0; index < view.size(); ++index) {
+    if (view.kind() == scrydantic::JsonKind::array) {
+      check_same_value(*view.at(index), node.at(index));
+    } else {
+      const auto key = *view.key_at(index);
+      REQUIRE(node.key_at(index) == key);
+      check_same_value(*view.find(key), node.find(key));
+    }
+  }
+}
+
+} // namespace
+
+TEST_CASE("a borrowed node reads what its view reads") {
+  for (const std::string_view text : {
+           "null",
+           "true",
+           "-7",
+           "18446744073709551615",
+           "-0",
+           "1.5e300",
+           R"("text with \"escapes\" and caf\u00e9")",
+           "[]",
+           "{}",
+           R"([1,[2,[3,{"deep":[null,false]}]],"x"])",
+           R"({"b":{"z":1,"a":[true,{"k":"v"}]},"a":-2.5,"dup":1,"dup":{"kept":[]}})",
+       }) {
+    CAPTURE(text);
+    const auto view = JsonView::parse(text);
+    REQUIRE(view);
+    check_same_value(*view, core::json_node{*view});
+  }
+}
+
+TEST_CASE("a borrowed node finds no value where its view finds none") {
+  const auto view = JsonView::parse(R"({"a":[1,2],"b":"text"})");
+  REQUIRE(view);
+  const core::json_node node{*view};
+  CHECK_FALSE(node.find("c"));
+  CHECK_FALSE(node.find(""));
+  CHECK_FALSE(node.find("aa"));
+  // Only an object has members.
+  CHECK_FALSE(node.find("a").find("0"));
+  CHECK_FALSE(node.find("b").find("text"));
+  CHECK(node.find("a").size() == 2);
+  CHECK(node.find("b").size() == 0);
+}
+
+TEST_CASE("a borrowed node of an empty view is a null") {
+  const core::json_node node{JsonView{}};
+  REQUIRE(node);
+  CHECK(node.kind() == scrydantic::JsonKind::null);
+  CHECK_FALSE(node.boolean());
+  CHECK_FALSE(node.number());
+  CHECK_FALSE(node.string());
+  CHECK(node.size() == 0);
+  CHECK_FALSE(node.find("key"));
+  CHECK(node.to_json().text == "null");
+}
+
+TEST_CASE("a borrowed node outlives the view it came from while another view lives") {
+  const auto document = JsonView::parse(R"({"outer":{"inner":["kept"]}})");
+  REQUIRE(document);
+  const auto node = [&] {
+    // A child view shares the document; the node borrowed from it stays valid
+    // for as long as `document` keeps the document alive.
+    const auto outer = *document->find("outer");
+    return core::json_node{outer}.find("inner");
+  }();
+  REQUIRE(node);
+  CHECK(node.at(0).string() == "kept");
+}

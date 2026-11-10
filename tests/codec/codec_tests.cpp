@@ -1171,6 +1171,42 @@ TEST_CASE("public decoding reports path-based messages") {
         "$ is not a declared enumerator; must be one of: user, assistant");
 }
 
+TEST_CASE("decode() reads the value its view shows and owns what it returns") {
+  // A child view decodes the value it shows, not the document's root.
+  const auto document = scrydantic::JsonView::parse(
+      R"({"items":[{"a_first":"first"},{"a_first":"second","max_tokens":7}]})");
+  REQUIRE(document);
+  const auto second = scrydantic::decode<Renamed>(*document->find("items")->at(1));
+  REQUIRE(second);
+  CHECK(second->zed == "second");
+  CHECK(second->limit == 7U);
+  const auto items = scrydantic::decode<std::vector<Renamed>>(*document->find("items"));
+  REQUIRE(items);
+  REQUIRE(items->size() == 2);
+  CHECK(items->front().zed == "first");
+
+  // The decoded value keeps nothing of the document: the only view of this one
+  // is gone before the value is read. Both strings are too long for the
+  // small-string buffer, so a borrowed one would read freed memory.
+  const auto owned = scrydantic::decode<std::vector<std::string>>(
+      *scrydantic::JsonView::parse(R"(["a string longer than the small buffer"])"));
+  REQUIRE(owned);
+  CHECK(owned->front() == "a string longer than the small buffer");
+  const auto payload =
+      scrydantic::decode<scrydantic::Json>(*scrydantic::JsonView::parse(
+          R"( { "key" : "a string longer than the small buffer" } )"));
+  REQUIRE(payload);
+  CHECK(payload->text == R"({"key":"a string longer than the small buffer"})");
+
+  // An empty view shows a null.
+  const scrydantic::JsonView empty{};
+  CHECK(scrydantic::decode<std::optional<std::int32_t>>(empty).value() == std::nullopt);
+  CHECK(scrydantic::decode<scrydantic::Json>(empty).value().text == "null");
+  const auto refused = scrydantic::decode<Renamed>(empty);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().message == "$ must be an object");
+}
+
 TEST_CASE("encoding reports a valueless variant instead of throwing") {
   struct ThrowingText {
     // NOLINTNEXTLINE(google-explicit-constructor): the conversion is the point.

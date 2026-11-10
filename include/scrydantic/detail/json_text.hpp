@@ -2,16 +2,18 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
 
-// The JSON core's text operations that the header-only reflected codec calls
-// across the compiled boundary, besides the public is_valid_json(), and the one
-// definition of well-formed UTF-8 that the core and the codec share. They are not
-// part of the stable API. The document type behind them stays inside
-// src/json/document.hpp, which states what is accepted and how canonical text is
-// written; outside the core, parsed JSON is read through the public JsonView.
+// What the header-only reflected codec calls across the compiled boundary of the
+// JSON core, besides the public API: its text operations, a borrowed handle on a
+// parsed value, and the one definition of well-formed UTF-8 that the core and the
+// codec share. None of it is part of the stable API. The document type behind it
+// stays inside src/json/document.hpp, which states what is accepted and how
+// canonical text is written; outside the core and the codec, parsed JSON is read
+// through the public JsonView.
 namespace scrydantic::detail {
 
 // The deepest nesting of arrays and objects the parser accepts, counting an
@@ -137,6 +139,46 @@ enum class json_validity : std::uint8_t {
 // escape_json_string() spells it. False, with `output` unchanged, when `text` is
 // not UTF-8, which no JSON string holds.
 [[nodiscard]] bool append_utf8_json_string(std::string& output, std::string_view text);
+
+// One value of a parsed document, borrowed: what a JsonView shows, without a
+// share in the document's ownership. A JsonView is a std::shared_ptr, so reading
+// a document through views costs two atomic operations for every value visited;
+// the reflected decoder walks nodes instead, under the view it was given.
+//
+// A node is valid for as long as any JsonView into its document is. find()
+// returns a node with no value for a member that is absent, which converts to
+// false; every other function requires a value.
+class json_node {
+public:
+  // The value `view` shows; a default-constructed view shows a null.
+  explicit json_node(const JsonView& view) noexcept;
+
+  [[nodiscard]] explicit operator bool() const noexcept { return value_ != nullptr; }
+
+  // As JsonView's accessors of the same names.
+  [[nodiscard]] JsonKind kind() const noexcept;
+  [[nodiscard]] std::optional<bool> boolean() const noexcept;
+  [[nodiscard]] std::optional<std::int64_t> signed_integer() const noexcept;
+  [[nodiscard]] std::optional<std::uint64_t> unsigned_integer() const noexcept;
+  [[nodiscard]] std::optional<double> number() const noexcept;
+  [[nodiscard]] std::optional<std::string_view> string() const noexcept;
+  [[nodiscard]] std::size_t size() const noexcept;
+  [[nodiscard]] json_node find(std::string_view name) const noexcept;
+  [[nodiscard]] Json to_json() const;
+
+  // An array's element. Requires an array and an index below its size().
+  [[nodiscard]] json_node at(std::size_t index) const noexcept;
+
+  // An object's key, in lexical order. Requires an object and an index below
+  // its size().
+  [[nodiscard]] std::string_view key_at(std::size_t index) const noexcept;
+
+private:
+  explicit json_node(const void* const value) noexcept : value_{value} {}
+
+  // The document's node, type-erased as JsonView's is.
+  const void* value_{};
+};
 
 // format_json_number(), appended to `output` in place: the shortest round-trip
 // digits, as std::to_chars writes them, but laid out positionally for decimal
