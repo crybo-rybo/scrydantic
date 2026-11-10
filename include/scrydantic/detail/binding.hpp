@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <meta>
+#include <scrydantic/bound_tool.hpp>
 #include <scrydantic/codec.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
@@ -27,11 +28,8 @@
 // generated schema plus a handler that decodes the arguments strictly, calls the
 // C++ function, and encodes what it returns.
 //
-// This is the implementation of tools.hpp, and it builds the public types
-// declared there: ToolFunction, BoundTool, and ToolDescriptor. tools.hpp declares
-// them before it includes this header, so that each public type and its
-// documentation are in the public header, and this header compiles only as part
-// of tools.hpp.
+// This is the implementation of tools.hpp. It builds the public types that
+// bound_tool.hpp declares: ToolFunction, BoundTool, and ToolDescriptor.
 namespace scrydantic::detail {
 
 template <typename Return>

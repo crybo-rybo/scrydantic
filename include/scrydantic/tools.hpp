@@ -13,7 +13,9 @@
 #include <meta>
 #include <numeric>
 #include <scrydantic/annotations.hpp>
+#include <scrydantic/bound_tool.hpp>
 #include <scrydantic/codec.hpp>
+#include <scrydantic/detail/binding.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/tools.hpp>
 #include <scrydantic/error.hpp>
@@ -28,7 +30,9 @@
 /// Reflected tools: functions, namespaces, and toolbox classes annotated with
 /// scrydantic::tool become tool contracts (name, description, generated input
 /// schema) and handlers that decode their arguments strictly, call the C++
-/// function, and encode what it returns.
+/// function, and encode what it returns. <scrydantic/bound_tool.hpp>, which
+/// this header includes, declares what a binding produces: BoundTool, its
+/// ToolFunction handler, and ToolDescriptor.
 ///
 /// A binding may give its tools a call context: a type of the host's choosing that
 /// a tool function or handler receives by const reference as its leading
@@ -75,50 +79,6 @@ concept ToolHandlerFor = ToolArguments<Args> &&
 template <typename Type, typename Context = void>
 concept Toolbox = detail::toolbox_problem(^^Type, ^^Context).empty();
 
-/// Move-only type-erased handler of one bound tool.
-///
-/// It receives the canonical JSON argument object, preceded by a `const
-/// Context&` when `Context` is not void, and returns the JSON result, encoded as
-/// encode_verbatim() encodes it: valid JSON with keys in canonical order, and
-/// spliced `Json` payloads byte for byte. A failure is an Error of one of three
-/// kinds. Arguments that fail to decode, including a validator's rejection, list
-/// their issues in `issues` and describe them in `model_message`. A refusal is the
-/// Error the tool returned, unchanged; one from tool_error() has empty `issues` and
-/// the tool's text for the model in `model_message`. A result that cannot be JSON,
-/// such as a string holding invalid UTF-8 or a NaN, is a host-side failure with
-/// empty `issues` and `model_message` and the reason in `message`. A tool that
-/// returns an Error with issues of its own, or with no model text, therefore reads
-/// as the first or the last kind.
-/// @tparam Context Call context passed to every invocation, or void for none.
-template <typename Context = void>
-using ToolFunction = typename detail::tool_function<Context>::type;
-
-/// One tool ready to list and call: its contract and its handler.
-/// @tparam Context Call context its handler receives, or void for none.
-template <typename Context = void> struct BoundTool {
-  /// Tool name the model sees.
-  std::string name{};
-  /// Tool description the model sees.
-  std::string description{};
-  /// Generated JSON Schema of the tool's argument object.
-  Json input_schema{};
-  /// Handler that decodes the arguments strictly, calls the C++ function, and
-  /// encodes what it returns.
-  ToolFunction<Context> invoke{};
-};
-
-/// One tool's contract without a handler, for hosts that only publish schemas.
-///
-/// Every view points at static storage, so a descriptor outlives any binding.
-struct ToolDescriptor {
-  /// Tool name the model sees.
-  std::string_view name{};
-  /// Tool description the model sees.
-  std::string_view description{};
-  /// Generated JSON Schema of the tool's argument object.
-  std::string_view input_schema{};
-};
-
 /// Reflects the tools bind<^^Entity, Context>() binds: the tool functions a
 /// namespace declares before the point of evaluation, or the one function.
 ///
@@ -156,14 +116,6 @@ consteval std::meta::info toolbox_tools_of(const std::meta::info type,
   return detail::tool_set_of(detail::tool_functions_of(detail::plain_type(type)),
                              context);
 }
-
-} // namespace scrydantic
-
-// The entry points below call into detail/binding.hpp, which builds the types
-// declared above, so it is included after them.
-#include <scrydantic/detail/binding.hpp>
-
-namespace scrydantic {
 
 /// Binds a callable whose arguments are a reflected aggregate.
 ///

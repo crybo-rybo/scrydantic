@@ -620,9 +620,9 @@ consteval std::string_view toolbox_diagnostic() {
   return unsatisfied(display(^^Type), "Toolbox", toolbox_problem(^^Type, ^^Context));
 }
 
-// The type-erased handler that ToolFunction<Context> names. It is here rather
-// than in binding.hpp because tools.hpp declares ToolFunction before it includes
-// binding.hpp, which uses it.
+// The type-erased handler that ToolFunction<Context> names in bound_tool.hpp. A
+// trait rather than a conditional type, because a handler type that took a
+// `const void&` could not even be named.
 template <typename Context> struct tool_function {
   using type = std::move_only_function<Result<Json>(const Context&, Json)>;
 };

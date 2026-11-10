@@ -5,6 +5,7 @@
 /// Scrydantic header.
 
 #include <scrydantic/annotations.hpp>
+#include <scrydantic/bound_tool.hpp>
 #include <scrydantic/codec.hpp>
 #include <scrydantic/diagnostics.hpp>
 #include <scrydantic/error.hpp>

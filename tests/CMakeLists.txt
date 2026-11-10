@@ -51,13 +51,8 @@ set_target_properties(
   PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
 )
 target_compile_options(scrydantic_json_header_checks PRIVATE -Werror=c++26-extensions)
-# Every header but detail/binding.hpp: it builds the tool types that tools.hpp
-# declares, and tools.hpp includes it after them, so it compiles only as part of
-# tools.hpp.
-set(SCRYDANTIC_STANDALONE_HEADERS ${SCRYDANTIC_PUBLIC_HEADERS})
-list(REMOVE_ITEM SCRYDANTIC_STANDALONE_HEADERS include/scrydantic/detail/binding.hpp)
 scrydantic_add_header_checks(
-  scrydantic_header_checks scrydantic::scrydantic ${SCRYDANTIC_STANDALONE_HEADERS}
+  scrydantic_header_checks scrydantic::scrydantic ${SCRYDANTIC_PUBLIC_HEADERS}
 )
 
 # The JSON core's own tests, compiled as C++23 like the core itself. They reach
