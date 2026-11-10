@@ -32,8 +32,8 @@ Result<JsonView> JsonView::parse(const std::string_view text) {
   auto document = detail::json::parse(text);
   if (!document) {
     // A fixed phrase and a position in the input: nothing a model may not see.
-    auto message = "JSON text is not valid: " +
-                   detail::json::describe(text, document.error());
+    auto message =
+        "JSON text is not valid: " + detail::json::describe(text, document.error());
     return std::unexpected(
         Error{.message = message, .model_message = std::move(message)});
   }
