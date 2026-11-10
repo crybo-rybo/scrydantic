@@ -47,8 +47,8 @@ digits:
 ```cpp
 struct Message { scrydantic::Json payload; };
 
-auto message = scrydantic::decode<Message>(scrydantic::Json{
-    .text = R"({"payload":{"id":123456789012345678901234,"b":1,"a":2.50}})"});
+auto message = scrydantic::decode<Message>(
+    R"({"payload":{"id":123456789012345678901234,"b":1,"a":2.50}})");
 message->payload.text; // {"a":2.5,"b":1,"id":1.2345678901234569E23}
 ```
 
@@ -221,7 +221,7 @@ The message says why and where reading stopped. Lines and columns count from
 1, and a column counts characters (code points), not bytes:
 
 ```cpp
-auto broken = scrydantic::decode<Reading>(scrydantic::Json{.text = R"({"degrees" 3})"});
+auto broken = scrydantic::decode<Reading>(R"({"degrees" 3})");
 broken.error().message;
 // JSON text is not valid JSON: expected ':' at line 1, column 12
 ```
