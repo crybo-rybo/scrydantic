@@ -305,7 +305,8 @@ template <typename Toolbox, typename Context = void,
 /// rename one under the index, and invoke() is the way to call one. invoke() is
 /// not const, because a handler may change state of its own, such as a
 /// toolbox's. A set is move-only, as its handlers are, and moving it keeps its
-/// index.
+/// index. To add or remove tools, take them back with release() and make a new
+/// set.
 /// @tparam Context Call context every tool's handler receives, or void for none.
 template <typename Context = void> class ToolSet {
 public:
@@ -325,16 +326,23 @@ public:
   /// Gathers tools, typically the concatenated results of bind() calls, into a
   /// set.
   ///
-  /// It fails when two tools share a name, with an Error whose `message` names
-  /// one such name, such as `two tools are named "count"`, as a JSON string
-  /// literal, and whose `model_message` is empty: the model has not been given
-  /// the tools yet, and could not act on a fault of the host's.
+  /// It fails when a tool has no handler, as a BoundTool built by hand without
+  /// an `invoke` has none, or when two tools share a name. The Error's `message`
+  /// names one such tool, as a JSON string literal, such as `tool "count" has no
+  /// handler` or `two tools are named "count"`, and its `model_message` is
+  /// empty: the model has not been given the tools yet, and could not act on a
+  /// fault of the host's.
   /// @param tools Tools to own, in the order to list them. A failure destroys
   /// them.
-  /// @return The set, or the duplicate-name error.
+  /// @return The set, or the error that names the tool it refused.
   [[nodiscard]] static Result<ToolSet> make(std::vector<BoundTool<Context>> tools) {
     ToolSet set{};
     set.tools_ = std::move(tools);
+    const auto unhandled = std::ranges::find_if(
+        set.tools_, [](const BoundTool<Context>& tool) { return !tool.invoke; });
+    if (unhandled != set.tools_.end()) {
+      return std::unexpected(detail::missing_handler_error(unhandled->name));
+    }
     set.by_name_.resize(set.tools_.size());
     std::iota(set.by_name_.begin(), set.by_name_.end(), std::size_t{0});
     std::ranges::sort(set.by_name_, {}, set.name_at());
@@ -360,8 +368,10 @@ public:
   /// A name the set does not hold fails with a tool_error() that tells the model
   /// which names it does, such as `unknown tool "fly"; known tools: eat, look`:
   /// the requested name as a JSON string literal, as a decode echoes an unknown
-  /// member, and the known names in set order. An empty set answers `unknown
-  /// tool "fly"; there are no tools`. Any other result, failure included, is the
+  /// member, and the known names in set order. A known name that is not ASCII
+  /// letters, digits, `_`, `-`, and `.` alone is a JSON string literal too, so
+  /// that one holding `, ` reads as one name. An empty set answers `unknown tool
+  /// "fly"; there are no tools`. Any other result, failure included, is the
   /// tool's own.
   /// @param name Tool name the model called.
   /// @param arguments JSON argument object the model supplied.
@@ -400,6 +410,14 @@ public:
   /// @return Every tool, in the order make() was given them.
   [[nodiscard]] std::span<const BoundTool<Context>> tools() const noexcept {
     return tools_;
+  }
+
+  /// Gives the tools back, leaving the set empty, so that a host can add to
+  /// them or drop some and make() a set again.
+  /// @return Every tool, in the order make() was given them.
+  [[nodiscard]] std::vector<BoundTool<Context>> release() noexcept {
+    by_name_.clear();
+    return std::exchange(tools_, {});
   }
 
 private:

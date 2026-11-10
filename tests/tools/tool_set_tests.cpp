@@ -77,6 +77,16 @@ joined(std::vector<scrydantic::BoundTool<Context>> first,
   return first;
 }
 
+// A tool built by hand, which answers its own name.
+[[nodiscard]] scrydantic::BoundTool<> named(std::string name) {
+  scrydantic::BoundTool<> tool{.name = name};
+  tool.invoke = [name = std::move(name)](
+                    const scrydantic::Json&) -> scrydantic::Result<scrydantic::Json> {
+    return scrydantic::Json{.text = scrydantic::escape_json_string(name)};
+  };
+  return tool;
+}
+
 [[nodiscard]] scrydantic::ToolSet<> room_set() {
   auto set = scrydantic::ToolSet<>::make(scrydantic::bind<^^room_tools>());
   REQUIRE(set);
@@ -117,6 +127,8 @@ static_assert(
     invocable_by_name<scrydantic::ToolSet<Session>, const Session&, scrydantic::Json>);
 static_assert(!invocable_by_name<scrydantic::ToolSet<Session>, scrydantic::Json>);
 static_assert(!invocable_by_name<const scrydantic::ToolSet<>, scrydantic::Json>);
+// Giving the tools back cannot fail part way and lose them.
+static_assert(noexcept(std::declval<scrydantic::ToolSet<Session>&>().release()));
 
 TEST_CASE("a tool set keeps its tools in the order it was given them") {
   auto set = scrydantic::ToolSet<>::make(joined(
@@ -211,6 +223,66 @@ TEST_CASE("a tool set refuses two tools of one name") {
   CHECK(set.error().message == R"(two tools are named "eat")");
   CHECK(set.error().model_message.empty());
   CHECK(set.error().issues.empty());
+}
+
+TEST_CASE("a tool set refuses a tool that has no handler") {
+  // Calling an empty handler is undefined behavior, so the fault is reported
+  // when the set is made, not when a model first calls the tool.
+  std::vector<scrydantic::BoundTool<>> tools{};
+  tools.push_back(named("look"));
+  tools.push_back(scrydantic::BoundTool<>{.name = "ghost"});
+  const auto set = scrydantic::ToolSet<>::make(std::move(tools));
+
+  REQUIRE_FALSE(set);
+  CHECK(set.error().message == R"(tool "ghost" has no handler)");
+  CHECK(set.error().model_message.empty());
+  CHECK(set.error().issues.empty());
+}
+
+TEST_CASE("a tool set spells a known name that is not one plain word as a string") {
+  std::vector<scrydantic::BoundTool<>> tools{};
+  for (const std::string_view name : {"get-weather", "fs.read_file", "list, delete",
+                                      "say \"hi\"", "m\xC3\xA9t\xC3\xA9o", ""}) {
+    tools.push_back(named(std::string{name}));
+  }
+  auto set = scrydantic::ToolSet<>::make(std::move(tools));
+  REQUIRE(set);
+
+  const auto unknown = set->invoke("fly", json("{}"));
+  REQUIRE_FALSE(unknown);
+  CHECK(unknown.error().model_message ==
+        "unknown tool \"fly\"; known tools: get-weather, fs.read_file, "
+        "\"list, delete\", \"say \\\"hi\\\"\", \"m\xC3\xA9t\xC3\xA9o\", \"\"");
+
+  // A quoted name is still looked up as the tool's own.
+  const auto called = set->invoke("list, delete", json("{}"));
+  REQUIRE(called);
+  CHECK(called->text == R"("list, delete")");
+}
+
+TEST_CASE("a tool set gives its tools back to be changed") {
+  auto set = room_set();
+
+  auto tools = set.release();
+  CHECK(set.tools().empty());
+  CHECK(set.find("eat") == nullptr);
+  CHECK(set.invoke("eat", json("{}")).error().model_message ==
+        R"(unknown tool "eat"; there are no tools)");
+  REQUIRE(tools.size() == 3);
+  CHECK(tools[0].name == "look");
+
+  std::erase_if(tools, [](const auto& tool) { return tool.name == "eat"; });
+  tools.push_back(named("sleep"));
+  auto changed = scrydantic::ToolSet<>::make(std::move(tools));
+  REQUIRE(changed);
+  CHECK(names_of(*changed) == std::vector<std::string>{"look", "walk", "sleep"});
+  CHECK(changed->find("eat") == nullptr);
+  const auto slept = changed->invoke("sleep", json("{}"));
+  REQUIRE(slept);
+  CHECK(slept->text == R"("sleep")");
+  const auto walked = changed->invoke("walk", json(R"({"steps":2})"));
+  REQUIRE(walked);
+  CHECK(walked->text == "2");
 }
 
 TEST_CASE("a tool set passes its call context through") {
