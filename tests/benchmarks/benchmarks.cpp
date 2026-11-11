@@ -143,10 +143,10 @@ TEST_CASE("reflected codec", "[codec]") {
 }
 
 TEST_CASE("bound tool calls", "[tools]") {
-  auto tools = scrydantic::bind<^^bench_tools>();
+  const auto tools = scrydantic::bind<^^bench_tools>();
   REQUIRE(tools.size() == 2);
-  auto& add = tools[0].invoke;
-  auto& reverse = tools[1].invoke;
+  const auto& add = tools[0].invoke;
+  const auto& reverse = tools[1].invoke;
   BENCHMARK("synthesized arguments") {
     return add(scrydantic::Json{.text = R"({"left":40,"right":2})"});
   };

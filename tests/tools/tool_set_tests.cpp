@@ -1,13 +1,18 @@
 // Tool sets: bound tools gathered under unique names, looked up and called by
 // name, with the refusal a model receives for a name it was not given.
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <memory>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -62,6 +67,9 @@ public:
 private:
   std::int64_t total_{};
 };
+
+// The argument object of a tool that takes none.
+struct NoArguments {};
 
 [[nodiscard]] scrydantic::Json json(std::string text) {
   return scrydantic::Json{.text = std::move(text)};
@@ -119,14 +127,17 @@ static_assert(!std::is_copy_assignable_v<scrydantic::ToolSet<>>);
 static_assert(std::is_nothrow_move_constructible_v<scrydantic::ToolSet<Session>>);
 static_assert(std::is_nothrow_move_assignable_v<scrydantic::ToolSet<Session>>);
 // A set calls its tools with exactly the context they take, and a const set
-// only lends them out.
+// calls them as well as a mutable one does.
 static_assert(invocable_by_name<scrydantic::ToolSet<>, scrydantic::Json>);
 static_assert(
     !invocable_by_name<scrydantic::ToolSet<>, const Session&, scrydantic::Json>);
 static_assert(
     invocable_by_name<scrydantic::ToolSet<Session>, const Session&, scrydantic::Json>);
 static_assert(!invocable_by_name<scrydantic::ToolSet<Session>, scrydantic::Json>);
-static_assert(!invocable_by_name<const scrydantic::ToolSet<>, scrydantic::Json>);
+static_assert(invocable_by_name<const scrydantic::ToolSet<>, scrydantic::Json>);
+static_assert(invocable_by_name<const scrydantic::ToolSet<Session>, const Session&,
+                                scrydantic::Json>);
+static_assert(!invocable_by_name<const scrydantic::ToolSet<Session>, scrydantic::Json>);
 // Giving the tools back cannot fail part way and lose them.
 static_assert(noexcept(std::declval<scrydantic::ToolSet<Session>&>().release()));
 
@@ -300,6 +311,37 @@ TEST_CASE("a tool set passes its call context through") {
   CHECK(unknown.error().model_message == R"(unknown tool "wave"; known tools: greet)");
 }
 
+TEST_CASE("a const tool set calls known tools and answers unknown names") {
+  const auto set = room_set();
+
+  const auto walked = set.invoke("walk", json(R"({"steps":4})"));
+  REQUIRE(walked);
+  CHECK(walked->text == "4");
+  const auto unknown = set.invoke("fly", json("{}"));
+  REQUIRE_FALSE(unknown);
+  CHECK(unknown.error().model_message ==
+        R"(unknown tool "fly"; known tools: look, walk, eat)");
+
+  // A tool found in a const set can be called without going back to the set.
+  const auto* look = set.find("look");
+  REQUIRE(look != nullptr);
+  const auto looked = look->invoke(json("{}"));
+  REQUIRE(looked);
+  CHECK(looked->text == R"("a quiet room")");
+
+  const auto made =
+      scrydantic::ToolSet<Session>::make(scrydantic::bind<^^guest_tools, Session>());
+  REQUIRE(made);
+  const scrydantic::ToolSet<Session>& guests = *made;
+  const Session session{.user = "bo"};
+  const auto greeted = guests.invoke("greet", session, json(R"({"greeting":"hi"})"));
+  REQUIRE(greeted);
+  CHECK(greeted->text == R"("hi, bo")");
+  const auto waved = guests.invoke("wave", session, json("{}"));
+  REQUIRE_FALSE(waved);
+  CHECK(waved.error().model_message == R"(unknown tool "wave"; known tools: greet)");
+}
+
 TEST_CASE("a tool set calls a toolbox's tools on the one object") {
   auto counter = std::make_shared<Counter>();
   auto set = scrydantic::ToolSet<>::make(scrydantic::bind(counter));
@@ -330,4 +372,52 @@ TEST_CASE("a moved tool set keeps its index") {
   const auto looked = assigned.invoke("look", json("{}"));
   REQUIRE(looked);
   CHECK(looked->text == R"("a quiet room")");
+}
+
+TEST_CASE("several threads call one const tool set at once") {
+  // A handler that counts its calls keeps the count outside itself, in an atomic
+  // it shares, as a const-callable handler must.
+  auto calls = std::make_shared<std::atomic<std::int64_t>>(0);
+  auto tools = scrydantic::bind<^^room_tools>();
+  tools.push_back(scrydantic::BoundTool<>{
+      .name = "count",
+      .invoke = scrydantic::bind_handler<NoArguments>(
+          [calls](NoArguments) { return calls->fetch_add(1) + 1; }),
+  });
+  auto made = scrydantic::ToolSet<>::make(std::move(tools));
+  REQUIRE(made);
+  const scrydantic::ToolSet<>& set = *made;
+
+  constexpr std::size_t threads = 4;
+  constexpr std::int64_t rounds = 200;
+  // Catch2's assertions are not thread-safe, so each thread only tallies what it
+  // saw, and the main thread checks the tallies once every thread has finished.
+  std::array<std::int64_t, threads> wrong{};
+  std::array<std::int64_t, threads> highest{};
+  {
+    std::vector<std::jthread> workers{};
+    for (std::size_t worker = 0; worker < threads; ++worker) {
+      workers.emplace_back([&set, &wrong, &highest, worker] {
+        for (std::int64_t round = 0; round < rounds; ++round) {
+          const auto steps = std::to_string(round);
+          const auto walked = set.invoke("walk", json(R"({"steps":)" + steps + "}"));
+          if (!walked || walked->text != steps) {
+            ++wrong[worker];
+          }
+          const auto counted = set.invoke("count", json("{}"));
+          if (!counted) {
+            ++wrong[worker];
+            continue;
+          }
+          highest[worker] = std::max(
+              highest[worker], static_cast<std::int64_t>(std::stoll(counted->text)));
+        }
+      });
+    }
+  }
+
+  CHECK(wrong == std::array<std::int64_t, threads>{});
+  // Every call was counted once, and the last one saw the whole count.
+  CHECK(calls->load() == static_cast<std::int64_t>(threads) * rounds);
+  CHECK(std::ranges::max(highest) == calls->load());
 }

@@ -54,7 +54,11 @@ namespace scrydantic {
 ///
 /// Handlers receive Args by value, optionally preceded by a `const Context&` when
 /// `Context` is not void, and may return a supported value, a Result of one,
-/// `void`, or Status.
+/// `void`, or Status. A handler must be invocable when const, as the ToolFunction
+/// that stores it calls it: a mutable lambda, or a functor whose call operator is
+/// not const, is not one. State a handler changes lives outside it, behind a
+/// pointer or reference it captures, in an atomic, or in a toolbox bound with
+/// bind() instead.
 /// @tparam Handler Callable to check.
 /// @tparam Args Argument aggregate satisfying ToolArguments.
 /// @tparam Context Call context a handler may take first, or void for none.
@@ -120,19 +124,20 @@ consteval std::meta::info toolbox_tools_of(const std::meta::info type,
 /// Binds a callable whose arguments are a reflected aggregate.
 ///
 /// The returned handler decodes its JSON input strictly into `Args`, invokes the
-/// callable with it, preceded by the context when the callable accepts one, and
-/// encodes the typed return. The callable may return a supported value, a
-/// Result of one, `void`, or Status; the last two answer `{}` on success. The
-/// argument schema is input_schema_v<Args>.
+/// callable as const with it, preceded by the context when the callable accepts
+/// one, and encodes the typed return. State that calls change therefore lives
+/// outside the callable, as ToolHandlerFor describes. The callable may return a
+/// supported value, a Result of one, `void`, or Status; the last two answer `{}`
+/// on success. The argument schema is input_schema_v<Args>.
 ///
 /// The template is unconstrained so that a rejected type fails with a diagnostic
 /// naming the offending member and the reason; ToolArguments and ToolHandlerFor
 /// are the SFINAE-friendly form of the same checks.
 /// @tparam Args Complete reflected argument aggregate satisfying ToolArguments.
 /// @tparam Context Call context the handler may take first, or void for none.
-/// @tparam Handler Move-constructible callable satisfying ToolHandlerFor<Handler,
-/// Args, Context>.
-/// @param handler Callable invoked with Args moved by value.
+/// @tparam Handler Move-constructible callable, invocable when const, satisfying
+/// ToolHandlerFor<Handler, Args, Context>.
+/// @param handler Callable invoked as const with Args moved by value.
 /// @return The type-erased handler.
 template <typename Args, typename Context = void, typename Handler>
 [[nodiscard]] ToolFunction<Context> bind_handler(Handler&& handler) {
@@ -254,11 +259,13 @@ template <typename Toolbox, typename Context = void,
 /// and invoke() take logarithmic time. Names are unique within a set, which
 /// make() enforces, since a model that calls a tool by name could never reach the
 /// second of two. The set lends its tools out read-only, so that no caller can
-/// rename one under the index, and invoke() is the way to call one. invoke() is
-/// not const, because a handler may change state of its own, such as a
-/// toolbox's. A set is move-only, as its handlers are, and moving it keeps its
-/// index. To add or remove tools, take them back with release() and make a new
-/// set.
+/// rename one under the index, and a tool lent out can still be called, since a
+/// handler is const-callable. invoke() calls one by the name the model used and
+/// answers a name the set does not hold. Calling changes nothing in the set, so
+/// a const set serves calls, and several threads may call one set at once when
+/// its tools allow concurrent calls: see ToolFunction. A set is move-only, as its
+/// handlers are, and moving it keeps its index. To add or remove tools, take them
+/// back with release() and make a new set.
 /// @tparam Context Call context every tool's handler receives, or void for none.
 template <typename Context = void> class ToolSet {
 public:
@@ -305,14 +312,17 @@ public:
     return set;
   }
 
-  /// Looks a tool up by name, to read its contract without calling it.
+  /// Looks a tool up by name, to read its contract or to call it directly.
   /// @param name Exact tool name; there is no prefix or case-insensitive match.
   /// @return The tool named `name`, valid while the set lives and is not moved
   /// from or assigned to, or nullptr when there is none.
   [[nodiscard]] const BoundTool<Context>*
   find(const std::string_view name) const noexcept {
-    const std::size_t position = position_of(name);
-    return position == tools_.size() ? nullptr : &tools_[position];
+    const auto found = std::ranges::lower_bound(by_name_, name, {}, name_at());
+    if (found == by_name_.end() || tools_[*found].name != name) {
+      return nullptr;
+    }
+    return &tools_[*found];
   }
 
   /// Calls the tool named `name` with `arguments`.
@@ -328,14 +338,14 @@ public:
   /// @param name Tool name the model called.
   /// @param arguments JSON argument object the model supplied.
   /// @return What the tool returned, or the unknown-tool error.
-  [[nodiscard]] Result<Json> invoke(const std::string_view name, Json arguments)
+  [[nodiscard]] Result<Json> invoke(const std::string_view name, Json arguments) const
     requires std::is_void_v<Context>
   {
-    const std::size_t position = position_of(name);
-    if (position == tools_.size()) {
+    const BoundTool<Context>* const tool = find(name);
+    if (tool == nullptr) {
       return std::unexpected(detail::unknown_tool_error(name, tools()));
     }
-    return tools_[position].invoke(std::move(arguments));
+    return tool->invoke(std::move(arguments));
   }
 
   /// Calls the tool named `name` with the call context and `arguments`.
@@ -348,17 +358,17 @@ public:
   /// @return What the tool returned, or the unknown-tool error.
   [[nodiscard]] Result<Json> invoke(const std::string_view name,
                                     const detail::context_argument_t<Context>& context,
-                                    Json arguments)
+                                    Json arguments) const
     requires(!std::is_void_v<Context>)
   {
-    const std::size_t position = position_of(name);
-    if (position == tools_.size()) {
+    const BoundTool<Context>* const tool = find(name);
+    if (tool == nullptr) {
       return std::unexpected(detail::unknown_tool_error(name, tools()));
     }
-    return tools_[position].invoke(context, std::move(arguments));
+    return tool->invoke(context, std::move(arguments));
   }
 
-  /// Lists the tools, for publishing them to a model.
+  /// Lists the tools, for publishing them to a model, or to call one directly.
   /// @return Every tool, in the order make() was given them.
   [[nodiscard]] std::span<const BoundTool<Context>> tools() const noexcept {
     return tools_;
@@ -379,17 +389,6 @@ private:
     return [this](const std::size_t position) noexcept -> std::string_view {
       return tools_[position].name;
     };
-  }
-
-  // The position in tools_ of the tool named `name`, or tools_.size() when there
-  // is none. A position rather than a pointer, so that invoke() reaches a
-  // mutable tool and find() a const one through the same const lookup.
-  [[nodiscard]] std::size_t position_of(const std::string_view name) const noexcept {
-    const auto found = std::ranges::lower_bound(by_name_, name, {}, name_at());
-    if (found == by_name_.end() || tools_[*found].name != name) {
-      return tools_.size();
-    }
-    return *found;
   }
 
   std::vector<BoundTool<Context>> tools_{};

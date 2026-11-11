@@ -65,8 +65,13 @@ endif()
 
 # gcov instrumentation for scripts/coverage.sh. Header-only code is counted in
 # every test that instantiates it; consteval code runs in the compiler and is
-# not counted at all.
+# not counted at all. The counters are updated atomically, because a test calls
+# one tool set from several threads at once: plain updates there lose counts,
+# and gcov then derives a negative count for a branch, which gcovr refuses.
 if(SCRYDANTIC_COVERAGE)
-  target_compile_options(scrydantic_project_options INTERFACE --coverage)
+  target_compile_options(
+    scrydantic_project_options
+    INTERFACE --coverage -fprofile-update=atomic
+  )
   target_link_options(scrydantic_project_options INTERFACE --coverage)
 endif()
