@@ -112,8 +112,9 @@ struct Error {
   /// from a schema the model was already given, from the input, or from a
   /// validator's own `model_message`. So it differs from `message` only where a
   /// validator gave the host text of its own. For text that is not JSON, from
-  /// JsonView::parse() too, it is `message`. A tool handler fills it through
-  /// tool_error().
+  /// JsonView::parse() too, it is `message`. rejection() fills it for a validator
+  /// that rejects a value, and tool_error(), the same function, for a tool handler
+  /// that refuses its call.
   std::string model_message{};
   /// The issues a decode found, in the order it visited them: an object's
   /// unknown members in key order, then its declared members in declaration
@@ -122,17 +123,20 @@ struct Error {
   std::vector<Issue> issues{};
 };
 
-/// Builds the error a tool handler returns to show the model why its call failed.
+/// Builds the Error that rejects a value or refuses a call, with text for the
+/// model.
 ///
-/// An empty `host_message` copies `model_message` into `Error::message`, so a
-/// handler that wants one diagnostic writes it once.
+/// A validator returns it to reject the value it checks, and a tool handler to
+/// refuse its call; tool_error() is the same function under the name that reads
+/// best in a handler. An empty `host_message` copies `model_message` into
+/// `Error::message`, so a caller that wants one diagnostic writes it once.
 /// @param model_message Text meant for the model.
 /// @param host_message Host-side diagnostic kept in Error::message; empty copies
 /// model_message.
 /// @return An Error carrying both texts.
-[[nodiscard]] inline Error tool_error(std::string model_message,
-                                      std::string host_message = {}) {
-  // A handler that supplies no host text still wants the refusal in its own logs,
+[[nodiscard]] inline Error rejection(std::string model_message,
+                                     std::string host_message = {}) {
+  // A caller that supplies no host text still wants the rejection in its own logs,
   // and repeating text it already chose to show the model discloses nothing new.
   if (host_message.empty()) {
     host_message = model_message;
@@ -141,6 +145,19 @@ struct Error {
       .message = std::move(host_message),
       .model_message = std::move(model_message),
   };
+}
+
+/// Builds the error a tool handler returns to show the model why its call failed.
+///
+/// It is rejection() under the name that reads best in a tool handler, and
+/// returns what rejection() returns for the same arguments.
+/// @param model_message Text meant for the model.
+/// @param host_message Host-side diagnostic kept in Error::message; empty copies
+/// model_message.
+/// @return An Error carrying both texts.
+[[nodiscard]] inline Error tool_error(std::string model_message,
+                                      std::string host_message = {}) {
+  return rejection(std::move(model_message), std::move(host_message));
 }
 
 /// Result of a fallible Scrydantic operation.

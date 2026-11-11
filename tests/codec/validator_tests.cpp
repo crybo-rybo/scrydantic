@@ -38,7 +38,7 @@ Calls calls{};
 
 [[nodiscard]] Status reject(std::string model_message, std::string host_message = {}) {
   return std::unexpected(
-      scrydantic::tool_error(std::move(model_message), std::move(host_message)));
+      scrydantic::rejection(std::move(model_message), std::move(host_message)));
 }
 
 Status is_even(const std::int32_t& value) noexcept {
@@ -51,6 +51,16 @@ Status is_known_city(const std::string& city) {
              ? Status{}
              : reject("must be a known city",
                       "names " + city + ", which the gazetteer lacks");
+}
+
+// is_known_city with the rejection built under the name a tool handler uses, which
+// is one function and so makes no difference to what decoding reports.
+Status is_listed_city(const std::string& city) {
+  return city == "Oslo" || city == "Lima"
+             ? Status{}
+             : std::unexpected(scrydantic::tool_error(
+                   "must be a known city",
+                   "names " + city + ", which the gazetteer lacks"));
 }
 
 // A rejection with text for the host alone.
@@ -107,6 +117,11 @@ struct Trip {
   [[= check<&is_known_city>]] std::string from;
   [[ = scrydantic::length{.max = 4}, = check<&is_known_city> ]] std::string to;
   [[= check<&is_even>]] std::optional<std::int32_t> passengers;
+};
+
+struct Route {
+  [[= check<&is_known_city>]] std::string from;
+  [[= check<&is_listed_city>]] std::string to;
 };
 
 // A renamed member's validator is reported under its wire name.
@@ -255,6 +270,19 @@ TEST_CASE("a field validator's rejection is an issue in the model's words") {
                                "$.passengers must be even");
   CHECK(error.message == "$.from names Rome, which the gazetteer lacks\n"
                          "$.passengers must be even");
+}
+
+TEST_CASE("a validator that returns tool_error is reported as one that returns "
+          "rejection") {
+  const auto error = rejection<Route>(R"({"from":"Rome","to":"Rome"})");
+  CHECK(issue_lines(error) == std::vector<std::string>{
+                                  "failed_check $.from must be a known city",
+                                  "failed_check $.to must be a known city",
+                              });
+  CHECK(error.model_message == "$.from must be a known city\n"
+                               "$.to must be a known city");
+  CHECK(error.message == "$.from names Rome, which the gazetteer lacks\n"
+                         "$.to names Rome, which the gazetteer lacks");
 }
 
 TEST_CASE("a validator that gives the model no text tells it only that the value is "

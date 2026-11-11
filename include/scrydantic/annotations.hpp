@@ -390,7 +390,7 @@ template <auto Validator> struct check_t {};
 /// told the path and the Error's `model_message`, or, when that is empty, only
 /// that the value `is not valid`. The Error's `message`, the host's own text,
 /// reaches the host alone; when it is empty, the host is told what the model is.
-/// tool_error() builds such an Error.
+/// rejection() builds such an Error.
 ///
 /// A validator reports a rejection by returning it, never by throwing:
 /// Scrydantic treats an exception as an allocation failure, so an exception that

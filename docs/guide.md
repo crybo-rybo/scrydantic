@@ -262,7 +262,8 @@ unsigned member, `range{.max = 0.1}` on a `float` (write `0.1f`), or
 A validator is a function that takes `const T&` and returns a `Status`.
 `check<&fn>` runs it on a member after the member decodes and meets its
 constraints. On a class, it runs on the whole object after every member has
-decoded. Return `tool_error(model_text, host_text)` to reject a value. The model
+decoded. Return `rejection(model_text, host_text)` to reject a value. It is the
+same function as `tool_error()`, the name a tool uses to refuse a call. The model
 sees only `model_text`, and your logs get `host_text`:
 
 ```cpp
@@ -271,7 +272,7 @@ inline scrydantic::Status known_city(const std::string& city) {
     return {};
   }
   return std::unexpected(
-      scrydantic::tool_error("must be a known city", "has no row in cities"));
+      scrydantic::rejection("must be a known city", "has no row in cities"));
 }
 
 struct Booking {
