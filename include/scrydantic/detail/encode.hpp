@@ -67,7 +67,7 @@ template <typename Type, spelling Spelling = spelling::verbatim>
 // encode_result<void> built and tested for every container cost 2% of an encode.
 [[nodiscard]] inline std::unexpected<encode_failure> nested_too_deep() {
   return encode_fail("is an array or object nested more than " +
-                     std::to_string(json_max_depth) +
+                     std::to_string(max_json_depth) +
                      " deep, so the value cannot be JSON");
 }
 
@@ -80,7 +80,7 @@ template <typename Type, spelling Spelling = spelling::verbatim>
 
 [[nodiscard]] inline std::unexpected<encode_failure> text_too_deep() {
   return encode_fail_whole("the value nests arrays and objects more than " +
-                           std::to_string(json_max_depth) +
+                           std::to_string(max_json_depth) +
                            " deep, so it cannot be JSON");
 }
 
@@ -211,7 +211,7 @@ write_json_value(std::string& output, const Json& value, const std::size_t depth
 template <spelling Spelling, typename Sequence>
 [[nodiscard]] encode_result<void>
 write_sequence(std::string& output, const Sequence& value, const std::size_t depth) {
-  if (depth == json_max_depth) [[unlikely]] {
+  if (depth == max_json_depth) [[unlikely]] {
     return nested_too_deep();
   }
   output.push_back('[');
@@ -244,7 +244,7 @@ inline constexpr bool utf8_keys_v =
 template <typename Type, bool Tagged, spelling Spelling>
 [[nodiscard]] encode_result<void> write_object(std::string& output, const Type& value,
                                                const std::size_t depth) {
-  if (depth == json_max_depth) [[unlikely]] {
+  if (depth == max_json_depth) [[unlikely]] {
     return nested_too_deep();
   }
   if constexpr (!utf8_keys_v<Type, Tagged>) {

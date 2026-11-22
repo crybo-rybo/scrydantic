@@ -16,10 +16,6 @@
 // through the public JsonView.
 namespace scrydantic::detail {
 
-// The deepest nesting of arrays and objects the parser accepts, counting an
-// empty one.
-inline constexpr std::size_t json_max_depth = 256;
-
 // A UTF-8 lead byte's sequence length and the range its second byte must fall
 // in (Unicode Table 3-7, "Well-Formed UTF-8 Byte Sequences"). Length zero marks
 // a byte that cannot start a sequence: a continuation byte, an overlong lead
@@ -103,7 +99,7 @@ utf8_sequence_length(const std::string_view text) noexcept {
 }
 
 // What check_json() found: valid JSON, text that stopped being read at a
-// container nested deeper than json_max_depth, or text that breaks another rule.
+// container nested deeper than max_json_depth, or text that breaks another rule.
 enum class json_validity : std::uint8_t {
   valid,
   too_deep,
@@ -112,7 +108,7 @@ enum class json_validity : std::uint8_t {
 
 // is_valid_json() that also says why it rejects text, in the same single pass,
 // for text that is to stand inside `depth` open arrays and objects: they count
-// toward json_max_depth. Reading stops at the first rule broken, so text found
+// toward max_json_depth. Reading stops at the first rule broken, so text found
 // too deep may break another rule further on.
 [[nodiscard]] json_validity check_json(std::string_view input,
                                        std::size_t depth = 0) noexcept;
@@ -130,7 +126,7 @@ enum class json_validity : std::uint8_t {
 // inside `depth` open arrays and objects. `invalid`, with `output` unchanged,
 // when the text is not one JSON document, and `too_deep`, with `output`
 // unchanged, when it is one whose canonical form, which keeps only the last of
-// an object's members of one key, would nest past json_max_depth there.
+// an object's members of one key, would nest past max_json_depth there.
 [[nodiscard]] json_validity append_canonical_json(std::string& output,
                                                   std::string_view text,
                                                   std::size_t depth = 0);

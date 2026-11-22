@@ -478,7 +478,8 @@ compile-time constants, for a manifest that needs no handlers.
   `find(key)`, `at(index)`, `key_at(index)`, `string()`, `number()`,
   `boolean()`, and `to_json()`. Object keys are visited in sorted order. The
   view holds its own copy of every key and string, so the text need not
-  outlive it.
+  outlive it. `depth()` is how deep the value nests; the parser and the encoder
+  accept at most `max_json_depth`.
 - `is_valid_json(text)` checks text without building a document.
 - `escape_json_string(text)` and `format_json_number(value)` spell a string or
   a number exactly as the encoder does, for JSON built by hand.
