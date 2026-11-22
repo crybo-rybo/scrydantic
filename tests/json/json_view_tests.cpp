@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
@@ -149,6 +150,35 @@ TEST_CASE("an empty public JSON view is safely inspectable") {
   CHECK_FALSE(view.at(0));
   CHECK_FALSE(view.key_at(0));
   CHECK_FALSE(view.find("anything"));
+  CHECK(view.depth() == 0);
+}
+
+TEST_CASE("the public JSON view knows how deep its value nests") {
+  const auto depth = [](const std::string_view text) {
+    const auto document = JsonView::parse(text);
+    REQUIRE(document);
+    return document->depth();
+  };
+  const auto nest = [](const std::size_t levels) {
+    return std::string(levels, '[') + std::string(levels, ']');
+  };
+
+  CHECK(depth("0") == 0);
+  CHECK(depth(R"("[[]]")") == 0);
+  CHECK(depth("[]") == 1);
+  CHECK(depth("{}") == 1);
+  // The last member of a key replaces the earlier one, which nests deeper.
+  CHECK(depth(R"({"a":[[[0]]],"a":0})") == 1);
+
+  const auto document = JsonView::parse(R"({"a":[[0]],"b":0})");
+  REQUIRE(document);
+  CHECK(document->depth() == 3);
+  CHECK(document->find("a")->depth() == 2);
+  CHECK(document->find("b")->depth() == 0);
+
+  CHECK(scrydantic::max_json_depth == 256);
+  CHECK(depth(nest(256)) == scrydantic::max_json_depth);
+  CHECK_FALSE(JsonView::parse(nest(257)));
 }
 
 TEST_CASE("the public JSON view rejects malformed input") {

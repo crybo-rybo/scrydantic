@@ -327,14 +327,9 @@ public:
 
   /// Calls the tool named `name` with `arguments`.
   ///
-  /// A name the set does not hold fails with a tool_error() that tells the model
-  /// which names it does, such as `unknown tool "fly"; known tools: eat, look`:
-  /// the requested name as a JSON string literal, as a decode echoes an unknown
-  /// member, and the known names in set order. A known name that is not ASCII
-  /// letters, digits, `_`, `-`, and `.` alone is a JSON string literal too, so
-  /// that one holding `, ` reads as one name. An empty set answers `unknown tool
-  /// "fly"; there are no tools`. Any other result, failure included, is the
-  /// tool's own.
+  /// A name the set does not hold fails with unknown_tool_error(), which tells the
+  /// model the names it does, in set order. Any other result, failure included, is
+  /// the tool's own.
   /// @param name Tool name the model called.
   /// @param arguments JSON argument object the model supplied.
   /// @return What the tool returned, or the unknown-tool error.
@@ -343,7 +338,7 @@ public:
   {
     const BoundTool<Context>* const tool = find(name);
     if (tool == nullptr) {
-      return std::unexpected(detail::unknown_tool_error(name, tools()));
+      return std::unexpected(unknown_tool(name));
     }
     return tool->invoke(std::move(arguments));
   }
@@ -363,7 +358,7 @@ public:
   {
     const BoundTool<Context>* const tool = find(name);
     if (tool == nullptr) {
-      return std::unexpected(detail::unknown_tool_error(name, tools()));
+      return std::unexpected(unknown_tool(name));
     }
     return tool->invoke(context, std::move(arguments));
   }
@@ -383,6 +378,13 @@ public:
   }
 
 private:
+  // Why the set holds no tool named `name`, listing the ones it does.
+  [[nodiscard]] Error unknown_tool(const std::string_view name) const {
+    std::vector<std::string_view> names(tools_.size());
+    std::ranges::transform(tools_, names.begin(), &BoundTool<Context>::name);
+    return unknown_tool_error(name, names);
+  }
+
   // Projects a position in tools_ onto its tool's name, the key by_name_ is
   // sorted by.
   [[nodiscard]] auto name_at() const noexcept {

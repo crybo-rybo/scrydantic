@@ -109,6 +109,11 @@ std::optional<JsonView> JsonView::find(const std::string_view name) const noexce
   return JsonView{std::shared_ptr<const void>{value_, found}};
 }
 
+std::size_t JsonView::depth() const noexcept {
+  const auto* value = node(value_.get());
+  return value == nullptr ? 0 : detail::json::nesting(*value);
+}
+
 Json JsonView::to_json() const {
   const auto* value = node(value_.get());
   if (value == nullptr) {

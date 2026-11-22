@@ -5,6 +5,7 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -159,6 +160,23 @@ struct Error {
                                       std::string host_message = {}) {
   return rejection(std::move(model_message), std::move(host_message));
 }
+
+/// Builds the error that tells a model it called an unknown tool, and which tools
+/// there are.
+///
+/// ToolSet::invoke() answers a name it does not hold with it, and a host that
+/// keeps its tools elsewhere can too. The text is such as `unknown tool "fly";
+/// known tools: look, eat`, or `unknown tool "fly"; there are no tools`. The
+/// requested name is the model's own text, so it is a JSON string literal, as a
+/// decode echoes an unknown member. A known name of ASCII letters, digits, `_`,
+/// `-`, and `.` alone, which covers the names model APIs accept, is written as it
+/// is. Any other is a JSON string literal too, so that one holding `, ` cannot
+/// read as two.
+/// @param name Tool name the model called.
+/// @param known Names of the tools the model was given, in the order to list them.
+/// @return A tool_error() carrying the text.
+[[nodiscard]] Error unknown_tool_error(std::string_view name,
+                                       std::span<const std::string_view> known);
 
 /// Result of a fallible Scrydantic operation.
 template <typename T> using Result = std::expected<T, Error>;

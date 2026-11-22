@@ -430,7 +430,8 @@ tools[0].invoke(Session{"ada"}, scrydantic::Json{.text = "{}"}); // "ada"
 **Dispatching by name.** `ToolSet<Context>::make(tools)` gathers bound tools,
 such as the results of several `bind` calls, so a host can call them by the name
 the model used. It fails if two tools share a name, or if one has no handler.
-A name the set does not hold gets a refusal that lists the names it does:
+A name the set does not hold gets a refusal that lists the names it does, which
+`unknown_tool_error(name, known)` builds for a host that keeps its own table:
 
 ```cpp
 auto set = scrydantic::ToolSet<>::make(scrydantic::bind<^^weather>());
@@ -477,7 +478,8 @@ compile-time constants, for a manifest that needs no handlers.
   `find(key)`, `at(index)`, `key_at(index)`, `string()`, `number()`,
   `boolean()`, and `to_json()`. Object keys are visited in sorted order. The
   view holds its own copy of every key and string, so the text need not
-  outlive it.
+  outlive it. `depth()` is how deep the value nests; the parser and the encoder
+  accept at most `max_json_depth`.
 - `is_valid_json(text)` checks text without building a document.
 - `escape_json_string(text)` and `format_json_number(value)` spell a string or
   a number exactly as the encoder does, for JSON built by hand.

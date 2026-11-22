@@ -46,6 +46,10 @@ enum class JsonKind : std::uint8_t {
   object,
 };
 
+/// The deepest nesting of arrays and objects that Scrydantic reads or writes,
+/// counting an empty one.
+inline constexpr std::size_t max_json_depth = 256;
+
 /// Read-only view into a parsed JSON document.
 ///
 /// Parsing produces one immutable document; every view into it shares ownership, so
@@ -136,6 +140,17 @@ public:
   /// member.
   [[nodiscard]] std::optional<JsonView> find(std::string_view name) const noexcept;
 
+  /// Measures how deep the viewed value nests arrays and objects, by walking it.
+  ///
+  /// This is the depth of the text to_json() returns, and so of what encode()
+  /// writes for a Json holding the value: it fits inside `n` open arrays and
+  /// objects when `n + depth()` is at most max_json_depth. Only the last of an
+  /// object's members of one key counts. encode_verbatim() copies the earlier ones
+  /// too, so the text it writes can nest deeper.
+  /// @return The depth, counting an empty array or object as one, and zero for a
+  /// scalar or a default-constructed view.
+  [[nodiscard]] std::size_t depth() const noexcept;
+
   /// Serializes the viewed value as canonical JSON text.
   ///
   /// The text is Scrydantic's canonical form of the value alone, with object keys in
@@ -184,7 +199,8 @@ private:
 ///
 /// The check is one pass that allocates nothing, and it accepts exactly the text
 /// JsonView::parse() accepts: strict RFC 8259 JSON in valid UTF-8, nested at most
-/// 256 arrays and objects deep, with nothing but whitespace around the value.
+/// max_json_depth arrays and objects deep, with nothing but whitespace around the
+/// value.
 /// Every number must also be representable as a double. One whose magnitude
 /// overflows, such as `1e400`, and a nonzero one that rounds to zero, such as
 /// `1e-400`, are rejected even though the grammar allows them. The smallest

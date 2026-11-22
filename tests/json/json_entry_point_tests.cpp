@@ -214,7 +214,7 @@ TEST_CASE("appending canonical JSON leaves the output alone on a rejection") {
   CHECK(output == R"(prefix:{"a":[],"b":1})");
   CHECK(core::append_canonical_json(output, R"({"a":1} 2)") == json_validity::invalid);
   CHECK(core::append_canonical_json(output, "") == json_validity::invalid);
-  CHECK(core::append_canonical_json(output, "[[0]]", core::json_max_depth - 1) ==
+  CHECK(core::append_canonical_json(output, "[[0]]", scrydantic::max_json_depth - 1) ==
         json_validity::too_deep);
   CHECK(output == R"(prefix:{"a":[],"b":1})");
 }
@@ -229,7 +229,7 @@ namespace {
 
 TEST_CASE("text is checked as it stands inside open arrays and objects") {
   using core::json_validity;
-  constexpr auto limit = core::json_max_depth;
+  constexpr auto limit = scrydantic::max_json_depth;
   CHECK(core::check_json("0", limit) == json_validity::valid);
   CHECK(core::check_json(R"("[")", limit) == json_validity::valid);
   CHECK(core::check_json("[]", limit) == json_validity::too_deep);
@@ -254,7 +254,7 @@ TEST_CASE("text is checked as it stands inside open arrays and objects") {
 
 TEST_CASE("canonical JSON is measured as it is written") {
   using core::json_validity;
-  constexpr auto limit = core::json_max_depth;
+  constexpr auto limit = scrydantic::max_json_depth;
   for (const std::size_t depth : {0UZ, 1UZ, 17UZ, limit - 1, limit}) {
     CAPTURE(depth);
     std::string output{};
@@ -296,7 +296,8 @@ TEST_CASE("a document knows how deep it nests") {
   CHECK(nesting("{}") == 1);
   CHECK(nesting(R"([1,{"a":[2,[3]],"b":{}},[]])") == 4);
   CHECK(nesting(R"({"a":[[[0]]],"a":0})") == 1);
-  CHECK(nesting(nested_arrays(core::json_max_depth)) == core::json_max_depth);
+  CHECK(nesting(nested_arrays(scrydantic::max_json_depth)) ==
+        scrydantic::max_json_depth);
 }
 
 namespace {

@@ -50,7 +50,7 @@
 namespace scrydantic::detail::json {
 
 // The deepest nesting the parser accepts.
-inline constexpr std::size_t max_depth = json_max_depth;
+inline constexpr std::size_t max_depth = max_json_depth;
 
 class Value;
 

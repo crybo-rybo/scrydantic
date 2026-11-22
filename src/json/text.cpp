@@ -44,7 +44,7 @@ json_validity append_canonical_json(std::string& output, const std::string_view 
   }
   // Measured on the document, not while reading the text: the text may nest
   // deeper in a member that a later one of the same key replaces.
-  if (depth + json::nesting(*document) > json_max_depth) {
+  if (depth + json::nesting(*document) > max_json_depth) {
     return json_validity::too_deep;
   }
   json::write(*document, output);
