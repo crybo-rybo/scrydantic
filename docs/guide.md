@@ -430,7 +430,8 @@ tools[0].invoke(Session{"ada"}, scrydantic::Json{.text = "{}"}); // "ada"
 **Dispatching by name.** `ToolSet<Context>::make(tools)` gathers bound tools,
 such as the results of several `bind` calls, so a host can call them by the name
 the model used. It fails if two tools share a name, or if one has no handler.
-A name the set does not hold gets a refusal that lists the names it does:
+A name the set does not hold gets a refusal that lists the names it does, which
+`unknown_tool_error(name, known)` builds for a host that keeps its own table:
 
 ```cpp
 auto set = scrydantic::ToolSet<>::make(scrydantic::bind<^^weather>());

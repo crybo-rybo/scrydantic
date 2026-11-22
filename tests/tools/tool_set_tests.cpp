@@ -209,6 +209,13 @@ TEST_CASE("a tool set tells the model which tools there are") {
   CHECK(unknown.error().message == unknown.error().model_message);
   CHECK(unknown.error().issues.empty());
 
+  // A host without a set gets the same answer, in the order it gives the names.
+  constexpr std::array<std::string_view, 3> names{"look", "walk", "eat"};
+  const auto built = scrydantic::unknown_tool_error("fly", names);
+  CHECK(built.model_message == unknown.error().model_message);
+  CHECK(built.message == unknown.error().message);
+  CHECK(built.issues.empty());
+
   // The requested name is the model's own text, so it is escaped as one string.
   const auto escaped = set.invoke("say \"hi\"\n\x01", json("{}"));
   REQUIRE_FALSE(escaped);
@@ -219,6 +226,8 @@ TEST_CASE("a tool set tells the model which tools there are") {
   const auto none = empty.invoke("fly", json("{}"));
   REQUIRE_FALSE(none);
   CHECK(none.error().model_message == R"(unknown tool "fly"; there are no tools)");
+  CHECK(scrydantic::unknown_tool_error("fly", {}).model_message ==
+        none.error().model_message);
 
   auto made_empty = scrydantic::ToolSet<>::make({});
   REQUIRE(made_empty);
@@ -251,9 +260,11 @@ TEST_CASE("a tool set refuses a tool that has no handler") {
 }
 
 TEST_CASE("a tool set spells a known name that is not one plain word as a string") {
+  constexpr std::array<std::string_view, 6> names{"get-weather",         "fs.read_file",
+                                                  "list, delete",        "say \"hi\"",
+                                                  "m\xC3\xA9t\xC3\xA9o", ""};
   std::vector<scrydantic::BoundTool<>> tools{};
-  for (const std::string_view name : {"get-weather", "fs.read_file", "list, delete",
-                                      "say \"hi\"", "m\xC3\xA9t\xC3\xA9o", ""}) {
+  for (const auto name : names) {
     tools.push_back(named(std::string{name}));
   }
   auto set = scrydantic::ToolSet<>::make(std::move(tools));
@@ -264,6 +275,8 @@ TEST_CASE("a tool set spells a known name that is not one plain word as a string
   CHECK(unknown.error().model_message ==
         "unknown tool \"fly\"; known tools: get-weather, fs.read_file, "
         "\"list, delete\", \"say \\\"hi\\\"\", \"m\xC3\xA9t\xC3\xA9o\", \"\"");
+  CHECK(scrydantic::unknown_tool_error("fly", names).model_message ==
+        unknown.error().model_message);
 
   // A quoted name is still looked up as the tool's own.
   const auto called = set->invoke("list, delete", json("{}"));

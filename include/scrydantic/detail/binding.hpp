@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -17,7 +16,6 @@
 #include <scrydantic/detail/tools.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
-#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -242,47 +240,6 @@ tool_descriptors(tool_set<Tools...>) {
 }
 
 // ---- Dispatch by name --------------------------------------------------------
-
-// Whether a tool name reads as one word in a list: ASCII letters, digits, `_`,
-// `-`, and `.`, and at least one of them. That covers the names model APIs
-// accept, and none of them holds the list's own `, `.
-[[nodiscard]] constexpr bool is_plain_tool_name(const std::string_view name) noexcept {
-  constexpr auto is_plain = [](const char character) {
-    return (character >= 'a' && character <= 'z') ||
-           (character >= 'A' && character <= 'Z') ||
-           (character >= '0' && character <= '9') || character == '_' ||
-           character == '-' || character == '.';
-  };
-  return !name.empty() && std::ranges::all_of(name, is_plain);
-}
-
-// Why ToolSet::invoke() found no tool. The requested name came from the model, so
-// it is spelled as a JSON string literal, as decode echoes an unknown member's
-// key: a name holding a quote or a control character still reads as one name.
-// The known names are the ones the model was given, in the order it was given
-// them. A plain one is written as it is, and any other as a JSON string literal
-// too, so that a name holding `, ` cannot read as two.
-template <typename Context>
-[[nodiscard]] Error
-unknown_tool_error(const std::string_view name,
-                   const std::span<const BoundTool<Context>> tools) {
-  std::string message{"unknown tool "};
-  append_json_string(message, name);
-  if (tools.empty()) {
-    message += "; there are no tools";
-  }
-  std::string_view separator = "; known tools: ";
-  for (const auto& tool : tools) {
-    message += separator;
-    if (is_plain_tool_name(tool.name)) {
-      message += tool.name;
-    } else {
-      append_json_string(message, tool.name);
-    }
-    separator = ", ";
-  }
-  return tool_error(std::move(message));
-}
 
 // Why ToolSet::make() refused its tools. Either fault is the host's bug, which
 // the model, not yet given the tools, cannot act on, so the error has no
