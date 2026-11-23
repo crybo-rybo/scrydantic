@@ -154,6 +154,15 @@ public:
   }
   decode_cursor member(std::string_view key) const&& = delete;
 
+  // The cursor of a map entry of this cursor's value. `key` is the entry's key
+  // in the document being decoded, which outlives every cursor of the decode.
+  // The document may hold an empty key as a null view, which would read here as
+  // an element's step, so an empty key is given static storage.
+  [[nodiscard]] decode_cursor entry(const std::string_view key) const& noexcept {
+    return decode_cursor{report_, this, key.empty() ? std::string_view{""} : key, 0};
+  }
+  decode_cursor entry(std::string_view key) const&& = delete;
+
   [[nodiscard]] decode_cursor element(const std::size_t index) const& noexcept {
     return decode_cursor{report_, this, {}, index};
   }
@@ -262,10 +271,11 @@ private:
   decode_report* report_{};
   // Null at the root, which is no step.
   const decode_cursor* parent_{};
-  // The step from the parent's value: a member's key, or an element's index when
-  // `key_` is a null view, which no static string is. Two plain members rather
-  // than a std::variant: GCC 16 does not inline member() into the larger readers
-  // when it constructs a variant, and the calls cost 4% of a decode.
+  // The step from the parent's value: a member's or a map entry's key, or an
+  // element's index when `key_` is a null view, which no static string is and
+  // entry() never keeps. Two plain members rather than a std::variant: GCC 16
+  // does not inline member() into the larger readers when it constructs a
+  // variant, and the calls cost 4% of a decode.
   std::string_view key_{};
   std::size_t index_{};
 };

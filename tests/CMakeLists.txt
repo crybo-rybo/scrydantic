@@ -142,8 +142,17 @@ add_executable(
   codec/codec_tests.cpp
   codec/coercion_tests.cpp
   codec/constraint_tests.cpp
+  codec/enumerator_name_tests.cpp
+  codec/flatten_tests.cpp
+  codec/json_schema_tests.cpp
+  codec/map_tests.cpp
   codec/number_spelling_tests.cpp
+  codec/schema_default_tests.cpp
+  codec/schema_keyword_tests.cpp
   codec/validator_tests.cpp
+  tools/function_binding_tests.cpp
+  tools/json_tool_tests.cpp
+  tools/output_schema_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
 )
@@ -234,7 +243,12 @@ scrydantic_add_compile_fail_test(
 scrydantic_add_compile_fail_test(
   unsupported-schema-root
   unsupported_schema_root.cpp
-  "does not satisfy scrydantic::SupportedValue: scrydantic::Json is raw JSON, which has no schema"
+  "does not satisfy scrydantic::SupportedValue: std::basic_string_view<char> is encode-only borrowed text; decoding and schemas take std::string"
+)
+scrydantic_add_compile_fail_test(
+  constrained-json
+  constrained_json.cpp
+  "Envelope::payload: carries scrydantic::length, which applies to std::string members, not to scrydantic::Json"
 )
 scrydantic_add_compile_fail_test(
   untagged-variant
@@ -245,6 +259,56 @@ scrydantic_add_compile_fail_test(
   duplicate-key
   duplicate_key.cpp
   "does not satisfy scrydantic::Encodable: Limits has members limit and max_tokens that both map to the JSON key"
+)
+scrydantic_add_compile_fail_test(
+  flattened-duplicate-key
+  flattened_duplicate_key.cpp
+  "does not satisfy scrydantic::Encodable: Results has members next_cursor and page.next_cursor that both map to the JSON key"
+)
+scrydantic_add_compile_fail_test(
+  flattened-optional
+  flattened_optional.cpp
+  "Results::page: carries scrydantic::flatten, which applies to members of aggregate type, not to std::optional<Page>"
+)
+scrydantic_add_compile_fail_test(
+  flattened-tag-key
+  flattened_tag_key.cpp
+  "Post::attachment<Image>.media.type: has the JSON key \"type\", which carries the variant's tag"
+)
+scrydantic_add_compile_fail_test(
+  flattened-description
+  flattened_description.cpp
+  "Results::page: carries scrydantic::flatten together with scrydantic::name, description, or check; a flattened member has no JSON key or value of its own for them to describe"
+)
+scrydantic_add_compile_fail_test(
+  flattened-class
+  flattened_class.cpp
+  "does not satisfy scrydantic::SupportedValue: Page carries scrydantic::flatten, which applies to data members"
+)
+scrydantic_add_compile_fail_test(
+  flattened-tool
+  flattened_tool.cpp
+  "scrydantic::bind<^^page_tools>(): page_tools::turn carries scrydantic::flatten, which applies to data members"
+)
+scrydantic_add_compile_fail_test(
+  flattened-endless-recursion
+  flattened_endless_recursion.cpp
+  "Link::next.link: Link contains itself through no std::optional, std::vector, or variant alternative after the first, so default-constructing it, as decoding does, never ends"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-enumerator-name
+  duplicate_enumerator_name.cpp
+  "does not satisfy scrydantic::Encodable: Level has enumerators low and minimum that both map to the JSON string \"low\""
+)
+scrydantic_add_compile_fail_test(
+  two-enumerator-names
+  two_enumerator_names.cpp
+  "does not satisfy scrydantic::Decodable: Gauge::level: Level::low has more than one scrydantic::name annotation"
+)
+scrydantic_add_compile_fail_test(
+  annotated-enumerator
+  annotated_enumerator.cpp
+  "does not satisfy scrydantic::SupportedValue: Gauge::level: Level::high carries scrydantic::description, which does not apply to enumerators; an enumerator takes only scrydantic::name"
 )
 scrydantic_add_compile_fail_test(
   endless-recursion
@@ -412,9 +476,69 @@ scrydantic_add_compile_fail_test(
   "scrydantic::bind<^^order_tools>(): order_tools::order carries scrydantic::check, which applies to data members and classes"
 )
 scrydantic_add_compile_fail_test(
+  duplicate-title
+  duplicate_title.cpp
+  "Profile::name: has more than one scrydantic::title annotation"
+)
+scrydantic_add_compile_fail_test(
+  empty-title
+  empty_title.cpp
+  "scrydantic::title must not be empty"
+)
+scrydantic_add_compile_fail_test(
+  titled-tool
+  titled_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::title, which applies to data members and classes"
+)
+scrydantic_add_compile_fail_test(
+  invalid-keyword-json
+  invalid_keyword_json.cpp
+  "Query::since: carries a scrydantic::keyword with the key \"format\" whose value is not one JSON value"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-keyword
+  duplicate_keyword.cpp
+  "Query::since: has more than one keyword annotation with the key \"format\""
+)
+scrydantic_add_compile_fail_test(
+  reserved-keyword
+  reserved_keyword.cpp
+  "Reading::level: carries a keyword annotation with the key \"type\", which Scrydantic writes itself; an annotation cannot replace a generated keyword"
+)
+scrydantic_add_compile_fail_test(
+  reserved-class-keyword
+  reserved_class_keyword.cpp
+  "Reading carries a keyword annotation with the key \"additionalProperties\", which Scrydantic writes itself; an annotation cannot replace a generated keyword"
+)
+scrydantic_add_compile_fail_test(
+  empty-keyword-key
+  empty_keyword_key.cpp
+  "Reading::level: carries a keyword annotation with an empty key"
+)
+scrydantic_add_compile_fail_test(
+  keyword-on-tool
+  keyword_on_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::keyword, which applies to data members and classes"
+)
+scrydantic_add_compile_fail_test(
   annotated-parameter
   annotated_parameter.cpp
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level` carrying a Scrydantic annotation, which a parameter cannot hold; take an argument aggregate and annotate its member"
+)
+scrydantic_add_compile_fail_test(
+  wrapped-function-parameter
+  wrapped_function_parameter.cpp
+  "routes::add<^^catalog::weigh>(): catalog::weigh has parameter `crate`: int* is not a supported reflected value"
+)
+scrydantic_add_compile_fail_test(
+  unbound-function-arguments
+  unbound_function_arguments.cpp
+  "scrydantic::apply<^^catalog::weigh>(): catalog::weigh has the unnamed parameter 1; an argument synthesized from a parameter is named after it"
+)
+scrydantic_add_compile_fail_test(
+  apply-without-object
+  apply_without_object.cpp
+  "scrydantic::apply<^^Lamp::dim>(): Lamp::dim is a non-static member function; pass the object to call it on, as apply(object, arguments)"
 )
 scrydantic_add_compile_fail_test(
   mutable-handler
@@ -435,4 +559,29 @@ scrydantic_add_compile_fail_test(
   keys-of-endless-recursion
   keys_of_endless_recursion.cpp
   "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)
+scrydantic_add_compile_fail_test(
+  constrained-map
+  constrained_map.cpp
+  "Labels::values: carries scrydantic::items, which applies to std::vector members, not to std::map<"
+)
+scrydantic_add_compile_fail_test(
+  non-string-map-key
+  non_string_map_key.cpp
+  "Names::by_id: std::map<int, bool> has a key type other than std::string; a JSON object's keys are strings"
+)
+scrydantic_add_compile_fail_test(
+  multimap-member
+  multimap_member.cpp
+  "int> can hold one key more than once, which a JSON object cannot; use std::map or std::unordered_map"
+)
+scrydantic_add_compile_fail_test(
+  unordered-multimap-member
+  unordered_multimap_member.cpp
+  "int> can hold one key more than once, which a JSON object cannot; use std::map or std::unordered_map"
+)
+scrydantic_add_compile_fail_test(
+  map-tool-arguments
+  map_tool_arguments.cpp
+  "int> is a map, whose keys are data; tool arguments are a plain aggregate, whose members name the arguments"
 )

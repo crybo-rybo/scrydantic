@@ -174,10 +174,12 @@ set(
   include/scrydantic/detail/binding.hpp
   include/scrydantic/detail/constraints.hpp
   include/scrydantic/detail/decode.hpp
+  include/scrydantic/detail/defaults.hpp
   include/scrydantic/detail/encode.hpp
   include/scrydantic/detail/failure.hpp
   include/scrydantic/detail/json_number.hpp
   include/scrydantic/detail/json_string.hpp
+  include/scrydantic/detail/keywords.hpp
   include/scrydantic/detail/meta.hpp
   include/scrydantic/detail/model.hpp
   include/scrydantic/detail/schema.hpp
