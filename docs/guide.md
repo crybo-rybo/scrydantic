@@ -98,6 +98,7 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | `skip_null` | class, optional member | Leaves out an empty optional instead of writing `null`, and lets the input leave it out. On a class, it applies to every optional member. |
 | `emit_null` | optional member | Writes `null` again for one member of a `skip_null` class. |
 | `ignore_unknown` | class | Decoding ignores members the class does not declare, instead of rejecting them. |
+| `flatten` | aggregate member | Makes the member's fields fields of the enclosing object. The member has no key of its own. |
 | `tool{"..."}` | function | Makes the function a tool, with this description. |
 | `range`, `multiple_of`, `length`, `items`, `pattern` | member | Constraints. See [Constraints and validators](#constraints-and-validators). |
 | `check<&fn>` | member, class | Runs a validator after decoding. |
@@ -126,6 +127,39 @@ struct [[= scrydantic::tag{"square"}]] Square { double side; };
 using Shape = std::variant<Circle, Square>;
 // Shape{Circle{1.5}} encodes as {"radius":1.5,"type":"circle"}
 ```
+
+**Flattened members.** `flatten` gives an object the fields of one of its
+members, so that types which share a set of fields can share its declaration:
+
+```cpp
+struct Tool { std::string name; };
+struct Page { std::optional<std::string> next_cursor; };
+
+struct ToolList {
+  std::vector<Tool> tools;
+  [[= scrydantic::flatten]] Page page;
+};
+
+ToolList list{.tools = {{.name = "search"}}, .page = {.next_cursor = "abc"}};
+scrydantic::encode(list)->text;
+// {"next_cursor":"abc","tools":[{"name":"search"}]}
+```
+
+`next_cursor` is a field of `ToolList` everywhere: in the schema's `properties`
+and `required`, in decoding, where an issue in it is reported at
+`$.next_cursor`, and in `keys_v<ToolList>`. A flattened class may flatten
+members of its own.
+
+Each field follows the class that declares it. A `skip_null` on `Page` applies
+to `next_cursor`, and a `check` on `Page` runs on `list.page` once its fields
+have decoded. Unknown members belong to the whole object, so `ignore_unknown`
+is read from the outermost class alone. A default member initializer on the
+flattened member makes every field under it optional.
+
+The member must be an aggregate itself, not a `std::optional` or a
+`std::indirect` of one. It cannot carry `name`, `description`, or `check`,
+because it has no key or value of its own, and two fields of one object cannot
+share a key.
 
 ## Schemas
 
