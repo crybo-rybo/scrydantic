@@ -567,7 +567,8 @@ std::vector<scrydantic::BoundTool<>> tools = scrydantic::bind<^^weather>();
 
 Each `BoundTool` has a `name`, a `description`, an `input_schema`, an
 `output_schema`, and an `invoke` handler. The handler takes the arguments as
-`Json` and returns a `Result<Json>`:
+`Json` text, or as a `JsonView` that is already parsed (see **Parsed
+arguments**), and returns a `Result<Json>`:
 
 ```cpp
 tools[0].input_schema.text;
@@ -735,6 +736,33 @@ set->tools();                       // every tool, in the order given, to list
 A set does not change once it is made. To add or remove tools, take them back
 with `release()`, which leaves the set empty, and make a new set from them.
 
+**Parsed arguments.** A host usually receives a tool call inside a larger
+message, and parses the message to find the tool's name. Pass the arguments as
+the `JsonView` that you already have. The handler decodes that part of your
+document where it is, so nothing is written out as text and parsed a second
+time:
+
+```cpp
+auto message = scrydantic::JsonView::parse(
+    R"({"id":7,"call":{"name":"forecast","arguments":{"city":"Oslo","days":2}}})");
+auto call = message->find("call");
+auto arguments = call->find("arguments");
+
+set->invoke(*call->find("name")->string(), *arguments); // by name
+set->find("forecast")->invoke(*arguments);              // one tool
+```
+
+A view goes wherever `invoke` takes a `Json`: after the context if there is
+one, in a `ToolSet`, and in a `bind_handler` handler. Both calls return the same
+result for the same arguments. Only a text call can fail with `tool arguments
+are not valid JSON`, because a view is JSON already. A view of something that is
+not an object fails as its text does:
+
+```cpp
+auto list = scrydantic::JsonView::parse(R"(["Oslo",2])");
+set->invoke("forecast", *list).error().model_message; // $ must be an object
+```
+
 Calling a tool does not change the set either. A handler can be called through
 a `const` reference, so a `const` set, or a `const` vector of bound tools, can
 serve calls, and several threads can share one. Concurrent calls are then as
@@ -771,6 +799,21 @@ scrydantic::BoundTool<> tool{
     .invoke = scrydantic::bind_handler<Ticket>(
         [next_id](Ticket) { return next_id->fetch_add(1); }),
 };
+```
+
+`invoke` also takes a callable of your own that reads the JSON itself and
+returns a `Result<Json>`. Write it to take a `const JsonView&`, and it is given
+the view of a view call and the parsed text of a text call. A callable that
+takes `Json` still works. It is given a text call's text as it was passed, not
+parsed and not checked, and for a view call the view's canonical text, which
+`to_json()` writes once per call:
+
+```cpp
+tool.invoke = [](const scrydantic::JsonView& arguments)
+    -> scrydantic::Result<scrydantic::Json> {
+  return scrydantic::Json{.text = std::to_string(arguments.size())};
+};
+tool.invoke(scrydantic::Json{.text = R"({"title":"Fix the lamp"})"})->text; // 1
 ```
 
 **Without handlers.** `describe<^^ns>()`, or `describe<Toolbox>()` for a
