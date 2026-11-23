@@ -141,6 +141,7 @@ add_executable(
   codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
   codec/constraint_tests.cpp
+  codec/flatten_tests.cpp
   codec/number_spelling_tests.cpp
   codec/validator_tests.cpp
   tools/tool_binding_tests.cpp
@@ -244,6 +245,41 @@ scrydantic_add_compile_fail_test(
   duplicate-key
   duplicate_key.cpp
   "does not satisfy scrydantic::Encodable: Limits has members limit and max_tokens that both map to the JSON key"
+)
+scrydantic_add_compile_fail_test(
+  flattened-duplicate-key
+  flattened_duplicate_key.cpp
+  "does not satisfy scrydantic::Encodable: Results has members next_cursor and page.next_cursor that both map to the JSON key"
+)
+scrydantic_add_compile_fail_test(
+  flattened-optional
+  flattened_optional.cpp
+  "Results::page: carries scrydantic::flatten, which applies to members of aggregate type, not to std::optional<Page>"
+)
+scrydantic_add_compile_fail_test(
+  flattened-tag-key
+  flattened_tag_key.cpp
+  "Post::attachment<Image>.media.type: has the JSON key \"type\", which carries the variant's tag"
+)
+scrydantic_add_compile_fail_test(
+  flattened-description
+  flattened_description.cpp
+  "Results::page: carries scrydantic::flatten together with scrydantic::name, description, or check; a flattened member has no JSON key or value of its own for them to describe"
+)
+scrydantic_add_compile_fail_test(
+  flattened-class
+  flattened_class.cpp
+  "does not satisfy scrydantic::SupportedValue: Page carries scrydantic::flatten, which applies to data members"
+)
+scrydantic_add_compile_fail_test(
+  flattened-tool
+  flattened_tool.cpp
+  "scrydantic::bind<^^page_tools>(): page_tools::turn carries scrydantic::flatten, which applies to data members"
+)
+scrydantic_add_compile_fail_test(
+  flattened-endless-recursion
+  flattened_endless_recursion.cpp
+  "Link::next.link: Link contains itself through no std::optional, std::vector, or variant alternative after the first, so default-constructing it, as decoding does, never ends"
 )
 scrydantic_add_compile_fail_test(
   endless-recursion

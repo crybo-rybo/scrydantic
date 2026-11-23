@@ -148,6 +148,36 @@ private:
            owned_text(std::meta::identifier_of(member));
   }
 
+  // A field is named from the object down, through the flattened members that
+  // lead to it: "page.next_cursor".
+  static consteval std::string field_name(const declared_field& field) {
+    std::string name{};
+    for (const auto flattened : field.path) {
+      name += owned_text(std::meta::identifier_of(flattened));
+      name.push_back('.');
+    }
+    return name + owned_text(std::meta::identifier_of(field.member));
+  }
+
+  static consteval std::string field_path(const std::string& path,
+                                          const std::meta::info owner,
+                                          const declared_field& field) {
+    return (path.empty() ? display(owner) + "::" : path + ".") + field_name(field);
+  }
+
+  // The fields of `type` that have a key. Every member of `type` has passed its
+  // check by the time this is asked, but a flattened class may not have: in a
+  // recursive model it can still be mid-check, with an unnamed member that the
+  // check has yet to reach and report.
+  static consteval std::vector<declared_field>
+  keyed_fields(const std::meta::info type) {
+    auto fields = declared_fields_of(type);
+    std::erase_if(fields, [](const declared_field& field) {
+      return !std::meta::has_identifier(field.member);
+    });
+    return fields;
+  }
+
   static consteval std::string element_path(const std::string& path,
                                             const std::meta::info container) {
     return (path.empty() ? display(container) : path) + "[]";
@@ -313,6 +343,10 @@ private:
                      "carries scrydantic::name or emit_null, which apply to "
                      "data members");
     }
+    if (has_annotation(type, ^^flatten_t)) {
+      return problem(path, type,
+                     "carries scrydantic::flatten, which applies to data members");
+    }
     if (has_annotation(type, ^^tool)) {
       return problem(path, type,
                      "carries scrydantic::tool, which applies to functions");
@@ -373,8 +407,36 @@ private:
     return reason.empty() ? reason : at_path(here, reason);
   }
 
+  // A flattened member is no member of the JSON object; its class's fields are.
+  // So its type is a class with fields to give, which leaves out a
+  // std::optional or std::indirect of one, and nothing describes a key or a
+  // value that it does not have. A constraint, skip_null, and emit_null never
+  // apply to a member of aggregate type, and are rejected as such.
+  static consteval std::string check_flattened(const std::meta::info member,
+                                               const std::string& here) {
+    const auto type = std::meta::type_of(member);
+    if (kind_of(type) != value_kind::aggregate) {
+      return at_path(here, "carries scrydantic::flatten, which applies to members "
+                           "of aggregate type, not to " +
+                               display(type));
+    }
+    if (has_annotation(member, ^^name) || has_annotation(member, ^^description) ||
+        has_annotation(member, ^^check_t)) {
+      return at_path(here, "carries scrydantic::flatten together with "
+                           "scrydantic::name, description, or check; a flattened "
+                           "member has no JSON key or value of its own for them to "
+                           "describe");
+    }
+    return {};
+  }
+
   static consteval std::string check_member_annotations(const std::meta::info member,
                                                         const std::string& here) {
+    if (has_annotation(member, ^^flatten_t)) {
+      if (auto text = check_flattened(member, here); !text.empty()) {
+        return text;
+      }
+    }
     if (annotation_count(member, ^^description) > 1) {
       return at_path(here, "a reflected member may have at most one "
                            "scrydantic::description annotation");
@@ -403,18 +465,20 @@ private:
   }
 
   // Runs after every member passed, so each has an identifier and a valid key.
+  // The keys are those of the whole object, so a flattened member's fields may
+  // collide with the class's own and with another flattened member's.
   static consteval std::string check_keys(const std::meta::info type,
                                           const std::string& path) {
-    const auto members = data_members_of(type);
-    for (std::size_t left = 0; left < members.size(); ++left) {
-      for (std::size_t right = left + 1; right < members.size(); ++right) {
-        const auto key = json_key_of(members[left]);
-        if (key == json_key_of(members[right])) {
-          return problem(
-              path, type,
-              "has members " + owned_text(std::meta::identifier_of(members[left])) +
-                  " and " + owned_text(std::meta::identifier_of(members[right])) +
-                  " that both map to the JSON key \"" + owned_text(key) + "\"");
+    const auto fields = keyed_fields(type);
+    for (std::size_t left = 0; left < fields.size(); ++left) {
+      for (std::size_t right = left + 1; right < fields.size(); ++right) {
+        const auto key = json_key_of(fields[left].member);
+        if (key == json_key_of(fields[right].member)) {
+          return problem(path, type,
+                         "has members " + field_name(fields[left]) + " and " +
+                             field_name(fields[right]) +
+                             " that both map to the JSON key \"" + owned_text(key) +
+                             "\"");
         }
       }
     }
@@ -462,9 +526,9 @@ private:
     if (auto text = check(alternative, here); !text.empty()) {
       return text;
     }
-    for (const auto member : data_members_of(plain_type(alternative))) {
-      if (json_key_of(member) == tag_key) {
-        return at_path(member_path(here, plain_type(alternative), member),
+    for (const auto& field : keyed_fields(plain_type(alternative))) {
+      if (json_key_of(field.member) == tag_key) {
+        return at_path(field_path(here, plain_type(alternative), field),
                        "has the JSON key \"type\", which carries the variant's tag");
       }
     }

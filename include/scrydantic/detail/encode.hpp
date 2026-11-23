@@ -251,9 +251,21 @@ inline constexpr bool utf8_keys_v =
       return is_utf8(field.key_view());
     });
 
+// The object that declares a field of `object`: `object` itself, or the member
+// flattened into it, at any depth, that the `Depth` members at `Path` lead to.
+template <const std::meta::info* Path, std::size_t Depth, std::size_t At = 0>
+[[nodiscard]] constexpr const auto& declaring_object(const auto& object) noexcept {
+  if constexpr (At == Depth) {
+    return object;
+  } else {
+    return declaring_object<Path, Depth, At + 1>(object.[:Path[At]:]);
+  }
+}
+
 // Tagged is true when the object is a variant alternative, whose tag member joins
 // its members at its lexical position: before the first key that sorts after it,
-// or last.
+// or last. A field that a flattened member declares is written at its own key's
+// position like any other, from where it is stored.
 template <typename Type, bool Tagged, spelling Spelling>
 [[nodiscard]] encode_result<void> write_object(std::string& output, const Type& value,
                                                const std::size_t depth) {
@@ -288,16 +300,17 @@ template <typename Type, bool Tagged, spelling Spelling>
     if constexpr (Tagged && key > tag_key) {
       write_tag();
     }
+    const auto& owner = declaring_object<field.path, field.depth>(value);
     bool present = true;
     if constexpr (field.omit_null) {
-      present = value.[:member:].has_value();
+      present = owner.[:member:].has_value();
     }
     if (present) {
       separate();
       output.append(member_prefix(key));
-      using Member = std::remove_cvref_t<decltype(value.[:member:])>;
+      using Member = std::remove_cvref_t<decltype(owner.[:member:])>;
       if (auto status =
-              write_value<Member, Spelling>(output, value.[:member:], depth + 1);
+              write_value<Member, Spelling>(output, owner.[:member:], depth + 1);
           !status) {
         return std::unexpected(at_member(std::move(status.error()), key));
       }

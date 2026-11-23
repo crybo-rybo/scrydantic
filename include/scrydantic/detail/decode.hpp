@@ -364,7 +364,9 @@ template <std::meta::info Member, typename Value>
 }
 
 // Where `Member` stands among Type's fields in key order: its index in
-// fields_v<Type>.
+// fields_v<Type>. The member may be one that a class flattened into Type
+// declares; it is still one field of Type, since an object that held such a
+// class twice would have each of its keys twice, which the checks reject.
 template <typename Type, std::meta::info Member>
 inline constexpr std::size_t field_position_v = [] {
   std::size_t position = 0;
@@ -435,11 +437,12 @@ template <typename Type, bool Tagged>
 // being read or no value when that object lacks the member, and returns false
 // if the member failed, missed a constraint, failed a check, or is required and
 // absent. A member that keeps its default is the program's own value, so it is
-// not checked.
-template <typename Type, std::meta::info Member>
-[[nodiscard]] bool read_member(Type& object, const json_node found,
+// not checked. Root is the type of the JSON object, whose field the member is:
+// the class of `object`, or one that flattens it.
+template <typename Root, std::meta::info Member, typename Owner>
+[[nodiscard]] bool read_member(Owner& object, const json_node found,
                                const decode_cursor& parent) {
-  constexpr field_layout field = field_of(^^Type, Member);
+  constexpr field_layout field = fields_v<Root>[field_position_v<Root, Member>];
   constexpr std::string_view key = field.key_view();
   using Value = std::remove_cv_t<typename[:std::meta::type_of(Member):]>;
   const decode_cursor here = parent.member(key);
@@ -464,11 +467,42 @@ template <typename Type, std::meta::info Member>
   return true;
 }
 
+// Reads the members of `object`, a member flattened into the Root object being
+// read, and returns false if it failed. Its members are fields of that JSON
+// object, so they are read from `found`, the values of Root's fields, at the
+// object's own path, and a flattened member among them likewise. The class of
+// `object` has validators of its own, which run on it as read_object runs
+// Root's: last, and only once every member of it is valid.
+//
+// The loop is read_object's, repeated rather than shared with it: GCC 16
+// compiles a loop that the two share into other, larger code for a class that
+// flattens nothing, and as it stands that class is read by the same
+// instructions as before there were flattened members.
+template <typename Root, typename Flattened>
+[[nodiscard]] bool read_flattened(Flattened& object, const field_values<Root>& found,
+                                  const decode_cursor& here) {
+  bool valid = true;
+  template for (constexpr std::meta::info member : declared_members_v<Flattened>) {
+    if (here.stopped()) {
+      return false;
+    }
+    if constexpr (is_flattened(member)) {
+      if (!read_flattened<Root>(object.[:member:], found, here)) {
+        valid = false;
+      }
+    } else if (!read_member<Root, member>(object, found[field_position_v<Root, member>],
+                                          here)) {
+      valid = false;
+    }
+  }
+  return valid && passes_checks<^^Flattened>(object, here);
+}
+
 // Reads `view` into `object` and returns false if it failed. The members the
 // type does not declare are reported first, and then its own are read in
-// declaration order. The class's validators run last, and see only an object
-// whose every member is valid; in a recursive model each level's run once the
-// levels inside it have passed theirs.
+// declaration order, a flattened member's where it stands. The class's
+// validators run last, and see only an object whose every member is valid; in a
+// recursive model each level's run once the levels inside it have passed theirs.
 template <typename Type, bool Tagged>
 [[nodiscard]] bool read_object(Type& object, const json_node view,
                                const decode_cursor& here) {
@@ -482,8 +516,12 @@ template <typename Type, bool Tagged>
     if (here.stopped()) {
       return false;
     }
-    if (!read_member<Type, member>(object, found[field_position_v<Type, member>],
-                                   here)) {
+    if constexpr (is_flattened(member)) {
+      if (!read_flattened<Type>(object.[:member:], found, here)) {
+        valid = false;
+      }
+    } else if (!read_member<Type, member>(object, found[field_position_v<Type, member>],
+                                          here)) {
       valid = false;
     }
   }
