@@ -512,13 +512,15 @@ consteval std::optional<schema_node> root_node(const std::meta::info type) {
 //   type       = "bool" | "char" | "wchar_t" | "char8_t" | "char16_t" | "char32_t"
 //              | ( "int" | "uint" ) width | "float" | "double" | "string"
 //              | ( "optional" | "vector" | "indirect" ) "-" type
+//              | ( "map" | "unordered_map" ) "-" type "-" type
 //              | "array" "-" type "-" constant | "variant" "-" type { "-" type }
 //              | class
 //   constant   = [ "minus" ] decimal | "true" | "false" | enumerator-identifier
 //
 // A scope is a namespace, an anonymous namespace, or a class; a class argument
 // is an aggregate or an enum; `width` is an integer's width in bits, so a name is
-// the same on every platform; and a vector or an indirect uses std::allocator.
+// the same on every platform; a vector or an indirect uses std::allocator; and
+// a map, spelled with its key and mapped types, uses its template's defaults.
 // Thus recursive::Node<std::string> is "recursive.Node-string", Spin<-1> in an
 // anonymous namespace is "anonymous.Spin-minus1", and the plain form of a class
 // that carries a tag, whose schema lacks the tag, is "<class>-untagged".
@@ -651,6 +653,17 @@ consteval std::optional<name_result> container_name(const std::meta::info type) 
   if (default_allocator && is_specialization_of(type, ^^std::indirect)) {
     return spelled_template("indirect", arguments, 1);
   }
+  // A map whose every argument past the mapped type is its template's default.
+  // Parenthesized so clang-format, which does not know `^^`, lays them out.
+  for (const auto& [container, word] :
+       {std::pair{(^^std::map), "map"},
+        std::pair{(^^std::unordered_map), "unordered_map"}}) {
+    if (is_specialization_of(type, container) &&
+        type == std::meta::dealias(
+                    std::meta::substitute(container, {arguments[0], arguments[1]}))) {
+      return spelled_template(word, arguments, 2);
+    }
+  }
   return std::nullopt;
 }
 
@@ -695,8 +708,9 @@ consteval name_result type_name(const std::meta::info reflected) {
       display(type) +
       " is not a type that a definition name spells; an argument type must be "
       "bool, a character or integer type, float, double, std::string, a "
-      "std::optional, std::vector, std::indirect, std::array, or std::variant of "
-      "such types, an aggregate, or an enum");
+      "std::optional, std::vector, std::indirect, std::array, std::map, "
+      "std::unordered_map, or std::variant of such types, an aggregate, or an "
+      "enum");
 }
 
 // An integral constant, widened so that consteval code can read it without

@@ -137,6 +137,23 @@ struct Index {
   std::unordered_map<std::string, Index> entries;
 };
 
+// A recursive class template names its definition after its arguments, a map
+// among them.
+template <typename Value> struct Tree {
+  Value value{};
+  std::vector<Tree> branches;
+};
+
+struct Forest {
+  Tree<std::map<std::string, std::int32_t>> ordered;
+  Tree<std::unordered_map<std::string, bool>> hashed;
+};
+
+// A map's comparator is no part of a definition name, so it has none.
+struct Thicket {
+  Tree<std::map<std::string, std::int32_t, std::greater<>>> descending;
+};
+
 } // namespace maps
 
 namespace map_tools {
@@ -255,6 +272,11 @@ static_assert(
     scrydantic::schema_v<maps::Index> ==
     R"({"additionalProperties":false,"properties":{"entries":{"additionalProperties":{"$ref":"#"},"type":"object"}},"required":["entries"],"type":"object"})");
 
+static_assert(mentions(scrydantic::schema_v<maps::Forest>,
+                       R"("$ref":"#/$defs/maps.Tree-map-string-int32")"));
+static_assert(mentions(scrydantic::schema_v<maps::Forest>,
+                       R"("$ref":"#/$defs/maps.Tree-unordered_map-string-bool")"));
+
 // ---- Rejections --------------------------------------------------------------
 
 struct ByNumber {
@@ -327,6 +349,9 @@ static_assert(mentions(scrydantic::decodable_diagnostic<Lengthy>(),
 static_assert(mentions(scrydantic::supported_value_diagnostic<Skipped>(),
                        "Skipped::values: is not a std::optional, so skip_null and "
                        "emit_null do not apply to it"));
+static_assert(
+    mentions(scrydantic::supported_value_diagnostic<maps::Thicket>(),
+             "is not a type that a definition name spells; an argument type must be"));
 
 // An argument object stays an aggregate, whose members name the arguments.
 static_assert(!scrydantic::ToolArguments<std::map<std::string, int>>);
