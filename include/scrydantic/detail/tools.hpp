@@ -1076,10 +1076,29 @@ consteval std::meta::info constant_text(const std::string_view text) {
       std::meta::reflect_constant_string(owned_text(text)));
 }
 
+// A member function as a walk of its class reflects it. GCC 16 keeps `^^Box::f`,
+// as a caller of apply() writes it, and the `f` that members_of(^^Box) returns
+// apart as template arguments, though they compare equal: each would name a
+// bound_function, and so an argument object, of its own, and code that meets
+// both in one translation unit would read one object through the other's
+// members. Every binding is therefore keyed on the walk's reflection.
+consteval std::meta::info canonical_function(const std::meta::info function) {
+  if (std::meta::is_class_member(function)) {
+    for (const auto member : std::meta::members_of(
+             std::meta::parent_of(function), std::meta::access_context::unchecked())) {
+      if (member == function) {
+        return member;
+      }
+    }
+  }
+  return function;
+}
+
 // The bound_function of a function that has passed function_problem, with the
 // facts the declarations preceding this point give it.
-consteval std::meta::info bound_function_of(const std::meta::info function,
+consteval std::meta::info bound_function_of(const std::meta::info declared,
                                             const std::meta::info context) {
+  const auto function = canonical_function(declared);
   std::vector arguments{std::meta::reflect_constant(function),
                         std::meta::reflect_constant(context),
                         constant_text(synthesized_member_list(function, context)),

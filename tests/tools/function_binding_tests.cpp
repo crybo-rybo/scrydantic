@@ -797,3 +797,33 @@ TEST_CASE("a library binds every function that carries its own annotation") {
   CHECK(added[1].call(*seven) == "item 7");
   CHECK(added[1].call(*nothing) == "bad request: $.id is a required member");
 }
+
+namespace shared_member {
+
+struct Scaler {
+  int factor{3};
+
+  [[= scrydantic::tool{"Scale a value"}]] int scale(int value,
+                                                    std::string label) const {
+    return label.empty() ? 0 : value * factor;
+  }
+};
+
+} // namespace shared_member
+
+// The member function is reflected two ways here: by name for apply(), and by
+// the walk of its class for bind(). Both must name one argument object.
+TEST_CASE("a member function is applied by hand and bound as a tool in one unit") {
+  using shared_member::Scaler;
+
+  Scaler scaler{};
+  scrydantic::arguments_t<^^Scaler::scale> arguments{.value = 2, .label = "x"};
+  CHECK(scrydantic::apply<^^Scaler::scale>(scaler, std::move(arguments)) == 6);
+
+  const auto tools = scrydantic::bind(std::make_shared<Scaler>());
+  REQUIRE(tools.size() == 1);
+  const auto result =
+      tools[0].invoke(scrydantic::Json{.text = R"({"value":4,"label":"x"})"});
+  REQUIRE(result);
+  CHECK(result->text == "12");
+}
