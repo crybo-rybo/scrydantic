@@ -312,6 +312,10 @@ consteval void append_node(std::vector<char>& output, const schema_node node,
   append_object_schema(output, node, std::move(keywords), references);
 }
 
+// The schema of each alternative, in alternative order: a tagged one's object
+// with its tag, null for a std::monostate, and any other's as its type has it
+// anywhere. An integer and a floating-point alternative overlap, as a JSON
+// integer is valid against both, which "anyOf" allows and decoding settles.
 consteval void append_alternatives(std::vector<char>& output,
                                    const std::meta::info variant,
                                    const schema_references& references) {
@@ -320,8 +324,14 @@ consteval void append_alternatives(std::vector<char>& output,
     if (!first) {
       output.push_back(',');
     }
-    append_node(output, {.type = plain_type(alternative), .tagged = true}, {},
-                references);
+    if (is_tagged_alternative(alternative)) {
+      append_node(output, {.type = plain_type(alternative), .tagged = true}, {},
+                  references);
+    } else if (alternative_kind_of(alternative) == alternative_kind::null) {
+      append_typed_schema(output, "null", {});
+    } else {
+      append_schema(output, alternative, {}, {}, references);
+    }
     first = false;
   }
 }

@@ -145,6 +145,7 @@ add_executable(
   codec/enumerator_name_tests.cpp
   codec/flatten_tests.cpp
   codec/json_schema_tests.cpp
+  codec/kind_variant_tests.cpp
   codec/map_tests.cpp
   codec/number_spelling_tests.cpp
   codec/schema_default_tests.cpp
@@ -254,6 +255,66 @@ scrydantic_add_compile_fail_test(
   untagged-variant
   untagged_variant.cpp
   "Arguments::shape: std::variant<Circle, Square> has the alternative Circle without a scrydantic::tag annotation"
+)
+scrydantic_add_compile_fail_test(
+  variant-untagged-aggregates
+  variant_untagged_aggregates.cpp
+  "has the alternative Item without a scrydantic::tag annotation beside Other, another JSON object; alternatives that are objects are told apart by their tags"
+)
+scrydantic_add_compile_fail_test(
+  variant-string-and-enum
+  variant_string_and_enum.cpp
+  "and Mode that share the JSON kind string; the kind of a JSON value selects its alternative, and only aggregates that each carry a scrydantic::tag can share one"
+)
+scrydantic_add_compile_fail_test(
+  variant-two-arrays
+  variant_two_arrays.cpp
+  "has alternatives std::vector<int> and std::array<int, 2> that share the JSON kind array"
+)
+scrydantic_add_compile_fail_test(
+  variant-two-integers
+  variant_two_integers.cpp
+  "does not satisfy scrydantic::Encodable: Counter::value: std::variant<int, long int> has alternatives int and long int that share the JSON kind integer"
+)
+scrydantic_add_compile_fail_test(
+  variant-map-and-aggregate
+  variant_map_and_aggregate.cpp
+  "double> that share the JSON kind object"
+)
+scrydantic_add_compile_fail_test(
+  variant-json-alternative
+  variant_json_alternative.cpp
+  "has the alternative scrydantic::Json, which holds a value of any JSON kind, so no kind selects it; a scrydantic::Json in the variant's place holds what the variant would"
+)
+scrydantic_add_compile_fail_test(
+  variant-optional-alternative
+  variant_optional_alternative.cpp
+  "has the alternative std::optional<int>, which is null or its value, so it has no one JSON kind; std::monostate is the alternative that is null"
+)
+scrydantic_add_compile_fail_test(
+  variant-nested-variant
+  variant_nested_variant.cpp
+  "has the alternative std::variant<int, bool>, which is a variant itself, so it has no one JSON kind; list its alternatives in this variant"
+)
+scrydantic_add_compile_fail_test(
+  variant-indirect-alternative
+  variant_indirect_alternative.cpp
+  "has the alternative std::indirect<Item>, which is a std::indirect, which a variant does not see through; an aggregate alternative can hold it as a member"
+)
+scrydantic_add_compile_fail_test(
+  variant-qualified-alternative
+  variant_qualified_alternative.cpp
+  "has the alternative const int, which is cv-qualified; an alternative is a plain value type"
+)
+scrydantic_add_compile_fail_test(
+  optional-monostate-variant
+  optional_monostate_variant.cpp
+  "holds a variant with a std::monostate alternative, so null would be both the empty optional and that alternative; keep one of the two"
+)
+scrydantic_add_compile_fail_test(
+  tags-of-kind-variant
+  tags_of_kind_variant.cpp
+  "std::variant<int, Circle> has the alternative int, which carries no tag, so it does not have a tag for every alternative"
 )
 scrydantic_add_compile_fail_test(
   duplicate-key

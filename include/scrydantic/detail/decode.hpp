@@ -489,8 +489,8 @@ inline void report_unknown_key(const std::string_view key, const decode_cursor& 
 // there was one. The object's members and the type's fields are both in key
 // order, so one pass over the two pairs them, where a search for each field and
 // another for each member would compare keys many times over. Tagged is true
-// when the object is a variant alternative, whose discriminator member the
-// variant has already read.
+// when the object is a tagged variant alternative, whose discriminator member
+// the variant has already read.
 template <typename Type, bool Tagged>
 [[nodiscard]] bool pair_members(const json_node view, const decode_cursor& here,
                                 field_values<Type>& found) {
@@ -642,21 +642,41 @@ template <typename Type, bool Tagged>
   return value;
 }
 
-// A missing or unknown tag leaves no alternative to check the object against, so
-// it is the variant's only issue. The variant is built from the alternative its
-// tag selects rather than read in place, which would default-construct its
-// first alternative only to replace it, so it builds its failures itself.
-template <typename Variant>
-[[nodiscard]] decode_result<Variant> read_variant(json_node view,
-                                                  const decode_cursor& here) {
-  static constexpr std::string_view tags = tag_names(^^Variant);
-  if (view.kind() != JsonKind::object) {
-    view = spelled_structure(view, here, JsonKind::object);
-    if (!view) {
-      here.report(IssueKind::wrong_type, "must be an object");
-      return decode_failed<Variant>();
-    }
+// ---- Variants ----------------------------------------------------------------
+//
+// A variant is read as the alternative that the value's JSON kind selects
+// (alternative_kind), and only as that one: no alternative is tried and given
+// up, so the issues of a value are those of the alternative it is. The variant
+// is built from that alternative rather than read in place, which would
+// default-construct its first alternative only to replace it, so it builds its
+// failures itself.
+
+// Reads `view` as the alternative of Variant that `Alternative` reflects. A
+// tagged alternative is the object with its tag, a std::monostate has nothing
+// to read, and any other is read as its type is anywhere.
+template <typename Variant, std::meta::info Alternative>
+[[nodiscard]] decode_result<Variant> read_alternative(const json_node view,
+                                                      const decode_cursor& here) {
+  using Type = typename[:Alternative:];
+  constexpr auto held = [](Type&& value) {
+    return Variant{std::in_place_type<Type>, std::move(value)};
+  };
+  if constexpr (alternative_kind_of(Alternative) == alternative_kind::null) {
+    return decode_result<Variant>{std::in_place, std::in_place_type<Type>};
+  } else if constexpr (is_tagged_alternative(Alternative)) {
+    return read_in_place<Type, true>(view, here).transform(held);
+  } else {
+    return read_value<Type>(view, here).transform(held);
   }
+}
+
+// Reads `view`, an object, as the tagged alternative of Variant that its tag
+// names. A missing or unknown tag leaves no alternative to check the object
+// against, so it is the variant's only issue.
+template <typename Variant>
+[[nodiscard]] decode_result<Variant> read_tagged(const json_node view,
+                                                 const decode_cursor& here) {
+  static constexpr std::string_view tags = tag_names(^^Variant);
   const decode_cursor tag = here.member(tag_key);
   const auto discriminator = view.find(tag_key);
   if (!discriminator) {
@@ -668,17 +688,122 @@ template <typename Variant>
 
   const auto selected = discriminator.string();
   template for (constexpr std::meta::info alternative : alternatives_v<Variant>) {
-    using Alternative = typename[:alternative:];
-    if (selected == *tag_of(alternative)) {
-      return read_in_place<Alternative, true>(view, here)
-          .transform([](Alternative&& value) {
-            return Variant{std::in_place_type<Alternative>, std::move(value)};
-          });
+    if constexpr (is_tagged_alternative(alternative)) {
+      if (selected == *tag_of(alternative)) {
+        return read_alternative<Variant, alternative>(view, here);
+      }
     }
   }
   tag.report(IssueKind::unknown_tag,
              std::string{"must be one of: "} + std::string{tags});
   return decode_failed<Variant>();
+}
+
+// Reads `view`, a value of `Kind`, as the alternative of Variant that has the
+// kind. A variant without one rejects the value, and tells the kinds it does
+// accept.
+template <typename Variant, alternative_kind Kind>
+[[nodiscard]] decode_result<Variant> read_kind(const json_node view,
+                                               const decode_cursor& here) {
+  constexpr std::meta::info alternative = kind_alternative_v<Variant, Kind>;
+  if constexpr (!has_kind_v<Variant, Kind>) {
+    static constexpr std::string_view reason = accepted_kinds_reason(^^Variant);
+    here.report(IssueKind::wrong_type, reason);
+    return decode_failed<Variant>();
+  } else if constexpr (is_tagged_alternative(alternative)) {
+    return read_tagged<Variant>(view, here);
+  } else {
+    return read_alternative<Variant, alternative>(view, here);
+  }
+}
+
+// Whether `view`, a JSON integer, is a value of Integer.
+template <typename Integer>
+[[nodiscard]] bool holds_integer(const json_node view) noexcept {
+  if (const auto value = view.signed_integer()) {
+    return std::in_range<Integer>(*value);
+  }
+  return std::in_range<Integer>(*view.unsigned_integer());
+}
+
+// Reads `view`, a JSON integer, as the integer alternative of Variant. An
+// integer past that alternative's range is a number still, so a floating-point
+// alternative takes it, as it takes every integer of a variant with no integer
+// alternative. Without one, the integer is held to the range.
+template <typename Variant>
+[[nodiscard]] decode_result<Variant> read_integer_kind(const json_node view,
+                                                       const decode_cursor& here) {
+  using enum alternative_kind;
+  if constexpr (has_kind_v<Variant, integer> && has_kind_v<Variant, number>) {
+    if (!holds_integer<typename[:kind_alternative_v<Variant, integer>:]>(view)) {
+      return read_kind<Variant, number>(view, here);
+    }
+  }
+  return read_kind<Variant, has_kind_v<Variant, integer> ? integer : number>(view,
+                                                                             here);
+}
+
+// The value of a kind that an alternative of Variant has, which the text of
+// `view`, a string, spells, when the decode coerces that kind; otherwise no
+// value. Text spells one value, so the first that reads it is the only one.
+template <typename Variant>
+[[nodiscard]] json_node spelled_alternative(const json_node view,
+                                            const decode_cursor& here) {
+  using enum alternative_kind;
+  json_node spelled{};
+  if constexpr (has_kind_v<Variant, boolean> || has_kind_v<Variant, integer> ||
+                has_kind_v<Variant, number>) {
+    spelled = spelled_scalar(view, here);
+  }
+  if constexpr (has_kind_v<Variant, array>) {
+    if (!spelled) {
+      spelled = spelled_structure(view, here, JsonKind::array);
+    }
+  }
+  if constexpr (has_kind_v<Variant, object>) {
+    if (!spelled) {
+      spelled = spelled_structure(view, here, JsonKind::object);
+    }
+  }
+  return spelled;
+}
+
+// The one switch on the value's kind. A string is the string alternative
+// whatever its text spells, as a std::string member takes any string. Only a
+// variant without one can take a string for the value it spells, and then reads
+// that value as if it stood in the string's place. A string that spells no
+// value an alternative could be stays a string, which the variant rejects.
+template <typename Variant>
+[[nodiscard]] decode_result<Variant> read_variant(json_node view,
+                                                  const decode_cursor& here) {
+  using enum alternative_kind;
+  JsonKind kind = view.kind();
+  if constexpr (!has_kind_v<Variant, string>) {
+    if (kind == JsonKind::string) {
+      if (const json_node spelled = spelled_alternative<Variant>(view, here)) {
+        view = spelled;
+        kind = view.kind();
+      }
+    }
+  }
+  switch (kind) {
+  case JsonKind::null:
+    return read_kind<Variant, null>(view, here);
+  case JsonKind::boolean:
+    return read_kind<Variant, boolean>(view, here);
+  case JsonKind::signed_integer:
+  case JsonKind::unsigned_integer:
+    return read_integer_kind<Variant>(view, here);
+  case JsonKind::number:
+    return read_kind<Variant, number>(view, here);
+  case JsonKind::string:
+    return read_kind<Variant, string>(view, here);
+  case JsonKind::array:
+    return read_kind<Variant, array>(view, here);
+  case JsonKind::object:
+    return read_kind<Variant, object>(view, here);
+  }
+  std::unreachable();
 }
 
 template <typename Optional>

@@ -366,11 +366,8 @@ private:
       return problem(path, type, "has a cv-qualified or reference element");
     }
     if (kind == value_kind::optional) {
-      return kind_of(element) == value_kind::optional
-                 ? problem(path, type,
-                           "nests std::optional directly; one optional layer is the "
-                           "only nullable form")
-                 : check(element, path);
+      const auto reason = null_problem(element);
+      return reason.empty() ? check(element, path) : problem(path, type, reason);
     }
     // An indirect is the value it owns, on the wire and in the schema, so it adds
     // nothing to the path.
@@ -388,6 +385,24 @@ private:
                      "fixed size");
     }
     return check(element, element_path(path, type));
+  }
+
+  // Why an optional of `element` would give null two meanings, as what the
+  // optional does; empty when null is the empty optional alone. A variant's
+  // std::monostate is null too: the schema would allow null twice, and decoding
+  // could only ever read it as the empty optional.
+  static consteval std::string_view null_problem(const std::meta::info element) {
+    if (kind_of(element) == value_kind::optional) {
+      return "nests std::optional directly; one optional layer is the only "
+             "nullable form";
+    }
+    const auto owned = owned_type(element);
+    if (kind_of(owned) == value_kind::variant &&
+        alternative_of_kind(owned, alternative_kind::null) != std::meta::info{}) {
+      return "holds a variant with a std::monostate alternative, so null would be "
+             "both the empty optional and that alternative; keep one of the two";
+    }
+    return {};
   }
 
   consteval std::string check_aggregate(const std::meta::info type,
@@ -572,6 +587,8 @@ private:
     return {};
   }
 
+  // Each alternative alone, and then every two of them together: a variant is
+  // admitted when no JSON value could be read as either of two alternatives.
   consteval std::string check_variant(const std::meta::info type,
                                       const std::string& path) {
     const auto alternatives = alternatives_of(type);
@@ -582,36 +599,96 @@ private:
     }
     for (std::size_t left = 0; left < alternatives.size(); ++left) {
       for (std::size_t right = left + 1; right < alternatives.size(); ++right) {
-        if (*tag_of(alternatives[left]) == *tag_of(alternatives[right])) {
-          return problem(path, type,
-                         "has alternatives " + display(alternatives[left]) + " and " +
-                             display(alternatives[right]) + " that share the tag \"" +
-                             owned_text(*tag_of(alternatives[left])) + "\"");
+        if (const auto reason =
+                shared_value_problem(alternatives[left], alternatives[right]);
+            !reason.empty()) {
+          return problem(path, type, reason);
         }
       }
     }
     return {};
   }
 
+  // Why some JSON value could be read as either of two alternatives of one
+  // variant, as the object of the variant; empty when none could. Alternatives
+  // of two kinds share no value: an integer and a floating-point alternative
+  // divide the numbers by the integer's range. Those of one kind share every
+  // value of it, but for two tagged aggregates, which share the objects of a
+  // tag that both carry.
+  static consteval std::string shared_value_problem(const std::meta::info left,
+                                                    const std::meta::info right) {
+    const auto kind = alternative_kind_of(left);
+    if (kind != alternative_kind_of(right)) {
+      return {};
+    }
+    const auto both = display(left) + " and " + display(right);
+    if (is_tagged_alternative(left) && is_tagged_alternative(right)) {
+      return *tag_of(left) == *tag_of(right)
+                 ? "has alternatives " + both + " that share the tag \"" +
+                       owned_text(*tag_of(left)) + "\""
+                 : std::string{};
+    }
+    // An aggregate beside another is a tagged union that is missing a tag.
+    if (kind == alternative_kind::object && kind_of(left) == value_kind::aggregate &&
+        kind_of(right) == value_kind::aggregate) {
+      const bool untagged_left = !is_tagged_alternative(left);
+      return "has the alternative " + display(untagged_left ? left : right) +
+             " without a scrydantic::tag annotation beside " +
+             display(untagged_left ? right : left) +
+             ", another JSON object; alternatives that are objects are told apart "
+             "by their tags";
+    }
+    return "has alternatives " + both + " that share the JSON kind " +
+           owned_text(words_of(kind).name) +
+           "; the kind of a JSON value selects its alternative, and only "
+           "aggregates that each carry a scrydantic::tag can share one";
+  }
+
+  // Why a type whose kind_of() is `kind` has no JSON kind of its own to be
+  // selected by, as what follows "which"; empty for a type that is no supported
+  // value at all, which the shape check explains.
+  static consteval std::string_view kindless_reason(const value_kind kind) {
+    switch (kind) {
+    case value_kind::json:
+      return "holds a value of any JSON kind, so no kind selects it; a "
+             "scrydantic::Json in the variant's place holds what the variant "
+             "would";
+    case value_kind::optional:
+      return "is null or its value, so it has no one JSON kind; std::monostate "
+             "is the alternative that is null";
+    case value_kind::indirect:
+      return "is a std::indirect, which a variant does not see through; an "
+             "aggregate alternative can hold it as a member";
+    case value_kind::variant:
+      return "is a variant itself, so it has no one JSON kind; list its "
+             "alternatives in this variant";
+    default:
+      return {};
+    }
+  }
+
   consteval std::string check_alternative(const std::meta::info variant,
                                           const std::meta::info alternative,
                                           const std::string& path) {
-    const auto name_of = display(alternative);
-    if (is_qualified(alternative) || kind_of(alternative) != value_kind::aggregate) {
+    const auto shown = "has the alternative " + display(alternative) + ", which ";
+    if (is_qualified(alternative)) {
       return problem(path, variant,
-                     "has the alternative " + name_of +
-                         ", which is not a plain aggregate; a reflected variant is a "
-                         "tagged union of aggregates");
+                     shown + "is cv-qualified; an alternative is a plain value type");
     }
-    if (!has_annotation(plain_type(alternative), ^^tag)) {
-      return problem(path, variant,
-                     "has the alternative " + name_of +
-                         " without a scrydantic::tag annotation; a reflected "
-                         "variant is a tagged union of aggregates");
+    const auto kind = alternative_kind_of(alternative);
+    if (kind == alternative_kind::null) {
+      return {};
+    }
+    if (const auto reason = kindless_reason(kind_of(alternative));
+        kind == alternative_kind::none && !reason.empty()) {
+      return problem(path, variant, shown + owned_text(reason));
     }
     const auto here = alternative_path(path, alternative);
     if (auto text = check(alternative, here); !text.empty()) {
       return text;
+    }
+    if (!is_tagged_alternative(alternative)) {
+      return {};
     }
     for (const auto& field : keyed_fields(plain_type(alternative))) {
       if (json_key_of(field.member) == tag_key) {
@@ -789,11 +866,24 @@ template <typename Type> consteval auto object_keys() {
   }
 }
 
+// tags_v pairs a tag with every alternative, by index, so it is defined for a
+// variant whose every alternative carries one.
 template <typename Type> consteval std::string_view tags_diagnostic() {
   if constexpr (kind_of(^^Type) != value_kind::variant) {
     return static_string(display(^^Type) + " is not a std::variant, so it has no tags");
   } else {
-    return encodable_diagnostic<Type>();
+    if (const auto problem = encodable_diagnostic<Type>(); !problem.empty()) {
+      return problem;
+    }
+    for (const auto alternative : alternatives_of(^^Type)) {
+      if (!is_tagged_alternative(alternative)) {
+        return static_string(display(^^Type) + " has the alternative " +
+                             display(alternative) +
+                             ", which carries no tag, so it does not have a tag "
+                             "for every alternative");
+      }
+    }
+    return {};
   }
 }
 

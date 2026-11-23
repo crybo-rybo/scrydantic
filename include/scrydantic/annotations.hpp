@@ -292,11 +292,14 @@ template <std::size_t Size> name(const char (&value)[Size]) -> name<Size>;
 
 /// Names a class's discriminator value when it is an alternative of a `std::variant`.
 ///
-/// A reflected `std::variant<A, B, ...>` is a tagged union: each alternative is a
-/// plain aggregate with exactly one tag, the tags are distinct, and the encoded
-/// object carries its alternative's tag under the key `"type"`. An alternative
-/// may therefore not declare a member whose final key is `"type"`. Outside a
-/// variant the tag has no effect. Usage:
+/// A reflected `std::variant<A, B, ...>` of aggregates is a tagged union: each
+/// alternative is a plain aggregate with exactly one tag, the tags are distinct,
+/// and the encoded object carries its alternative's tag under the key `"type"`.
+/// An alternative may therefore not declare a member whose final key is
+/// `"type"`. The tagged aggregates may stand beside alternatives of other JSON
+/// kinds, as in `std::variant<std::string, Circle, Square>`, and a variant's
+/// only aggregate needs no tag: without one it is written as the plain object
+/// it is. Outside a variant the tag has no effect. Usage:
 /// `struct [[= scrydantic::tag{"text"}]] TextBlock { std::string text; };`.
 /// @tparam Size Character-array extent including the null terminator.
 template <std::size_t Size> struct tag : detail::fixed_text<Size> {

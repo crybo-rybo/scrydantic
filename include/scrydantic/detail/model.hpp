@@ -304,6 +304,90 @@ consteval bool is_flattened(const std::meta::info member) {
          kind_of(std::meta::type_of(member)) == value_kind::aggregate;
 }
 
+// ---- Variant alternatives ----------------------------------------------------
+
+// The JSON kind of a variant alternative: what a JSON value must be to be read
+// as it. A variant's alternatives are told apart by kind alone, so it holds at
+// most one of each, but for two cases. An integer and a floating-point
+// alternative share the numbers: a JSON integer within the integer
+// alternative's range is that alternative, and any other number the
+// floating-point one. And aggregates that each carry a scrydantic::tag share
+// the objects, told apart by the tag under tag_key. A variant of such
+// aggregates alone, the tagged union, is the case where every alternative is
+// an object.
+//
+// `none` is a type that is no alternative: one without a kind of its own, as a
+// Json, an optional, a std::indirect, and another variant are, or one that is
+// no supported value at all.
+enum class alternative_kind : std::uint8_t {
+  none,
+  null,
+  boolean,
+  integer,
+  number,
+  string,
+  array,
+  object,
+};
+
+// std::monostate is a variant's way to hold nothing, so as an alternative it is
+// null. Elsewhere it is the empty aggregate that kind_of() finds it to be.
+consteval alternative_kind alternative_kind_of(const std::meta::info alternative) {
+  const auto type = plain_type(alternative);
+  if (type == (^^std::monostate)) {
+    return alternative_kind::null;
+  }
+  switch (kind_of(type)) {
+  case value_kind::boolean:
+    return alternative_kind::boolean;
+  case value_kind::integer:
+    return alternative_kind::integer;
+  case value_kind::floating:
+    return alternative_kind::number;
+  case value_kind::string:
+  case value_kind::string_view:
+  case value_kind::enumeration:
+    return alternative_kind::string;
+  case value_kind::vector:
+  case value_kind::array:
+    return alternative_kind::array;
+  case value_kind::map:
+  case value_kind::aggregate:
+    return alternative_kind::object;
+  default:
+    return alternative_kind::none;
+  }
+}
+
+// Whether an alternative's object carries a tag and is selected by it: an
+// aggregate with a scrydantic::tag. An aggregate without one, like a map, is an
+// object that its kind alone selects.
+consteval bool is_tagged_alternative(const std::meta::info alternative) {
+  return kind_of(alternative) == value_kind::aggregate &&
+         tag_of(alternative).has_value();
+}
+
+// The first alternative of `variant` that has `kind`, or the null reflection
+// when none has. In a variant the checks admit it is the only one, but for the
+// tagged aggregates, which are all objects.
+consteval std::meta::info alternative_of_kind(const std::meta::info variant,
+                                              const alternative_kind kind) {
+  for (const auto alternative : alternatives_of(variant)) {
+    if (alternative_kind_of(alternative) == kind) {
+      return alternative;
+    }
+  }
+  return {};
+}
+
+template <typename Variant, alternative_kind Kind>
+inline constexpr std::meta::info kind_alternative_v =
+    alternative_of_kind(^^Variant, Kind);
+
+template <typename Variant, alternative_kind Kind>
+inline constexpr bool has_kind_v =
+    kind_alternative_v<Variant, Kind> != std::meta::info{};
+
 // ---- Field layout ------------------------------------------------------------
 
 // One field of an object: a data member whose value the object's JSON carries
@@ -498,18 +582,68 @@ consteval std::string_view enumerator_names(const std::meta::info type) {
   return joined_names(names);
 }
 
-// The declared tags of a variant's alternatives, in declaration order.
+// The declared tags of a variant's tagged alternatives, in declaration order.
 consteval std::string_view tag_names(const std::meta::info variant) {
   std::vector<std::string_view> names{};
   for (const auto alternative : alternatives_of(variant)) {
-    names.push_back(*tag_of(alternative));
+    if (is_tagged_alternative(alternative)) {
+      names.push_back(*tag_of(alternative));
+    }
   }
   return joined_names(names);
 }
 
+// A kind's name, and the words a reason asks for a value of that kind with.
+struct kind_words {
+  std::string_view name{};
+  std::string_view phrase{};
+};
+
+consteval kind_words words_of(const alternative_kind kind) {
+  switch (kind) {
+  case alternative_kind::null:
+    return {.name = "null", .phrase = "null"};
+  case alternative_kind::boolean:
+    return {.name = "boolean", .phrase = "a boolean"};
+  case alternative_kind::integer:
+    return {.name = "integer", .phrase = "an integer"};
+  case alternative_kind::number:
+    return {.name = "number", .phrase = "a number"};
+  case alternative_kind::string:
+    return {.name = "string", .phrase = "a string"};
+  case alternative_kind::array:
+    return {.name = "array", .phrase = "an array"};
+  case alternative_kind::object:
+    return {.name = "object", .phrase = "an object"};
+  default:
+    return {};
+  }
+}
+
+// The reason a variant rejects a value of a kind that none of its alternatives
+// has: the kinds they have, each once, in alternative order, as `must be an
+// integer or a string`. For a tagged union it is `must be an object`.
+consteval std::string_view accepted_kinds_reason(const std::meta::info variant) {
+  std::vector<alternative_kind> kinds{};
+  for (const auto alternative : alternatives_of(variant)) {
+    if (const auto kind = alternative_kind_of(alternative);
+        !std::ranges::contains(kinds, kind)) {
+      kinds.push_back(kind);
+    }
+  }
+  std::string text{"must be "};
+  for (std::size_t index = 0; index < kinds.size(); ++index) {
+    if (index != 0) {
+      text += kinds.size() == 2 ? " or " : index + 1 == kinds.size() ? ", or " : ", ";
+    }
+    text += words_of(kinds[index]).phrase;
+  }
+  return static_string(text);
+}
+
 // ---- Recursion ---------------------------------------------------------------
 
-// An aggregate as a schema writes it: as a plain value, or as a variant
+// An aggregate as a schema writes it: as a plain value, or as a tagged variant
 // alternative, whose object also carries the tag. The two forms have different
 // schemas, so whether a form can contain itself is asked of each separately.
 struct schema_node {
@@ -533,8 +667,15 @@ consteval void append_held_nodes(std::vector<schema_node>& nodes,
   case value_kind::map:
     return append_held_nodes(nodes, mapped_of(plain));
   case value_kind::variant:
+    // A tagged alternative is its own form of its aggregate. Any other holds
+    // what its type does anywhere, but for std::monostate, which is null here
+    // and no aggregate.
     for (const auto alternative : alternatives_of(plain)) {
-      nodes.push_back({.type = plain_type(alternative), .tagged = true});
+      if (is_tagged_alternative(alternative)) {
+        nodes.push_back({.type = plain_type(alternative), .tagged = true});
+      } else if (alternative_kind_of(alternative) != alternative_kind::null) {
+        append_held_nodes(nodes, alternative);
+      }
     }
     return;
   case value_kind::aggregate:

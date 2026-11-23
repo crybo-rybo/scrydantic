@@ -312,10 +312,10 @@ inline constexpr bool utf8_keys_v =
       return is_utf8(field.key_view());
     });
 
-// Tagged is true when the object is a variant alternative, whose tag member joins
-// its members at its lexical position: before the first key that sorts after it,
-// or last. A field that a flattened member declares is written at its own key's
-// position like any other, from where it is stored.
+// Tagged is true when the object is a tagged variant alternative, whose tag
+// member joins its members at its lexical position: before the first key that
+// sorts after it, or last. A field that a flattened member declares is written
+// at its own key's position like any other, from where it is stored.
 template <typename Type, bool Tagged, spelling Spelling>
 [[nodiscard]] encode_result<void> write_object(std::string& output, const Type& value,
                                                const std::size_t depth) {
@@ -373,6 +373,10 @@ template <typename Type, bool Tagged, spelling Spelling>
   return {};
 }
 
+// A variant is written as the alternative it holds: a tagged one as its object
+// with the tag, a std::monostate as null, and any other as its type is written
+// anywhere. Nothing marks which alternative it was but the tag and the value's
+// own kind, which is what the checks make enough to read it back by.
 template <spelling Spelling, typename Variant>
 [[nodiscard]] encode_result<void>
 write_variant(std::string& output, const Variant& value, const std::size_t depth) {
@@ -380,8 +384,16 @@ write_variant(std::string& output, const Variant& value, const std::size_t depth
     return encode_fail("is a variant left valueless by an exception");
   }
   return std::visit(
-      [&output, depth]<typename Alternative>(const Alternative& alternative) {
-        return write_object<Alternative, true, Spelling>(output, alternative, depth);
+      [&output, depth]<typename Alternative>(
+          const Alternative& alternative) -> encode_result<void> {
+        if constexpr (is_tagged_alternative(^^Alternative)) {
+          return write_object<Alternative, true, Spelling>(output, alternative, depth);
+        } else if constexpr (std::same_as<Alternative, std::monostate>) {
+          output.append("null");
+          return {};
+        } else {
+          return write_value<Alternative, Spelling>(output, alternative, depth);
+        }
       },
       value);
 }
