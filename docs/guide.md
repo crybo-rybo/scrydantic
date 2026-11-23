@@ -126,7 +126,7 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | `flatten` | aggregate member | Makes the member's fields fields of the enclosing object. The member has no key of its own. |
 | `tool{"..."}` | function | Makes the function a tool, with this description. |
 | `range`, `multiple_of`, `length`, `items`, `pattern` | member | Constraints. See [Constraints and validators](#constraints-and-validators). |
-| `check<&fn>` | member, class | Runs a validator after decoding. |
+| `check<&fn>` | member, class | Runs a validator after decoding, and in `validate`. |
 
 `description_of<text>()` builds a description from a namespace-scope
 `constexpr std::string_view`, for text you keep in one place.
@@ -399,7 +399,8 @@ if (json) {
 Encoding fails only for values that have no JSON form: a NaN or an infinity, an
 enum value that is not a declared enumerator, a string that is not UTF-8, an
 invalid `Json` payload, or nesting deeper than 256 levels. It does not check
-constraints or validators, because the value is the program's own.
+constraints or validators, because the value is the program's own. To check
+them, call [`validate`](#constraints-and-validators).
 
 `encode` re-spells a `Json` member canonically, as decoding does, so a number
 in it that a `double` cannot hold exactly loses digits. `encode_verbatim(value)`
@@ -551,6 +552,33 @@ $.guests must be at most 8     $.guests must be at most 8
 
 A validator reports a rejection by returning it. Do not throw from one.
 
+**Checking a value you built.** Constraints and validators run when a value is
+decoded. A value that your program fills in itself, from a database row or a
+configuration file, is not checked until you ask. `validate(value)` checks it
+and returns a `Status`. A failure lists the issues that decoding the same value
+from JSON would list, with the same paths, kinds, and reasons, up to 64:
+
+```cpp
+const Booking booking{.city = "Rome", .guests = 9};
+const scrydantic::Status status = scrydantic::validate(booking);
+status.error().message;
+// $.city has no row in cities
+// $.guests must be at most 8
+```
+
+`validate` goes through everything decoding goes through: optionals, vectors,
+arrays, maps, variants, nested and flattened members. It differs from decoding
+in two ways. It checks every member, including one that still holds its
+default, which decoding leaves unchecked when the input omits the member. And
+it checks a `float` or a `double` once, as the value it is, where decoding also
+checks the number as its text spelled it.
+
+`validate` reports constraints and validators only. It does not check
+`pattern`, as decoding does not. It leaves to `encode` what `encode` refuses,
+such as an enum value that is not a declared enumerator or a string that is not
+UTF-8, and it takes any type that `encode` takes. A type with no constraints
+and no validators is always valid, and the call compiles to nothing.
+
 ## Tools
 
 Annotate functions with `tool`, then bind them. `bind<^^ns>()` binds every tool
@@ -617,8 +645,14 @@ A tool that returns `T` or `Result<T>` publishes `schema_v<T>` as its
 `output_schema`, for a host that lists what its tools return beside what they
 take. It is a `std::optional<Json>`, and it is empty for a tool that returns
 `void` or `Status`: the `{}` such a tool answers with says only that the call
-succeeded. A tool that returns `Json` has the output schema `{}`. The handler
-does not check a result against its schema.
+succeeded. A tool that returns `Json` has the output schema `{}`.
+
+Before it encodes a result, the handler checks it as `validate` does, so a tool
+cannot answer with a value that misses a `range`, `multiple_of`, `length`, or
+`items` that its own output schema states, or that a validator rejects. A
+result that fails is a bug in the tool, which the model cannot fix, so `invoke`
+reports it to the host alone: see **Failures**. A result type with no
+constraints and no validators is not checked, and costs nothing.
 
 **Failures.** `invoke` returns the same `Error` type for three kinds of
 failure. A host tells them apart by `issues` and `model_message`:
@@ -627,7 +661,7 @@ failure. A host tells them apart by `issues` and `model_message`:
 |---|---|---|
 | The arguments did not decode, or a validator rejected them. | not empty | describes the issues |
 | The tool refused the call with `tool_error()`. | empty | the tool's text for the model |
-| The result could not be encoded. This is a host-side bug. | empty | empty |
+| The result broke a constraint or failed a validator of its own type, or could not be encoded. This is a host-side bug. | empty | empty |
 
 `message` has the host's text. For example:
 
@@ -651,6 +685,14 @@ arguments     issues  model_message            message
 {"id":1}      0                                the value holds a string that is not valid UTF-8, so it cannot be JSON
 ```
 
+A result that breaks its own constraints fails the third way too, and its
+`message` gives each path in the result and the reason. A tool that returns a
+`Booking` with nine guests fails with:
+
+```text
+result $.guests must be at most 8
+```
+
 An MCP-style host sets `isError` for all three. It returns the model's text
 for the first two, and logs the third as a failure of its own:
 
@@ -672,7 +714,7 @@ Reply call(const scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
     std::clog << "refused: " << error.message << '\n';
     return {.text = error.model_message, .is_error = true};
   }
-  // The result could not be encoded.
+  // The result was not valid, or could not be encoded.
   std::cerr << "tool failed: " << error.message << '\n';
   return {.text = "the tool failed", .is_error = true};
 }
@@ -681,7 +723,7 @@ Reply call(const scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
 `invoke` returns a tool's own `Error` unchanged, so the table holds only when a
 tool refuses with `tool_error()` and gives the model some text. If a tool returns
 the error from its own `decode` call, it looks like bad arguments. If it calls
-`tool_error("")`, it looks like an encoding failure. To avoid this, wrap the
+`tool_error("")`, it looks like a host-side bug. To avoid this, wrap the
 error in `tool_error()` with text of your own.
 
 **Toolboxes.** `bind(std::shared_ptr<T>)` binds the tool member functions of
@@ -832,7 +874,9 @@ steps that `bind` is made of are public for this, and none of them needs a
   lists its keys.
 - `apply<^^fn>(std::move(arguments))` calls the function with that object and
   returns exactly what the function returns: any type, including `void`, a
-  reference, a `Result`, and a type that Scrydantic cannot encode.
+  reference, a `Result`, and a type that Scrydantic cannot encode. Nothing
+  checks that value. If your library publishes a schema for it, `validate`
+  holds it to that schema's constraints before you encode it.
 - `arguments_diagnostic<^^fn>("mylib::add")` is the reason that a function's
   parameters cannot form an argument object, as text that starts with the name
   of your own function. It is empty when they can.
