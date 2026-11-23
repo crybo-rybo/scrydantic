@@ -128,6 +128,10 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | `range`, `multiple_of`, `length`, `items`, `pattern` | member | Constraints. See [Constraints and validators](#constraints-and-validators). |
 | `check<&fn>` | member, class | Runs a validator after decoding. |
 
+Where the table says member, a parameter of a tool counts too, when the
+parameter becomes a member of the tool's argument object. See
+[Tools](#tools).
+
 `description_of<text>()` builds a description from a namespace-scope
 `constexpr std::string_view`, for text you keep in one place.
 
@@ -583,11 +587,75 @@ result.error().model_message; // $.days is a required member
 
 **Parameters.** A tool can take no parameters, any list of named parameters,
 which become the members of the argument object, or one aggregate, which is the
-argument object. Use an aggregate to describe or constrain arguments:
-annotations on parameters themselves are a compile error. A `Json` parameter
-takes any JSON value, for a tool that stores or forwards a document without
-reading it. Its schema is `{}`, and the tool receives the value's canonical
-text:
+argument object.
+
+A parameter in a list takes the annotations that a member takes, and they mean
+the same there: `description`, `name`, `title`, `keyword`, `keyword_string`, the
+constraints, `check`, and `skip_null` on a `std::optional` parameter. A
+parameter with a default argument is optional. The input may leave it out, and
+the call then uses the function's own default:
+
+```cpp
+namespace catalog {
+[[= scrydantic::tool{"Search the catalog"}]]
+std::vector<Book> search(
+    [[= scrydantic::description{"Title or author"}]] std::string query,
+    [[= scrydantic::range{.min = 1, .max = 50}]] std::int32_t limit = 10);
+}
+
+auto found = scrydantic::bind<^^catalog>();
+found[0].input_schema.text;
+// {"additionalProperties":false,
+//  "properties":{"limit":{"maximum":50,"minimum":1,"type":"integer"},
+//                "query":{"description":"Title or author","type":"string"}},
+//  "required":["query"],"type":"object"}
+
+found[0].invoke(scrydantic::Json{.text = R"({"query":"dune"})"});
+// calls search("dune"), so limit is 10
+found[0].invoke(scrydantic::Json{.text = R"({"query":"dune","limit":99})"})
+    .error().model_message;
+// $.limit must be at most 50
+```
+
+A default argument changes only whether the member is required. The member
+keeps the parameter's type, so `"limit":null` is rejected here. A
+`std::optional<T>` parameter with a default argument, such as
+`= std::nullopt`, may be left out and may be `null`. Without a default argument
+it must be there, though it may be `null`, unless it carries `skip_null`.
+
+C++ allows default arguments only on the last parameters, and a call can leave
+out only its last arguments. JSON members have no order, so an input may give a
+later optional parameter without an earlier one, and no call can do that. Such
+an input is rejected:
+
+```cpp
+namespace clocks {
+[[= scrydantic::tool{"Format a time"}]]
+std::string format(std::int64_t seconds, std::string zone = "UTC",
+                   bool with_date = false);
+}
+
+// arguments                          result
+// {"seconds":0}                      format(0)
+// {"seconds":0,"zone":"CET"}         format(0, "CET")
+// {"seconds":0,"with_date":true}     $.zone is required when "with_date" is given
+```
+
+The schema does not state this rule, and it has no `default` for such a
+parameter, because reflection cannot read a default argument's value. If a tool
+has several independent optional arguments, or should publish its defaults,
+take an aggregate and give its members initializers.
+
+All of this applies to a parameter that becomes a member. A lone aggregate
+parameter is the whole argument object instead. Annotate its members, not the
+parameter. Its default argument is never used, because the object is always
+given. A Scrydantic annotation on such a parameter, on a call context, or on an
+explicit object parameter is a compile-time error, and so are `flatten` and
+`emit_null` on any parameter.
+
+A `Json` parameter takes any JSON value, for a tool that stores or forwards a
+document without reading it. Its schema is `{}`, and the tool receives the
+value's canonical text:
 
 ```cpp
 namespace documents {
@@ -602,10 +670,6 @@ stored[0].input_schema.text;
 stored[0].invoke(scrydantic::Json{.text = R"({"document":{"b":[1, 2.50],"a":null}})"})->text;
 // "{\"a\":null,\"b\":[1,2.5]}"
 ```
-
-A parameter's default argument is never published as a `default`, because
-reflection cannot read its value. To publish one, take an aggregate and give its
-member an initializer.
 
 **Return values.** A tool can return any supported type, a `Result` of one,
 `void`, or `Status`. `void` and a successful `Status` return `{}`. A returned
@@ -829,10 +893,15 @@ steps that `bind` is made of are public for this, and none of them needs a
 - `arguments_t<^^fn>` is the argument object of a function, formed from its
   parameters as **Parameters** describes for a tool. It is an ordinary reflected
   type: `input_schema_v` gives its schema, `decode` reads it, and `keys_v`
-  lists its keys.
+  lists its keys. A member carries every annotation of its parameter, your
+  own included. The member of a parameter with a default argument is a
+  `std::optional` of the parameter's type, which is empty when the input left
+  the member out.
 - `apply<^^fn>(std::move(arguments))` calls the function with that object and
   returns exactly what the function returns: any type, including `void`, a
-  reference, a `Result`, and a type that Scrydantic cannot encode.
+  reference, a `Result`, and a type that Scrydantic cannot encode. It leaves
+  out the arguments from the first empty optional member on, so the function's
+  default arguments apply to them.
 - `arguments_diagnostic<^^fn>("mylib::add")` is the reason that a function's
   parameters cannot form an argument object, as text that starts with the name
   of your own function. It is empty when they can.
@@ -897,14 +966,16 @@ A function that cannot be bound fails once, under the library's name:
 shell::run<^^timers::reset>(): timers::reset has parameter `clock`: timers::Clock* is not a supported reflected value
 ```
 
-**The `Binding` parameter.** A function's parameter names come from the
-declarations that the calling translation unit has seen, and `binding_of`
-records them in a type. `arguments_t` and `apply` take that type as the template
-parameter after the context, and compute it by default. A template of your own,
-like `run` above, must compute the same default on its own parameter list and
-pass it on. Then two translation units that declare one function with different
-parameter names each get their own code. `bind` has a `Tools` parameter for the
-same reason, with `tools_of` and `toolbox_tools_of` as its defaults.
+**The `Binding` parameter.** A function's parameter names, their annotations,
+and their default arguments come from the declarations that the calling
+translation unit has seen, and `binding_of` records them in a type.
+`arguments_t` and `apply` take that type as the template parameter after the
+context, and compute it by default. A template of your own, like `run` above,
+must compute the same default on its own parameter list and pass it on. Then
+two translation units that declare one function differently, with other
+parameter names or annotations, or with a default argument that only one of
+them sees, each get their own code. `bind` has a `Tools` parameter for the same
+reason, with `tools_of` and `toolbox_tools_of` as its defaults.
 
 **Context and objects.** A call context is the second template argument, as
 for `bind`, and goes first in the call. A non-static member function is called
