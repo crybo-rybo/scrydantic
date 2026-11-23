@@ -54,6 +54,13 @@ namespace scrydantic {
 /// returns an Error with issues of its own, or with no model text, therefore reads
 /// as the first or the last kind.
 ///
+/// Those are the failures a handler returns. It catches nothing: an exception
+/// thrown by the tool, or by a validator of its arguments, leaves the handler,
+/// and ToolSet::invoke() after it, as it was thrown, with its type and message
+/// intact. A host that must outlive its tools therefore catches around the call
+/// and words what the model is told itself, because an exception's text is
+/// written for whoever reads the log.
+///
 /// bind() and bind_handler() make handlers. One may also be written by hand, as
 /// any callable that can be called when const with the arguments of one of the
 /// two forms and returns a Result<Json>; a ToolFunction converts from it. A
