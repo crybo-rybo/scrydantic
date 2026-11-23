@@ -143,6 +143,7 @@ add_executable(
   codec/constraint_tests.cpp
   codec/number_spelling_tests.cpp
   codec/validator_tests.cpp
+  tools/function_binding_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
 )
@@ -414,6 +415,21 @@ scrydantic_add_compile_fail_test(
   annotated-parameter
   annotated_parameter.cpp
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level` carrying a Scrydantic annotation, which a parameter cannot hold; take an argument aggregate and annotate its member"
+)
+scrydantic_add_compile_fail_test(
+  wrapped-function-parameter
+  wrapped_function_parameter.cpp
+  "routes::add<^^catalog::weigh>(): catalog::weigh has parameter `crate`: int* is not a supported reflected value"
+)
+scrydantic_add_compile_fail_test(
+  unbound-function-arguments
+  unbound_function_arguments.cpp
+  "scrydantic::apply<^^catalog::weigh>(): catalog::weigh has the unnamed parameter 1; an argument synthesized from a parameter is named after it"
+)
+scrydantic_add_compile_fail_test(
+  apply-without-object
+  apply_without_object.cpp
+  "scrydantic::apply<^^Lamp::dim>(): Lamp::dim is a non-static member function; pass the object to call it on, as apply(object, arguments)"
 )
 scrydantic_add_compile_fail_test(
   mutable-handler
