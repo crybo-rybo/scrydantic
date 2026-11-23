@@ -83,6 +83,22 @@ definition_names_problem(const std::vector<schema_node>& definitions) {
   return {};
 }
 
+// The name a diagnostic gives an annotation of Scrydantic's own, such as
+// "scrydantic::range", or empty for anyone else's. The test is the namespace
+// the annotation's type is declared in, not a list of today's annotations, so
+// one added later is covered wherever this is asked. The name is the type's, so
+// skip_null is "scrydantic::skip_null_t".
+consteval std::string own_annotation_name(const std::meta::info annotation) {
+  const auto type = plain_type(std::meta::type_of(annotation));
+  if (!std::meta::has_parent(type) || std::meta::parent_of(type) != (^^::scrydantic)) {
+    return {};
+  }
+  return "scrydantic::" +
+         owned_text(std::meta::identifier_of(std::meta::has_template_arguments(type)
+                                                 ? std::meta::template_of(type)
+                                                 : type));
+}
+
 // Explains why a type is outside a value family. The empty string means it is
 // inside. The text names the offending member or element by its C++ path, and it
 // is what the static_assert at every reflected entry point prints, so a rejected
@@ -102,6 +118,26 @@ public:
     }
     return family_ == value_family::supported ? check_definition_names(type)
                                               : std::string{};
+  }
+
+  // A function parameter that a synthesized argument object holds as a member,
+  // annotated as the parameter is. That object does not exist until its
+  // parameters have passed, so the parameter is checked in the member's place:
+  // its annotations and its constraints as a member's, by the member's own
+  // checks, and its type as a root. The text names no path; the caller names
+  // the parameter.
+  consteval std::string check_parameter(const std::meta::info parameter) {
+    if (auto text = check_member_annotations(parameter, {}); !text.empty()) {
+      return text;
+    }
+    if (auto text = check_root(std::meta::type_of(parameter)); !text.empty()) {
+      return text;
+    }
+    auto reason = constraint_problem(parameter);
+    if (reason.empty()) {
+      reason = validators_problem(parameter, constrained_type(parameter));
+    }
+    return reason;
   }
 
 private:
@@ -286,18 +322,12 @@ private:
       return problem(path, enumerator, "has more than one scrydantic::name annotation");
     }
     for (const auto annotation : std::meta::annotations_of(enumerator)) {
-      const auto type = plain_type(std::meta::type_of(annotation));
-      if (std::meta::has_parent(type) &&
-          std::meta::parent_of(type) == (^^::scrydantic) &&
-          !annotation_matches(annotation, ^^name)) {
-        const auto named = std::meta::has_template_arguments(type)
-                               ? std::meta::template_of(type)
-                               : type;
-        return problem(
-            path, enumerator,
-            "carries scrydantic::" + owned_text(std::meta::identifier_of(named)) +
-                ", which does not apply to enumerators; an enumerator "
-                "takes only scrydantic::name");
+      const auto own = own_annotation_name(annotation);
+      if (!own.empty() && !annotation_matches(annotation, ^^name)) {
+        return problem(path, enumerator,
+                       "carries " + own +
+                           ", which does not apply to enumerators; an enumerator "
+                           "takes only scrydantic::name");
       }
     }
     return {};
@@ -708,6 +738,12 @@ private:
 consteval std::string value_problem(const std::meta::info type,
                                     const value_family family) {
   return value_checker{family}.check_root(type);
+}
+
+// Why a function parameter cannot be a member of a synthesized argument object;
+// empty when it can. See value_checker::check_parameter.
+consteval std::string parameter_value_problem(const std::meta::info parameter) {
+  return value_checker{value_family::supported}.check_parameter(parameter);
 }
 
 consteval std::string tool_arguments_problem(const std::meta::info type) {

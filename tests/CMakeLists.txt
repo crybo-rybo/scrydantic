@@ -153,6 +153,7 @@ add_executable(
   tools/function_binding_tests.cpp
   tools/json_tool_tests.cpp
   tools/output_schema_tests.cpp
+  tools/parameter_annotation_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
 )
@@ -521,9 +522,44 @@ scrydantic_add_compile_fail_test(
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::keyword, which applies to data members and classes"
 )
 scrydantic_add_compile_fail_test(
-  annotated-parameter
-  annotated_parameter.cpp
-  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level` carrying a Scrydantic annotation, which a parameter cannot hold; take an argument aggregate and annotate its member"
+  parameter-misapplied-constraint
+  parameter_misapplied_constraint.cpp
+  "scrydantic::bind<^^catalog>(): catalog::search has parameter `limit`: carries scrydantic::length, which applies to std::string members, not to int"
+)
+scrydantic_add_compile_fail_test(
+  parameter-duplicate-constraint
+  parameter_duplicate_constraint.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level`: has more than one scrydantic::range annotation"
+)
+scrydantic_add_compile_fail_test(
+  parameter-crossed-range
+  parameter_crossed_range.cpp
+  "scrydantic::apply<^^volume_tools::set_volume>(): volume_tools::set_volume has parameter `level`: carries a scrydantic::range whose min, 10, exceeds its max, 1"
+)
+scrydantic_add_compile_fail_test(
+  parameter-duplicate-key
+  parameter_duplicate_key.cpp
+  "scrydantic::bind<^^range_tools>(): range_tools::span has parameter `from` and parameter `until`, which both map to the JSON key \"from\""
+)
+scrydantic_add_compile_fail_test(
+  flattened-parameter
+  flattened_parameter.cpp
+  "scrydantic::bind<^^catalog>(): catalog::search has parameter `page`: carries scrydantic::flatten, which applies to data members; a parameter is one argument under one key"
+)
+scrydantic_add_compile_fail_test(
+  annotated-argument-object
+  annotated_argument_object.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `volume` carrying scrydantic::description, which applies to an argument; this parameter is the whole argument object, so annotate the members of Volume"
+)
+scrydantic_add_compile_fail_test(
+  annotated-context-parameter
+  annotated_context_parameter.cpp
+  "scrydantic::bind<^^greeting_tools>(): greeting_tools::greet has parameter `session` carrying scrydantic::description, which applies to an argument; the call context is the host's to supply"
+)
+scrydantic_add_compile_fail_test(
+  annotated-object-parameter
+  annotated_object_parameter.cpp
+  "Lamp does not satisfy scrydantic::Toolbox: Lamp::dim has parameter `self` carrying scrydantic::name, which applies to an argument; an explicit object parameter is the object the function is called on"
 )
 scrydantic_add_compile_fail_test(
   wrapped-function-parameter

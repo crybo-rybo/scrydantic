@@ -251,7 +251,7 @@ namespace rejected_functions {
 
 inline std::int32_t deref(const std::int32_t* pointer) { return *pointer; }
 inline std::int32_t unnamed(std::int32_t, std::int32_t) { return 0; }
-inline std::int32_t bounded([[= scrydantic::range{.max = 9}]] std::int32_t level) {
+inline std::int32_t bounded([[= scrydantic::length{.max = 9}]] std::int32_t level) {
   return level;
 }
 inline std::string late(std::string note, const Session&) { return note; }
@@ -285,9 +285,8 @@ static_assert(scrydantic::arguments_diagnostic<^^rejected_functions::unnamed>() 
               "synthesized from a parameter is named after it");
 static_assert(scrydantic::arguments_diagnostic<^^rejected_functions::bounded>() ==
               "scrydantic::apply<^^rejected_functions::bounded>(): "
-              "rejected_functions::bounded has parameter `level` carrying a Scrydantic "
-              "annotation, which a parameter cannot hold; take an argument aggregate "
-              "and annotate its member");
+              "rejected_functions::bounded has parameter `level`: carries "
+              "scrydantic::length, which applies to std::string members, not to int");
 static_assert(scrydantic::arguments_diagnostic<^^rejected_functions::fill>() ==
               "scrydantic::apply<^^rejected_functions::fill>(): "
               "rejected_functions::fill has parameter `total` of type int&, which the "

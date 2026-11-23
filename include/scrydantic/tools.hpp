@@ -42,21 +42,21 @@
 ///
 /// Tool discovery reads the declarations that precede the call in the calling
 /// translation unit: a namespace is open, so the tools bound are the ones declared
-/// in it before the call, and a function's name, description, and parameter names
-/// are the ones its declarations so far give it. Two translation units that see
-/// different declarations each bind what they see. The `Tools` template parameter
-/// of each entry point records that view; leave it defaulted, or, in a library
-/// that wraps these entry points, compute the same default on the wrapper with
-/// tools_of() or toolbox_tools_of() and forward it.
+/// in it before the call, and a function's name, description, parameter names,
+/// and parameter annotations are the ones its declarations so far give it. Two
+/// translation units that see different declarations each bind what they see. The
+/// `Tools` template parameter of each entry point records that view; leave it
+/// defaulted, or, in a library that wraps these entry points, compute the same default
+/// on the wrapper with tools_of() or toolbox_tools_of() and forward it.
 ///
 /// The steps a tool binding is made of are here on their own, for a library that
 /// binds functions by rules of its own: arguments_t is the argument object of any
 /// function, apply() calls the function with one and returns what it returns, and
 /// annotated_functions_of() finds the functions that carry the library's
-/// annotation. These read a function's parameter names from the declarations so
-/// far in the same way, and record them in their `Binding` template parameter;
-/// leave it defaulted, or, on a wrapper, compute the same default with
-/// binding_of() and forward it.
+/// annotation. These read a function's parameter names and annotations from the
+/// declarations so far in the same way, and record them in their `Binding`
+/// template parameter; leave it defaulted, or, on a wrapper, compute the same
+/// default with binding_of() and forward it.
 namespace scrydantic {
 
 /// Callables accepted for a particular reflected argument aggregate.
@@ -117,9 +117,9 @@ annotated_functions_of(const std::meta::info scope, const std::meta::info annota
 ///
 /// This is the default of their `Binding` parameter. A library that wraps them
 /// computes the same default on its own entry point and forwards it, so the
-/// parameter names are the ones its caller's translation unit sees. A function
-/// whose parameters cannot form an argument object yields a binding that records
-/// why, which arguments_t and apply() report.
+/// parameter names and annotations are the ones its caller's translation unit
+/// sees. A function whose parameters cannot form an argument object yields a
+/// binding that records why, which arguments_t and apply() report.
 /// @param function Reflection of a function, which needs no annotation.
 /// @param context Reflection of the call context type, or of `void` for none.
 /// @return Reflection of the binding type.
@@ -144,10 +144,14 @@ consteval std::meta::info binding_of(const std::meta::info function,
 /// nothing, which gives an object without members that decodes from `{}`; one
 /// plain aggregate, which is the object itself; or any other list of named
 /// parameters of supported types, which gives an aggregate with one required
-/// member per parameter, named after it. The type satisfies ToolArguments, so
-/// input_schema_v is its schema, decode() reads it, and keys_v lists its keys.
-/// A function that breaks these rules fails to compile with its name and the
-/// reason, the text arguments_diagnostic() returns.
+/// member per parameter, named after it. Such a parameter takes the annotations
+/// a data member takes, but for flatten, and its member carries them, every
+/// annotation of another library's included: a description, a name, a
+/// constraint, or a check on a parameter means what it means on a member. No
+/// other parameter takes a Scrydantic annotation. The type satisfies
+/// ToolArguments, so input_schema_v is its schema, decode() reads it, and keys_v
+/// lists its keys. A function that breaks these rules fails to compile with its
+/// name and the reason, the text arguments_diagnostic() returns.
 /// @tparam Function Reflection of a free function, a static member function, or
 /// a non-static member function.
 /// @tparam Context Call context the function may take first, or void for none.
@@ -342,7 +346,8 @@ template <typename Args, typename Context = void, typename Handler>
 /// (the tool takes `{}`), one plain aggregate (the argument object, as for
 /// bind_handler()), or any other list of named parameters of supported types,
 /// which is synthesized into an argument object with one required member per
-/// parameter. It returns what a bind_handler() callable may return: a function
+/// parameter, annotated as the parameter is: arguments_t has the rules. It
+/// returns what a bind_handler() callable may return: a function
 /// that returns `T` or `Result<T>` gives its tool the output schema schema_v<T>,
 /// and one that returns `void` or Status gives it none. A function that breaks
 /// these rules fails to compile with its name and the reason.
@@ -350,7 +355,7 @@ template <typename Args, typename Context = void, typename Handler>
 /// namespace.
 /// @tparam Context Call context the tools may take first, or void for none.
 /// @tparam Tools Leave defaulted: the tools `Entity` holds at the call site, each
-/// with the name, description, and parameter names seen there.
+/// with the name, description, and parameters seen there.
 /// @return The bound tools, in declaration order.
 template <std::meta::info Entity, typename Context = void,
           typename Tools = typename[:tools_of(Entity, ^^Context):]>

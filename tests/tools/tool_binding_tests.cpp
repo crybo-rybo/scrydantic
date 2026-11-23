@@ -187,7 +187,8 @@ inline scrydantic::Status has_room(const Booking& booking) {
 
 namespace described_tools {
 
-// A description on a parameter would be lost as surely as a constraint.
+// A lone aggregate parameter is the whole argument object, so a description on
+// it would describe no member, and be lost.
 [[= scrydantic::tool{"Move one tile west"}]] inline Position
     step_west([[= scrydantic::description{"Where to start"}]] Position from) {
   return Position{.x = from.x - 1, .y = from.y};
@@ -334,8 +335,9 @@ static_assert(
 
 static_assert(scrydantic::tools_diagnostic<^^described_tools>() ==
               "scrydantic::bind<^^described_tools>(): described_tools::step_west has "
-              "parameter `from` carrying a Scrydantic annotation, which a parameter "
-              "cannot hold; take an argument aggregate and annotate its member");
+              "parameter `from` carrying scrydantic::description, which applies to an "
+              "argument; this parameter is the whole argument object, so annotate the "
+              "members of {anonymous}::Position");
 
 TEST_CASE("a namespace binds its tools in declaration order") {
   auto tools = scrydantic::bind<^^grid_tools>();

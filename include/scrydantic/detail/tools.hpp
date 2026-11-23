@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -180,6 +181,31 @@ consteval std::string synthesized_member_list(const std::meta::info function,
   return list;
 }
 
+// What one member of a synthesized argument object carries: the annotations of
+// its parameter, as the constants they are, in declaration order. Every one of
+// them is here, not Scrydantic's alone: a library that reads an annotation of
+// its own off a member finds it where it wrote it.
+template <auto... Annotations> struct member_annotations {};
+
+// The member_annotations of each member of a synthesized argument object, in
+// order. None for the other forms, whose generated code reads no parameter's
+// annotations.
+consteval std::vector<std::meta::info>
+synthesized_member_annotations(const std::meta::info function,
+                               const std::meta::info context) {
+  std::vector<std::meta::info> members{};
+  if (arguments_form_of(function, context) == arguments_form::synthesized) {
+    for (const auto parameter : value_parameters_of(function, context)) {
+      std::vector<std::meta::info> carried{};
+      for (const auto annotation : std::meta::annotations_of(parameter)) {
+        carried.push_back(std::meta::constant_of(annotation));
+      }
+      members.push_back(std::meta::substitute(^^member_annotations, carried));
+    }
+  }
+  return members;
+}
+
 // The text of a reflect_constant_string array, without its terminator.
 template <std::meta::info Text>
 inline constexpr std::string_view constant_text_v{[:Text:], sizeof([:Text:]) - 1U};
@@ -187,12 +213,12 @@ inline constexpr std::string_view constant_text_v{[:Text:], sizeof([:Text:]) - 1
 // One function as a binding sees it: the type binding_of() reflects, and the
 // `Binding` that arguments_t and apply() carry.
 //
-// A function's parameter names come from the declarations of it that precede the
-// point of evaluation, so two translation units can see one function
-// differently. Each such fact is a template argument here, a constant string
-// that GCC mangles by its content, so units that see different facts
-// instantiate differently named code, which the linker cannot merge. The code
-// generated for a binding reads these facts from here and never from the
+// A function's parameter names and its parameters' annotations come from the
+// declarations of it that precede the point of evaluation, so two translation
+// units can see one function differently. Each such fact is a template argument
+// here, a constant that GCC mangles by its content, so units that see different
+// facts instantiate differently named code, which the linker cannot merge. The
+// code generated for a binding reads these facts from here and never from the
 // function's declarations, so what a specialization's name records is exactly
 // what its code contains. Everything else it reads from the function, such as
 // the parameter types, the return type, and the object parameter, is part of the
@@ -200,14 +226,19 @@ inline constexpr std::string_view constant_text_v{[:Text:], sizeof([:Text:]) - 1
 // context, which decides whether the leading parameter is an argument.
 //
 // Another fact of the parameter list that a later declaration can change is one
-// more template argument here, gathered by bound_function_of(). No entry point
-// spells the arguments: each carries the binding whole.
-template <std::meta::info Function, std::meta::info Context, std::meta::info Members>
+// more template argument here, gathered by bound_function_of(), before the
+// pack. No entry point spells the arguments: each carries the binding whole.
+template <std::meta::info Function, std::meta::info Context, std::meta::info Members,
+          typename... Annotations>
 struct bound_function {
   static constexpr std::meta::info function = Function;
   static constexpr std::meta::info context = Context;
   // The synthesized member names, as synthesized_member_list writes them.
   static constexpr std::string_view members = constant_text_v<Members>;
+  // What each synthesized member carries, as synthesized_member_annotations
+  // lists it: a member_annotations for each.
+  static constexpr std::array<std::meta::info, sizeof...(Annotations)> annotations{
+      ^^Annotations...};
 };
 
 // What binding_of() reflects for a function that cannot be bound: the reason,
@@ -240,11 +271,14 @@ struct bound_tool {
 template <typename... Tools> struct tool_set {};
 
 // The argument object synthesized from a parameter list: one required member per
-// value parameter, named as `Binding` records, of the parameter's type without
-// references or cv-qualifiers. The consteval block runs when the specialization
-// is instantiated, which C++26 permits because the aggregate it completes is a
-// member of that same specialization. The names are read one character at a
-// time, for the reason owned_text gives.
+// value parameter, named and annotated as `Binding` records, of the parameter's
+// type without references or cv-qualifiers. A member that carries its
+// parameter's annotations is to the schemas and the codec a member that was
+// written with them, so a parameter's description, key, constraints, and checks
+// mean what a data member's do, by the same code. The consteval block runs when
+// the specialization is instantiated, which C++26 permits because the aggregate
+// it completes is a member of that same specialization. The names are read one
+// character at a time, for the reason owned_text gives.
 template <typename Binding> struct synthesized_arguments {
   struct type;
 
@@ -260,6 +294,8 @@ template <typename Binding> struct synthesized_arguments {
       ++position;
       std::meta::data_member_options options{};
       options.name = name;
+      options.annotations =
+          std::meta::template_arguments_of(Binding::annotations[members.size()]);
       members.push_back(std::meta::data_member_spec(
           plain_type(std::meta::type_of(parameter)), options));
     }
@@ -470,23 +506,60 @@ consteval std::string passing_problem(const std::meta::info function,
   return {};
 }
 
-// Rejects a Scrydantic annotation on a parameter the model supplies, which no
-// binding reads: an argument object is synthesized from the parameters' types
-// and names alone, the facts that bound_function keys, and annotations, which
-// accumulate across redeclarations, would be one more fact that two translation
-// units can see differently. Unread, a constraint or a check there would be
-// silently lost, so a constrained argument is a member of an argument aggregate.
+// The name of the first annotation of Scrydantic's own that a parameter
+// carries, or empty when it carries none.
+consteval std::string own_annotation_of(const std::meta::info parameter) {
+  for (const auto annotation : std::meta::annotations_of(parameter)) {
+    if (auto own = own_annotation_name(annotation); !own.empty()) {
+      return own;
+    }
+  }
+  return {};
+}
+
+// Rejects a Scrydantic annotation on a parameter that is no member of an
+// argument object, where nothing would read it: the explicit object parameter
+// and the call context, which are not arguments, and a lone aggregate parameter,
+// which is the whole argument object and whose members carry their own. A
+// parameter that becomes a synthesized member takes what a member takes, and
+// arguments_problem holds it to the member's rules.
 consteval std::string parameter_annotation_problem(const std::meta::info function,
                                                    const std::meta::info context) {
   const auto parameters = std::meta::parameters_of(function);
-  for (std::size_t index = first_value_index(function, context);
-       index < parameters.size(); ++index) {
-    for (const auto annotation : std::meta::annotations_of(parameters[index])) {
-      if (std::meta::parent_of(plain_type(std::meta::type_of(annotation))) ==
-          (^^::scrydantic)) {
-        return "has " + parameter_label(parameters[index], index) +
-               " carrying a Scrydantic annotation, which a parameter cannot hold; "
-               "take an argument aggregate and annotate its member";
+  const std::size_t first = first_value_index(function, context);
+  const bool whole = arguments_form_of(function, context) == arguments_form::aggregate;
+  for (std::size_t index = 0; index < (whole ? parameters.size() : first); ++index) {
+    const auto own = own_annotation_of(parameters[index]);
+    if (own.empty()) {
+      continue;
+    }
+    const auto carrying = "has " + parameter_label(parameters[index], index) +
+                          " carrying " + own + ", which applies to an argument; ";
+    if (index >= first) {
+      return carrying +
+             "this parameter is the whole argument object, so annotate "
+             "the members of " +
+             display(plain_type(std::meta::type_of(parameters[index])));
+    }
+    return carrying + (index < object_parameter_count(function)
+                           ? "an explicit object parameter is the object the function "
+                             "is called on"
+                           : "the call context is the host's to supply");
+  }
+  return {};
+}
+
+// Two parameters under one JSON key, which scrydantic::name can give them,
+// would be two members of the argument object with one key.
+consteval std::string parameter_keys_problem(const std::vector<std::meta::info>& values,
+                                             const std::size_t first) {
+  for (std::size_t left = 0; left < values.size(); ++left) {
+    for (std::size_t right = left + 1; right < values.size(); ++right) {
+      const auto key = json_key_of(values[left]);
+      if (key == json_key_of(values[right])) {
+        return "has " + parameter_label(values[left], first + left) + " and " +
+               parameter_label(values[right], first + right) +
+               ", which both map to the JSON key \"" + owned_text(key) + "\"";
       }
     }
   }
@@ -510,11 +583,20 @@ consteval std::string arguments_problem(const std::meta::info function,
       return "has the unnamed " + label +
              "; an argument synthesized from a parameter is named after it";
     }
-    const auto reason =
-        value_problem(std::meta::type_of(values[index]), value_family::supported);
+    // A parameter is one argument under one key. An argument aggregate can
+    // flatten a member of its own.
+    if (has_annotation(values[index], ^^flatten_t)) {
+      return "has " + label +
+             ": carries scrydantic::flatten, which applies to data members; a "
+             "parameter is one argument under one key";
+    }
+    const auto reason = parameter_value_problem(values[index]);
     if (!reason.empty()) {
       return "has " + label + ": " + reason;
     }
+  }
+  if (auto reason = parameter_keys_problem(values, first); !reason.empty()) {
+    return reason;
   }
   // Each parameter passed the check alone, as its own schema's root. In the
   // synthesized object a recursive parameter type is a definition instead, and
@@ -678,11 +760,11 @@ consteval std::meta::info constant_text(const std::string_view text) {
 // facts the declarations preceding this point give it.
 consteval std::meta::info bound_function_of(const std::meta::info function,
                                             const std::meta::info context) {
-  return std::meta::substitute(
-      ^^bound_function,
-      {
-          std::meta::reflect_constant(function), std::meta::reflect_constant(context),
-          constant_text(synthesized_member_list(function, context))});
+  std::vector arguments{std::meta::reflect_constant(function),
+                        std::meta::reflect_constant(context),
+                        constant_text(synthesized_member_list(function, context))};
+  arguments.append_range(synthesized_member_annotations(function, context));
+  return std::meta::substitute(^^bound_function, arguments);
 }
 
 // The bound_tool of a function that has passed tool_function_problem, with the
