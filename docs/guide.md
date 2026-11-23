@@ -633,7 +633,8 @@ std::vector<scrydantic::BoundTool<>> tools = scrydantic::bind<^^weather>();
 
 Each `BoundTool` has a `name`, a `description`, an `input_schema`, an
 `output_schema`, and an `invoke` handler. The handler takes the arguments as
-`Json` and returns a `Result<Json>`:
+`Json` text, or as a `JsonView` that is already parsed (see **Parsed
+arguments**), and returns a `Result<Json>`:
 
 ```cpp
 tools[0].input_schema.text;
@@ -717,14 +718,30 @@ arguments     issues  model_message            message
 {"id":1}      0                                the value holds a string that is not valid UTF-8, so it cannot be JSON
 ```
 
-An MCP-style host sets `isError` for all three. It returns the model's text
-for the first two, and logs the third as a failure of its own:
+The table covers returned errors only. A handler does not catch: an exception
+thrown by the tool, or by a validator that throws although it must not, leaves
+`invoke`, and `ToolSet::invoke` after it, with its type and message intact. A
+host that calls tools for a model catches around the call, or the first tool
+that throws ends the host.
+
+Such a host reports all three, and a thrown exception, as a failed call. It
+returns the model's text for the first two, and logs the third as a failure of
+its own. For a tool that threw, the model gets a fixed message and the log gets
+the exception's text, which was written for a developer and can say what the
+model should not be told:
 
 ```cpp
 struct Reply { std::string text; bool is_error{}; };
 
 Reply call(const scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
-  auto result = tool.invoke(std::move(arguments));
+  scrydantic::Result<scrydantic::Json> result;
+  try {
+    result = tool.invoke(std::move(arguments));
+  } catch (const std::exception& thrown) {
+    // The tool threw. The log gets the exception's text, the model a fixed one.
+    std::cerr << "tool threw: " << thrown.what() << '\n';
+    return {.text = "the tool failed", .is_error = true};
+  }
   if (result) {
     return {.text = result->text};
   }
@@ -743,6 +760,9 @@ Reply call(const scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
   return {.text = "the tool failed", .is_error = true};
 }
 ```
+
+A tool may throw a type that does not derive from `std::exception`. A host that
+runs tools it did not write adds `catch (...)`.
 
 `invoke` returns a tool's own `Error` unchanged, so the table holds only when a
 tool refuses with `tool_error()` and gives the model some text. If a tool returns
@@ -801,6 +821,33 @@ set->tools();                       // every tool, in the order given, to list
 A set does not change once it is made. To add or remove tools, take them back
 with `release()`, which leaves the set empty, and make a new set from them.
 
+**Parsed arguments.** A host usually receives a tool call inside a larger
+message, and parses the message to find the tool's name. Pass the arguments as
+the `JsonView` that you already have. The handler decodes that part of your
+document where it is, so nothing is written out as text and parsed a second
+time:
+
+```cpp
+auto message = scrydantic::JsonView::parse(
+    R"({"id":7,"call":{"name":"forecast","arguments":{"city":"Oslo","days":2}}})");
+auto call = message->find("call");
+auto arguments = call->find("arguments");
+
+set->invoke(*call->find("name")->string(), *arguments); // by name
+set->find("forecast")->invoke(*arguments);              // one tool
+```
+
+A view goes wherever `invoke` takes a `Json`: after the context if there is
+one, in a `ToolSet`, and in a `bind_handler` handler. Both calls return the same
+result for the same arguments. Only a text call can fail with `tool arguments
+are not valid JSON`, because a view is JSON already. A view of something that is
+not an object fails as its text does:
+
+```cpp
+auto list = scrydantic::JsonView::parse(R"(["Oslo",2])");
+set->invoke("forecast", *list).error().model_message; // $ must be an object
+```
+
 Calling a tool does not change the set either. A handler can be called through
 a `const` reference, so a `const` set, or a `const` vector of bound tools, can
 serve calls, and several threads can share one. Concurrent calls are then as
@@ -837,6 +884,21 @@ scrydantic::BoundTool<> tool{
     .invoke = scrydantic::bind_handler<Ticket>(
         [next_id](Ticket) { return next_id->fetch_add(1); }),
 };
+```
+
+`invoke` also takes a callable of your own that reads the JSON itself and
+returns a `Result<Json>`. Write it to take a `const JsonView&`, and it is given
+the view of a view call and the parsed text of a text call. A callable that
+takes `Json` still works. It is given a text call's text as it was passed, not
+parsed and not checked, and for a view call the view's canonical text, which
+`to_json()` writes once per call:
+
+```cpp
+tool.invoke = [](const scrydantic::JsonView& arguments)
+    -> scrydantic::Result<scrydantic::Json> {
+  return scrydantic::Json{.text = std::to_string(arguments.size())};
+};
+tool.invoke(scrydantic::Json{.text = R"({"title":"Fix the lamp"})"})->text; // 1
 ```
 
 **Without handlers.** `describe<^^ns>()`, or `describe<Toolbox>()` for a

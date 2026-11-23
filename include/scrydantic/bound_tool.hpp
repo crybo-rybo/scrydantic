@@ -26,8 +26,23 @@ namespace scrydantic {
 /// toolbox's own code; a toolbox whose tools change it, or a callable that
 /// changes state it points to, needs its own synchronization for them.
 ///
-/// It receives the canonical JSON argument object, preceded by a `const
-/// Context&` when `Context` is not void, and returns the JSON result, encoded as
+/// A call passes the JSON argument object, preceded by a `const Context&` when
+/// `Context` is not void, in one of two forms:
+///
+///     handler(arguments);                 // a JsonView
+///     handler(Json{.text = R"({...})"});  // text
+///
+/// A view is for a host that has parsed a larger message with the arguments
+/// somewhere inside it. The handler decodes that part of the host's document
+/// where it lies: nothing is written out and nothing is parsed again. Text is
+/// parsed first, and text that is not JSON fails with one issue and the message
+/// `tool arguments are not valid JSON: ` followed by the reason and position
+/// JsonView::parse() gives. A view is JSON already, so that failure is the text
+/// call's alone. Otherwise the two calls answer alike: a view of something that
+/// is not an object fails as text that spells it does, when the argument object
+/// decodes.
+///
+/// Either call returns the JSON result, encoded as
 /// encode_verbatim() encodes it: valid JSON with keys in canonical order, and
 /// spliced `Json` payloads byte for byte. A failure is an Error of one of three
 /// kinds. Arguments that fail to decode, including a validator's rejection, list
@@ -38,6 +53,24 @@ namespace scrydantic {
 /// empty `issues` and `model_message` and the reason in `message`. A tool that
 /// returns an Error with issues of its own, or with no model text, therefore reads
 /// as the first or the last kind.
+///
+/// Those are the failures a handler returns. It catches nothing: an exception
+/// thrown by the tool, or by a validator of its arguments, leaves the handler,
+/// and ToolSet::invoke() after it, as it was thrown, with its type and message
+/// intact. A host that must outlive its tools therefore catches around the call
+/// and words what the model is told itself, because an exception's text is
+/// written for whoever reads the log.
+///
+/// bind() and bind_handler() make handlers. One may also be written by hand, as
+/// any callable that can be called when const with the arguments of one of the
+/// two forms and returns a Result<Json>; a ToolFunction converts from it. A
+/// callable that takes a `const JsonView&` reads the view of a view call and the
+/// parsed text of a text call. A callable that takes `Json` is kept as it is:
+/// it receives the text of a text call as passed, neither parsed nor checked,
+/// and for a view call the view's canonical text, JsonView::to_json(), which is
+/// written once per call. A default-constructed ToolFunction is empty, which
+/// `if (!handler)` and a comparison with `nullptr` test; calling an empty one is
+/// undefined behavior.
 /// @tparam Context Call context passed to every invocation, or void for none.
 template <typename Context = void>
 using ToolFunction = typename detail::tool_function<Context>::type;
