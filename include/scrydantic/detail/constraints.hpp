@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <compare>
@@ -770,5 +771,39 @@ consteval std::string validators_problem(const std::meta::info entity,
   }
   return {};
 }
+
+// ---- Checked types -----------------------------------------------------------
+
+// Whether an object of class `type` has a constraint that decoding checks or a
+// validator of its own: on the class, on one of its members, or on a class
+// flattened into it, whose members are the object's and whose validators run on
+// the part of the object it is.
+consteval bool object_has_checks(const std::meta::info type) {
+  if (!validators_of(type).empty()) {
+    return true;
+  }
+  for (const auto member : data_members_of(type)) {
+    if (is_flattened(member) ? object_has_checks(plain_type(std::meta::type_of(member)))
+                             : !checked_constraints_of(member).empty() ||
+                                   !validators_of(member).empty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Whether a value of `type` has a constraint that decoding checks or a validator
+// anywhere in it: in an object it is or, at any depth, holds. A value of a type
+// that has none meets its type whatever it holds, so nothing walks it to find
+// out.
+consteval bool has_checks(const std::meta::info type) {
+  std::vector<schema_node> held{};
+  append_held_nodes(held, type);
+  return std::ranges::any_of(
+      reachable_from(std::move(held)),
+      [](const schema_node node) { return object_has_checks(node.type); });
+}
+
+template <typename Type> inline constexpr bool has_checks_v = has_checks(^^Type);
 
 } // namespace scrydantic::detail

@@ -12,6 +12,7 @@
 #include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/schema.hpp>
+#include <scrydantic/detail/validate.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string_view>
@@ -109,8 +110,9 @@ inline constexpr std::string_view input_schema_v = detail::checked_input_schema<
 /// neither holds exactly loses digits; encode_verbatim() keeps a payload's own
 /// text. The returned text is canonical within the current Scrydantic version but
 /// is not a versioned archival format. The value is the program's own, so its
-/// constraint annotations and validators are not checked. A type outside
-/// Encodable fails to compile with the offending member path and the reason.
+/// constraint annotations and validators are not checked; validate() checks
+/// them. A type outside Encodable fails to compile with the offending member
+/// path and the reason.
 /// @tparam Type Value from the Encodable family.
 /// @param value Value to encode without modifying it.
 /// @return Canonical JSON, or an Error whose `message` names the path of a
@@ -235,6 +237,60 @@ template <typename Type>
 template <typename Type>
 [[nodiscard]] Result<Type> decode(const Json& json, const DecodeOptions& options = {}) {
   return decode<Type>(std::string_view{json.text}, options);
+}
+
+/// Checks a value the program built against the constraints and validators of
+/// its type.
+///
+/// Decoding checks them on what it reads, and nothing checks a value that was
+/// filled some other way: from a database row, from a configuration file, or by
+/// the program's own code. This checks `value` against every constraint
+/// annotation and validator that decoding it would have checked. It walks the
+/// value as decoding walks its JSON, through `std::optional`, `std::indirect`,
+/// vectors, arrays, maps, variants, nested aggregates, and flattened members,
+/// and reports each issue with the kind (IssueKind::violated_constraint or
+/// IssueKind::failed_check), the path, and the reason that decoding would give
+/// it, in the same order: a map's entries in key order, whatever order the map
+/// iterates in. A member's validators run once it meets its constraints, and a
+/// class's once every member of the object is valid. It stops past max_issues,
+/// as decoding does.
+///
+/// Two things differ from a decode of the same value's JSON, and both follow
+/// from there being no JSON:
+/// - Every member is checked. Decoding leaves a member that its input lacks at
+///   its default, unchecked; here a default is a value like any other. A
+///   disengaged `std::optional` has no value to check.
+/// - A `float` or `double` is checked once, as the value it is. Decoding checks
+///   a number twice, as its text spelled it and as converted, and has a reason
+///   of its own for one that only the conversion carries past a bound; a value
+///   past a bound is reported here with the bound's plain reason.
+///
+/// Only constraints and validators are checked. `pattern` is not, as decoding
+/// does not check it. What encode() refuses is left to encode(), and none of it
+/// is an issue here: a number that is not finite, an enumerator value that is
+/// not declared, a string that is not UTF-8, an invalid `Json`, a valueless
+/// variant or `std::indirect`, and whatever nests more than max_json_depth
+/// arrays and objects deep, which is not walked. A NaN meets no `range` and no
+/// `multiple_of`, though, and is reported where it stands under one, as an
+/// infinity is that is past a bound or under a `multiple_of`.
+///
+/// The function only reads `value`, so it takes what encode() takes. A type with
+/// no constraint and no validator anywhere in it is known at compile time to be
+/// valid, and the call does nothing. A type outside Encodable fails to compile
+/// with the offending member path and the reason.
+/// @tparam Type Value from the Encodable family.
+/// @param value Value to check without modifying it.
+/// @return Success, or an Error that lists every violation as decode() lists
+/// them: in `issues`, and as one `<path> <reason>` line each in `message` and
+/// `model_message`, such as `$.v must be at most 10`.
+template <typename Type> [[nodiscard]] Status validate(const Type& value) {
+  constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return {};
+  } else {
+    return detail::validate<std::remove_cvref_t<Type>>(value);
+  }
 }
 
 /// The JSON keys of a reflected object type, in the order encode() writes them.

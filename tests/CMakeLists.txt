@@ -149,6 +149,7 @@ add_executable(
   codec/number_spelling_tests.cpp
   codec/schema_default_tests.cpp
   codec/schema_keyword_tests.cpp
+  codec/validate_tests.cpp
   codec/validator_tests.cpp
   tools/function_binding_tests.cpp
   tools/json_tool_tests.cpp
@@ -584,4 +585,9 @@ scrydantic_add_compile_fail_test(
   map-tool-arguments
   map_tool_arguments.cpp
   "int> is a map, whose keys are data; tool arguments are a plain aggregate, whose members name the arguments"
+)
+scrydantic_add_compile_fail_test(
+  validate-unsupported
+  validate_unsupported.cpp
+  "Derived does not satisfy scrydantic::Encodable: Derived has a base class"
 )

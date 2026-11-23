@@ -271,17 +271,28 @@ compare_exactly(const Integer integer, const double number) noexcept {
   return end.exclusive ? order < 0 : order <= 0;
 }
 
+// What a check is given in place of the JSON value its value decoded from, when
+// the value decoded from none: it is the program's own, which validate() checks.
+// The checks below are decoding's and validate()'s alike, and take either. Only
+// a floating-point number is checked differently for it, as meets_end explains,
+// and that is decided where a check is instantiated, so decoding runs the
+// instructions it ran when it was the only caller.
+struct no_json {};
+
 // Checks `value` against one end of a range, `limit` as a Number. A
 // floating-point member is checked first as the parser read the number, so that
 // decoding rejects whatever the schema does, and then as converted, so that the
 // host's value is within the end too. Conversion rounds monotonically to values
 // of Number, of which the limit is one, so it can carry a number onto an
-// exclusive end but never past an end.
-template <typename Number>
-[[nodiscard]] bool
-meets_end(const Number value, const Number limit, const checked_end& end,
-          [[maybe_unused]] const json_node view, const decode_cursor& here) {
-  if constexpr (std::floating_point<Number>) {
+// exclusive end but never past an end. A value that decoded from no JSON has no
+// number that a parser read: the value is the only number there is, so it is
+// checked as an integer is, once, against the end as it stands. A NaN is within
+// no end.
+template <typename Number, typename Source>
+[[nodiscard]] bool meets_end(const Number value, const Number limit,
+                             const checked_end& end, [[maybe_unused]] const Source view,
+                             const decode_cursor& here) {
+  if constexpr (std::floating_point<Number> && std::same_as<Source, json_node>) {
     if (!within(compare_parsed(view, static_cast<double>(limit)), end)) {
       here.report(IssueKind::violated_constraint, end.reason);
       return false;
@@ -297,8 +308,8 @@ meets_end(const Number value, const Number limit, const checked_end& end,
   return true;
 }
 
-template <std::meta::info Constraint, typename Number>
-[[nodiscard]] bool meets_range(const Number value, const json_node view,
+template <std::meta::info Constraint, typename Number, typename Source>
+[[nodiscard]] bool meets_range(const Number value, const Source view,
                                const decode_cursor& here) {
   constexpr checked_range limits = checked_range_of(Constraint, ^^Number);
   if constexpr (limits.lower.present) {
@@ -352,20 +363,27 @@ template <std::meta::info Constraint, typename Number>
 // The factor is a value of Number, and for a floating-point Number a binary
 // fraction, so fmod, which is exact, finds exactly the multiples that the
 // schema's multipleOf means. A floating-point member is checked as the parser
-// read the number and then as converted, as meets_end explains.
-template <std::meta::info Constraint, typename Number>
+// read the number and then as converted, as meets_end explains, and one that
+// decoded from no JSON once, as it is. Neither a NaN nor an infinity is a
+// multiple: fmod of either is a NaN.
+template <std::meta::info Constraint, typename Number, typename Source>
 [[nodiscard]] bool meets_multiple(const Number value,
-                                  [[maybe_unused]] const json_node view,
+                                  [[maybe_unused]] const Source view,
                                   const decode_cursor& here) {
   constexpr checked_multiple multiple = checked_multiple_of(Constraint, ^^Number);
   constexpr auto factor = bound_value<Number>(multiple.value);
-  if constexpr (std::floating_point<Number>) {
+  if constexpr (std::floating_point<Number> && std::same_as<Source, json_node>) {
     if (!is_parsed_multiple(view, multiple, static_cast<double>(factor))) {
       here.report(IssueKind::violated_constraint, multiple.reason);
       return false;
     }
     if (std::fmod(value, factor) != Number{0}) {
       here.report(IssueKind::violated_constraint, multiple.rounded_reason);
+      return false;
+    }
+  } else if constexpr (std::floating_point<Number>) {
+    if (std::fmod(value, factor) != Number{0}) {
+      here.report(IssueKind::violated_constraint, multiple.reason);
       return false;
     }
   } else if (value % factor != 0) {
@@ -375,7 +393,12 @@ template <std::meta::info Constraint, typename Number>
   return true;
 }
 
-template <std::meta::info Constraint>
+// A size is checked the same whatever it was decoded from, and nothing here
+// reads Source. It is a parameter so that decoding's check and validate()'s are
+// two specializations: where one specialization keyed on an annotation is
+// reached from two instantiations, GCC 16 emits it twice under one symbol,
+// which the assembler refuses in a build that inlines neither.
+template <std::meta::info Constraint, typename Source>
 [[nodiscard]] bool meets_size(const std::size_t size, const decode_cursor& here) {
   constexpr checked_size limits = checked_size_of(Constraint);
   if constexpr (limits.min != 0U) {
@@ -393,18 +416,18 @@ template <std::meta::info Constraint>
   return true;
 }
 
-// `view` is the JSON value that `value` decoded from.
-template <std::meta::info Constraint, typename Value>
-[[nodiscard]] bool meets(const Value& value, const json_node view,
+// `view` is the JSON value that `value` decoded from, or a no_json.
+template <std::meta::info Constraint, typename Value, typename Source>
+[[nodiscard]] bool meets(const Value& value, const Source view,
                          const decode_cursor& here) {
   if constexpr (annotation_matches(Constraint, ^^range)) {
     return meets_range<Constraint>(value, view, here);
   } else if constexpr (annotation_matches(Constraint, ^^multiple_of)) {
     return meets_multiple<Constraint>(value, view, here);
   } else if constexpr (annotation_matches(Constraint, ^^length)) {
-    return meets_size<Constraint>(code_points(value), here);
+    return meets_size<Constraint, Source>(code_points(value), here);
   } else {
-    return meets_size<Constraint>(value.size(), here);
+    return meets_size<Constraint, Source>(value.size(), here);
   }
 }
 
@@ -427,13 +450,20 @@ template <std::meta::info Entity, typename Value>
 // that misses none. Returns false if there was an issue. A range has one end a
 // value can miss, since the checks admit no empty range. It sees through an
 // optional and an indirect as constrained_type() does, so the validators take the
-// value they own; a decoded indirect always owns one.
-template <std::meta::info Member, typename Value>
-[[nodiscard]] bool accepts_member(const Value& value, json_node view,
+// value they own; a decoded indirect always owns one. The program's own
+// indirect, which `view` is a no_json for, owns none once it has been moved
+// from, and then there is nothing to check: encode() is what refuses it.
+template <std::meta::info Member, typename Value, typename Source>
+[[nodiscard]] bool accepts_member(const Value& value, Source view,
                                   const decode_cursor& here) {
   if constexpr (kind_of(^^Value) == value_kind::optional) {
     return !value.has_value() || accepts_member<Member>(*value, view, here);
   } else if constexpr (kind_of(^^Value) == value_kind::indirect) {
+    if constexpr (!std::same_as<Source, json_node>) {
+      if (value.valueless_after_move()) {
+        return true;
+      }
+    }
     return accepts_member<Member>(*value, view, here);
   } else {
     // A floating-point constraint is checked on the number as the parser read
@@ -441,7 +471,7 @@ template <std::meta::info Member, typename Value>
     // text is read once more. This is the one place that asks for what a string
     // spells before anything has failed, so it tests the option itself: a decode
     // that coerces no scalars goes straight on. No other constraint reads `view`.
-    if constexpr (std::floating_point<Value> &&
+    if constexpr (std::floating_point<Value> && std::same_as<Source, json_node> &&
                   !checked_constraints_v<Member>.empty()) {
       if (here.options().coerce_scalars) {
         if (const json_node spelled = spelled_scalar(view, here)) {
