@@ -117,6 +117,11 @@ target_compile_features(scrydantic_json PUBLIC cxx_std_23)
 # annotation with only a -Wc++26-extensions warning, so that warning is an error
 # for the core even when SCRYDANTIC_WARNINGS_AS_ERRORS is off.
 target_compile_options(scrydantic_json PRIVATE -Werror=c++26-extensions)
+# One section for each function and object, so a consumer that links with
+# -Wl,--gc-sections keeps only the parts of the core it calls: a program that
+# only checks text with is_valid_json() need not carry the parser and the
+# writer, which share a source file with it.
+target_compile_options(scrydantic_json PRIVATE -ffunction-sections -fdata-sections)
 set_target_properties(
   scrydantic_json
   PROPERTIES EXPORT_NAME json POSITION_INDEPENDENT_CODE ON
