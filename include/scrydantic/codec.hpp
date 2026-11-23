@@ -24,15 +24,20 @@ namespace scrydantic {
 /// Values supported by reflected schema generation and strict marshalling.
 ///
 /// Supported shapes are a deliberately closed matrix: booleans, bounded
-/// non-character integers, finite floats, strings, scoped enums, one optional layer,
-/// vectors except `vector<bool>`, fixed arrays, `std::indirect`, plain aggregates
-/// of supported members, and tagged variants of such aggregates, each alternative
-/// carrying a distinct scrydantic::tag. An indirect encodes, decodes, and has the
-/// schema of the value it owns, and `std::optional<std::indirect<T>>` is its
-/// nullable form. An aggregate may contain itself, through `std::vector` or
-/// `std::indirect`, when every such cycle passes through a `std::optional`, a
-/// `std::vector`, or a variant alternative after the first, so that
-/// default-constructing it ends; its schema refers to it with `$ref`. Every
+/// non-character integers, finite floats, strings, scoped enums, `Json`, one
+/// optional layer, vectors except `vector<bool>`, fixed arrays, `std::indirect`,
+/// plain aggregates of supported members, and tagged variants of such aggregates,
+/// each alternative carrying a distinct scrydantic::tag. A `Json` is any JSON
+/// value: its schema is the empty schema `{}`, which accepts every value,
+/// decoding captures the canonical text of whatever value sits at its position,
+/// `null` included, and encoding checks that text and splices it, so a document
+/// can carry an opaque payload through a typed value. An indirect encodes,
+/// decodes, and has the schema of the value it owns, and
+/// `std::optional<std::indirect<T>>` is its nullable form. An aggregate may
+/// contain itself, through `std::vector` or `std::indirect`, when every such
+/// cycle passes through a `std::optional`, a `std::vector`, or a variant
+/// alternative after the first, so that default-constructing it ends; its schema
+/// refers to it with `$ref`, under a name spelled from its type. Every
 /// supported value has a generated schema, encodes, and decodes. A member's
 /// constraint annotations must apply to its type and admit a value, in this
 /// family and in the others. Reflected entry points report the member path and
@@ -42,26 +47,26 @@ concept SupportedValue =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::supported)
         .empty();
 
-/// Values scrydantic::encode() accepts: SupportedValue plus the encode-only leaves.
+/// Values scrydantic::encode() accepts: SupportedValue plus what encoding can
+/// read but decoding cannot fill.
 ///
-/// `std::string_view` is written as a JSON string, for text the caller owns
-/// elsewhere. `Json` is checked for validity and spliced verbatim.
-/// Aggregates here need not be default-constructible, movable, or free of `const`
-/// members, and may borrow a member through a reference, since encoding only reads
-/// them; for the same reason, a cycle may pass through any variant alternative.
-/// Neither leaf has a schema.
+/// `std::string_view` is the one encode-only leaf: it is written as a JSON
+/// string, for text the caller owns elsewhere, and it has no schema. Aggregates
+/// here need not be default-constructible, movable, or free of `const` members,
+/// and may borrow a member through a reference, since encoding only reads them;
+/// for the same reason, a cycle may pass through any variant alternative.
+/// Encoding writes no schema, so a recursive type needs no definition name.
 template <typename Type>
 concept Encodable =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::encodable)
         .empty();
 
-/// Values scrydantic::decode() produces: SupportedValue plus `Json`.
+/// Values scrydantic::decode() produces: the shapes of SupportedValue.
 ///
-/// A `Json` member captures the canonical text of whatever JSON value sits
-/// at its position, `null` included, so a document can carry an opaque payload through
-/// a typed decode. `Json` has no schema. Decoding produces a value, so the
-/// target itself must be a cv-unqualified object type, as scrydantic::decode()
-/// requires.
+/// Decoding writes no schema, so a recursive type whose schema could not name
+/// its definitions, and which is therefore not a SupportedValue, is still
+/// Decodable. Decoding produces a value, so the target itself must be a
+/// cv-unqualified object type, as scrydantic::decode() requires.
 template <typename Type>
 concept Decodable =
     !detail::is_qualified(^^Type) &&

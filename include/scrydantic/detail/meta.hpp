@@ -20,9 +20,9 @@
 
 namespace scrydantic::detail {
 
-// The three value families. They share one checker and differ only in the leaves
-// they admit and in whether a value must be storable, since only decoding builds
-// values.
+// The three value families. They share one checker. Encoding only reads a value,
+// so `encodable` alone admits std::string_view and a value that cannot be stored.
+// Only `supported` has a schema, so it alone needs a name for each definition.
 enum class value_family : std::uint8_t {
   supported,
   encodable,
@@ -169,12 +169,6 @@ private:
                  : problem(path, shown,
                            "is encode-only borrowed text; decoding and schemas "
                            "take std::string");
-    case value_kind::json:
-      return family_ == value_family::supported
-                 ? problem(path, shown,
-                           "is raw JSON, which has no schema; it is Encodable and "
-                           "Decodable but not a SupportedValue")
-                 : std::string{};
     case value_kind::enumeration:
       return check_enum(plain_type(shown), path);
     default:

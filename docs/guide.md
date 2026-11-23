@@ -37,7 +37,7 @@ constructors of its own. Its members can be any of these types:
 `std::int8_t` and `std::uint8_t` are character types in C++, so they are
 rejected. Use `std::int16_t`. `char` and the other character types are rejected
 too. Encoding also accepts `std::string_view` and reference members, which
-decoding cannot fill.
+decoding cannot fill and which have no schema.
 
 A decoded `Json` member holds the canonical text of its value, not the input's
 own bytes. Keys are sorted, whitespace is dropped, and each number is read as a
@@ -154,6 +154,21 @@ scrydantic::schema_v<Comment>
 //  "properties":{"replies":{"items":{"$ref":"#"},"type":"array"},
 //                "text":{"type":"string"}},
 //  "required":["replies","text"],"type":"object"}
+```
+
+A `Json` can hold any JSON value, so its schema is the empty schema `{}`, which
+accepts every value. It has one wherever it sits: as a member, an element, a
+tool parameter or result, or the root. A constraint on a `Json` member is a
+compile error.
+
+```cpp
+struct Payload { scrydantic::Json data; };
+
+scrydantic::schema_v<Payload>
+// {"additionalProperties":false,"properties":{"data":{}},
+//  "required":["data"],"type":"object"}
+scrydantic::schema_v<std::optional<scrydantic::Json>> // {"anyOf":[{},{"type":"null"}]}
+scrydantic::schema_v<std::vector<scrydantic::Json>>   // {"items":{},"type":"array"}
 ```
 
 `input_schema_v<Args>` is the schema of a tool's argument object. It is the
@@ -325,11 +340,30 @@ result.error().model_message; // $.days is a required member
 **Parameters.** A tool can take no parameters, any list of named parameters,
 which become the members of the argument object, or one aggregate, which is the
 argument object. Use an aggregate to describe or constrain arguments:
-annotations on parameters themselves are a compile error.
+annotations on parameters themselves are a compile error. A `Json` parameter
+takes any JSON value, for a tool that stores or forwards a document without
+reading it. Its schema is `{}`, and the tool receives the value's canonical
+text:
+
+```cpp
+namespace documents {
+[[= scrydantic::tool{"Store a document"}]]
+std::string store(scrydantic::Json document) { return document.text; }
+}
+
+auto stored = scrydantic::bind<^^documents>();
+stored[0].input_schema.text;
+// {"additionalProperties":false,"properties":{"document":{}},
+//  "required":["document"],"type":"object"}
+stored[0].invoke(scrydantic::Json{.text = R"({"document":{"b":[1, 2.50],"a":null}})"})->text;
+// "{\"a\":null,\"b\":[1,2.5]}"
+```
 
 **Return values.** A tool can return any supported type, a `Result` of one,
-`void`, or `Status`. `void` and a successful `Status` return `{}`. To refuse a
-call with a message for the model, return `std::unexpected(tool_error("..."))`.
+`void`, or `Status`. `void` and a successful `Status` return `{}`. A returned
+`Json`, alone or as a member, is checked and then sent as the tool wrote it. To
+refuse a call with a message for the model, return
+`std::unexpected(tool_error("..."))`.
 
 **Failures.** `invoke` returns the same `Error` type for three kinds of
 failure. A host tells them apart by `issues` and `model_message`:
