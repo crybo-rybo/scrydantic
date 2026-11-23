@@ -1,6 +1,9 @@
 // Throughput of the JSON core, the reflected codec, and bound tool calls on one
 // representative document: a conversation of tagged content blocks, strings,
-// whole and fractional numbers, enums, optionals, and opaque JSON payloads.
+// whole and fractional numbers, enums, optionals, and opaque JSON payloads. It
+// is read in two spellings: canonical, as Scrydantic writes it, and as another
+// writer might send it, with keys out of order and spaces between tokens, which
+// is the text that makes the parser sort.
 //
 // Numbers are only meaningful from an optimized build:
 //
@@ -108,12 +111,51 @@ namespace bench_tools {
 
 namespace {
 
-// 100 messages of three blocks each: about 25 KB of canonical JSON.
+// 100 messages of three blocks each: about 33 KB of canonical JSON.
 constexpr std::size_t message_count = 100;
 
 [[nodiscard]] const scrydantic::Json& conversation_text() {
   static const scrydantic::Json text =
       *scrydantic::encode(bench::make_conversation(message_count));
+  return text;
+}
+
+// Appends the value `view` shows with each object's members in reverse key
+// order and a space after every ':' and ','.
+void append_unordered(std::string& text, const scrydantic::JsonView& view) {
+  switch (view.kind()) {
+  case scrydantic::JsonKind::object:
+    text += '{';
+    for (std::size_t index = view.size(); index > 0; --index) {
+      const auto key = *view.key_at(index - 1);
+      text += scrydantic::escape_json_string(key) + ": ";
+      append_unordered(text, *view.find(key));
+      text += index > 1 ? ", " : "";
+    }
+    text += '}';
+    break;
+  case scrydantic::JsonKind::array:
+    text += '[';
+    for (std::size_t index = 0; index < view.size(); ++index) {
+      text += index > 0 ? ", " : "";
+      append_unordered(text, *view.at(index));
+    }
+    text += ']';
+    break;
+  default:
+    text += view.to_json().text;
+    break;
+  }
+}
+
+// The conversation as a writer that neither sorts keys nor omits whitespace
+// spells it.
+[[nodiscard]] const scrydantic::Json& unordered_conversation_text() {
+  static const scrydantic::Json text = [] {
+    scrydantic::Json unordered{};
+    append_unordered(unordered.text, *scrydantic::JsonView::parse(conversation_text()));
+    return unordered;
+  }();
   return text;
 }
 
@@ -125,6 +167,10 @@ TEST_CASE("JSON core", "[json]") {
   BENCHMARK("is_valid_json") { return scrydantic::is_valid_json(text.text); };
   BENCHMARK("JsonView::parse and to_json") {
     return scrydantic::JsonView::parse(text)->to_json();
+  };
+  const auto& unordered = unordered_conversation_text();
+  BENCHMARK("JsonView::parse, keys out of order") {
+    return scrydantic::JsonView::parse(unordered);
   };
 }
 
@@ -139,6 +185,10 @@ TEST_CASE("reflected codec", "[codec]") {
   const auto view = *scrydantic::JsonView::parse(text);
   BENCHMARK("decode from a parsed view") {
     return scrydantic::decode<bench::Conversation>(view);
+  };
+  const auto& unordered = unordered_conversation_text();
+  BENCHMARK("decode from text, keys out of order") {
+    return scrydantic::decode<bench::Conversation>(unordered);
   };
 }
 
