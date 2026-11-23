@@ -16,6 +16,8 @@ namespace echo_tools {
 std::int32_t twice(std::int32_t quantity);
 [[= scrydantic::tool{"Echo a capped count"}]] std::int32_t
     capped([[= scrydantic::range{.max = 99}]] std::int32_t count);
+[[= scrydantic::tool{"Echo a padded count"}]] std::int32_t padded(std::int32_t count,
+                                                                  std::int32_t pad);
 } // namespace echo_tools
 
 std::vector<scrydantic::BoundTool<>> bind_inventory_from_b() {
@@ -28,6 +30,10 @@ std::vector<scrydantic::BoundTool<>> bind_echo_from_b() {
 
 std::vector<scrydantic::BoundTool<>> bind_capped_from_b() {
   return scrydantic::bind<^^echo_tools::capped>();
+}
+
+std::vector<scrydantic::BoundTool<>> bind_padded_from_b() {
+  return scrydantic::bind<^^echo_tools::padded>();
 }
 
 HandBound twice_from_b(const std::string_view arguments) {
@@ -45,4 +51,8 @@ HandBound wrapped_twice_from_b(const std::string_view arguments) {
 
 HandBound wrapped_capped_from_b(const std::string_view arguments) {
   return bind_by_hand<^^echo_tools::capped>(arguments);
+}
+
+HandBound wrapped_padded_from_b(const std::string_view arguments) {
+  return bind_by_hand<^^echo_tools::padded>(arguments);
 }

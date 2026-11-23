@@ -513,7 +513,7 @@ private:
   // of that type.
   consteval std::string check_member_value(const std::meta::info member,
                                            const std::string& here) {
-    if (auto text = check(std::meta::type_of(member), here); !text.empty()) {
+    if (auto text = check(value_type_of(member), here); !text.empty()) {
       return text;
     }
     auto reason = constraint_problem(member);
@@ -562,7 +562,7 @@ private:
     }
     const bool skip = has_annotation(member, ^^skip_null_t);
     const bool emit = has_annotation(member, ^^emit_null_t);
-    if ((skip || emit) && kind_of(std::meta::type_of(member)) != value_kind::optional) {
+    if ((skip || emit) && kind_of(value_type_of(member)) != value_kind::optional) {
       return at_path(here, "is not a std::optional, so skip_null and emit_null do not "
                            "apply to it");
     }

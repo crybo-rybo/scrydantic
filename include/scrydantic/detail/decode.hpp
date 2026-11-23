@@ -536,12 +536,16 @@ template <typename Type, bool Tagged>
 // absent. A member that keeps its default is the program's own value, so it is
 // not checked. Root is the type of the JSON object, whose field the member is:
 // the class of `object`, or one that flattens it.
+//
+// A defaulted argument is read as a value of its parameter's type, and the
+// assignment engages the std::optional that stores it, also where that value is
+// itself a std::optional that `null` left disengaged.
 template <typename Root, std::meta::info Member, typename Owner>
 [[nodiscard]] bool read_member(Owner& object, const json_node found,
                                const decode_cursor& parent) {
   constexpr field_layout field = fields_v<Root>[field_position_v<Root, Member>];
   constexpr std::string_view key = field.key_view();
-  using Value = std::remove_cv_t<typename[:std::meta::type_of(Member):]>;
+  using Value = std::remove_cv_t<typename[:value_type_of(Member):]>;
   const decode_cursor here = parent.member(key);
   if (found) {
     auto decoded = read_value<Value>(found, here);
@@ -560,6 +564,50 @@ template <typename Root, std::meta::info Member, typename Owner>
   } else if constexpr (field.required) {
     here.report(IssueKind::missing_member, "is a required member");
     return false;
+  }
+  return true;
+}
+
+// Whether `later` is declared after `member`, in the class that declares both.
+consteval bool is_declared_after(const std::meta::info later,
+                                 const std::meta::info member) {
+  const auto members = data_members_of(std::meta::parent_of(member));
+  return std::ranges::find(members, later) > std::ranges::find(members, member);
+}
+
+// Why a defaulted argument that the input left out is an issue, where the input
+// gives the later one under `key`.
+consteval std::string_view required_when_given(const std::string_view key) {
+  std::string reason{"is required when "};
+  append_json_string(reason, key);
+  reason += " is given";
+  return static_string(reason);
+}
+
+// Holds an argument object to the one rule that default arguments add. A call
+// leaves an argument to its default by ending before it, so a default applies
+// only when every argument after it is left out too. An input that leaves out
+// `Member`, a defaulted argument of Root, and gives a later one has no call
+// that honors both, and `Member` is reported as required there. Returns false
+// if it was. No keyword of the subset that the schemas keep to states the rule,
+// so the schema leaves it to this.
+template <typename Root, std::meta::info Member>
+[[nodiscard]] bool leaves_out_the_rest(const field_values<Root>& found,
+                                       const decode_cursor& parent) {
+  if (found[field_position_v<Root, Member>]) {
+    return true;
+  }
+  template for (constexpr std::meta::info later : declared_members_v<Root>) {
+    if constexpr (is_defaulted_argument(later) && is_declared_after(later, Member)) {
+      if (found[field_position_v<Root, later>]) {
+        constexpr std::string_view key =
+            fields_v<Root>[field_position_v<Root, Member>].key_view();
+        constexpr std::string_view reason = required_when_given(
+            fields_v<Root>[field_position_v<Root, later>].key_view());
+        parent.member(key).report(IssueKind::missing_member, reason);
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -615,6 +663,13 @@ template <typename Type, bool Tagged>
   template for (constexpr std::meta::info member : declared_members_v<Type>) {
     if (here.stopped()) {
       return false;
+    }
+    // Only a synthesized argument object has such a member, and it flattens
+    // none, so read_flattened() has no need of this.
+    if constexpr (is_defaulted_argument(member)) {
+      if (!leaves_out_the_rest<Type, member>(found, here)) {
+        valid = false;
+      }
     }
     if constexpr (is_flattened(member)) {
       if (!read_flattened<Type>(object.[:member:], found, here)) {

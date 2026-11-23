@@ -284,7 +284,35 @@ consteval bool ignores_unknown(const std::meta::info type) {
   return has_annotation(plain_type(type), ^^ignore_unknown_t);
 }
 
+// The annotation that a member of a synthesized argument object carries when
+// its parameter has a default argument. Such a member is a std::optional of the
+// parameter's type that says one thing only, whether the argument was given: it
+// is disengaged when the input leaves the member out, and nothing else
+// disengages it. To JSON the member is a value of the parameter's own type that
+// may be left out. Its schema, its constraints, and its decoding are that
+// type's, so `null` is a value only where that type is itself a std::optional,
+// and then the member holds an engaged std::optional of a disengaged one.
+// Scrydantic alone writes this annotation (synthesized_arguments in tools.hpp).
+struct defaulted_argument_t {};
+
+consteval bool is_defaulted_argument(const std::meta::info member) {
+  return has_annotation(member, ^^defaulted_argument_t);
+}
+
+// The type of the value that a data member holds in JSON: its own type, or for
+// a defaulted argument the type inside its std::optional. Whatever asks what a
+// member's value is, as opposed to how the member is stored, asks here.
+consteval std::meta::info value_type_of(const std::meta::info member) {
+  const auto type = std::meta::type_of(member);
+  return is_defaulted_argument(member) ? element_of(type) : type;
+}
+
+// A defaulted argument is left out while it is disengaged, as a member that
+// skip_null covers is.
 consteval bool omits_null(const std::meta::info owner, const std::meta::info member) {
+  if (is_defaulted_argument(member)) {
+    return true;
+  }
   if (kind_of(std::meta::type_of(member)) != value_kind::optional) {
     return false;
   }

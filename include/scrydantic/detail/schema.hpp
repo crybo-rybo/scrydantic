@@ -253,7 +253,7 @@ consteval void append_object_keys(std::vector<char>& output, const std::meta::in
     append_json_string(output, field.key_view());
     if (!required_only) {
       output.push_back(':');
-      append_schema(output, std::meta::type_of(field.member), member_keywords(field),
+      append_schema(output, value_type_of(field.member), member_keywords(field),
                     value_keywords(field.member), references);
     }
   }

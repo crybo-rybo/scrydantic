@@ -24,7 +24,8 @@ enum class IssueKind : std::uint8_t {
   wrong_type,
   /// A number outside the range of its integer or floating-point type.
   out_of_range,
-  /// A required object member is absent.
+  /// A required object member is absent. So is an argument that the input left
+  /// to its parameter's default while giving a later one, which no call can do.
   missing_member,
   /// An object holds a member its schema does not declare. The issue is at the
   /// object, and its reason names the member.

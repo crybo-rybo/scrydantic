@@ -1,11 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <meta>
+#include <optional>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/keywords.hpp>
@@ -182,14 +184,16 @@ consteval std::string synthesized_member_list(const std::meta::info function,
 }
 
 // What one member of a synthesized argument object carries: the annotations of
-// its parameter, as the constants they are, in declaration order. Every one of
-// them is here, not Scrydantic's alone: a library that reads an annotation of
-// its own off a member finds it where it wrote it.
+// its parameter, as the constants they are, in declaration order, and after
+// them a defaulted_argument_t when the parameter has a default argument. Every
+// annotation of the parameter is here, not Scrydantic's alone: a library that
+// reads an annotation of its own off a member finds it where it wrote it.
 template <auto... Annotations> struct member_annotations {};
 
 // The member_annotations of each member of a synthesized argument object, in
 // order. None for the other forms, whose generated code reads no parameter's
-// annotations.
+// annotations and never leaves an argument to its default: a lone aggregate
+// parameter is the argument object, which every call is given.
 consteval std::vector<std::meta::info>
 synthesized_member_annotations(const std::meta::info function,
                                const std::meta::info context) {
@@ -199,6 +203,9 @@ synthesized_member_annotations(const std::meta::info function,
       std::vector<std::meta::info> carried{};
       for (const auto annotation : std::meta::annotations_of(parameter)) {
         carried.push_back(std::meta::constant_of(annotation));
+      }
+      if (std::meta::has_default_argument(parameter)) {
+        carried.push_back(std::meta::reflect_constant(defaulted_argument_t{}));
       }
       members.push_back(std::meta::substitute(^^member_annotations, carried));
     }
@@ -213,17 +220,25 @@ inline constexpr std::string_view constant_text_v{[:Text:], sizeof([:Text:]) - 1
 // One function as a binding sees it: the type binding_of() reflects, and the
 // `Binding` that arguments_t and apply() carry.
 //
-// A function's parameter names and its parameters' annotations come from the
-// declarations of it that precede the point of evaluation, so two translation
-// units can see one function differently. Each such fact is a template argument
-// here, a constant that GCC mangles by its content, so units that see different
-// facts instantiate differently named code, which the linker cannot merge. The
-// code generated for a binding reads these facts from here and never from the
-// function's declarations, so what a specialization's name records is exactly
-// what its code contains. Everything else it reads from the function, such as
-// the parameter types, the return type, and the object parameter, is part of the
+// A function's parameter names, its parameters' annotations, and which of its
+// parameters have a default argument come from the declarations of it that
+// precede the point of evaluation, so two translation units can see one function
+// differently. Each such fact is a template argument here, a constant that GCC
+// mangles by its content, so units that see different facts instantiate
+// differently named code, which the linker cannot merge. The code generated for
+// a binding reads these facts from here and never from the function's
+// declarations, so what a specialization's name records is exactly what its
+// code contains. Everything else it reads from the function, such as the
+// parameter types, the return type, and the object parameter, is part of the
 // function's type and the same in every unit. `Context` is the binding's call
 // context, which decides whether the leading parameter is an argument.
+//
+// The value of a default argument is the one fact that cannot be recorded:
+// reflection does not read it. A call that leaves an argument out is compiled
+// with the default its own unit sees. So two units that each bind one function
+// that is not inline, and each declare it with a different default for one
+// parameter, which C++ allows, are not kept apart here; their bindings differ in
+// nothing that a name can record.
 //
 // Another fact of the parameter list that a later declaration can change is one
 // more template argument here, gathered by bound_function_of(), before the
@@ -270,15 +285,24 @@ struct bound_tool {
 // units see.
 template <typename... Tools> struct tool_set {};
 
-// The argument object synthesized from a parameter list: one required member per
-// value parameter, named and annotated as `Binding` records, of the parameter's
-// type without references or cv-qualifiers. A member that carries its
-// parameter's annotations is to the schemas and the codec a member that was
-// written with them, so a parameter's description, key, constraints, and checks
-// mean what a data member's do, by the same code. The consteval block runs when
-// the specialization is instantiated, which C++26 permits because the aggregate
-// it completes is a member of that same specialization. The names are read one
-// character at a time, for the reason owned_text gives.
+// The argument object synthesized from a parameter list: one member per value
+// parameter, named and annotated as `Binding` records, of the parameter's type
+// without references or cv-qualifiers. A member that carries its parameter's
+// annotations is to the schemas and the codec a member that was written with
+// them, so a parameter's description, key, constraints, and checks mean what a
+// data member's do, by the same code.
+//
+// A member is required, but for one whose parameter has a default argument.
+// That one is a std::optional of the parameter's type marked defaulted_argument_t
+// (model.hpp), which the input may leave out and which is then disengaged, so
+// that the call can leave the argument out in turn (apply_function in
+// binding.hpp). A data_member_spec has no initializer to give the member
+// instead, and no initializer could hold a default that reflection cannot read.
+//
+// The consteval block runs when the specialization is instantiated, which C++26
+// permits because the aggregate it completes is a member of that same
+// specialization. The names are read one character at a time, for the reason
+// owned_text gives.
 template <typename Binding> struct synthesized_arguments {
   struct type;
 
@@ -296,8 +320,18 @@ template <typename Binding> struct synthesized_arguments {
       options.name = name;
       options.annotations =
           std::meta::template_arguments_of(Binding::annotations[members.size()]);
-      members.push_back(std::meta::data_member_spec(
-          plain_type(std::meta::type_of(parameter)), options));
+      const bool defaulted = std::ranges::any_of(
+          options.annotations, [](const std::meta::info annotation) {
+            return plain_type(std::meta::type_of(annotation)) ==
+                   (^^defaulted_argument_t);
+          });
+      const auto type = plain_type(std::meta::type_of(parameter));
+      members.push_back(
+          std::meta::data_member_spec(defaulted ? std::meta::substitute(^^std::optional,
+                                                                        {
+                                                                            type})
+                                                : type,
+                                      options));
     }
     std::meta::define_aggregate(^^type, members);
   }
@@ -593,6 +627,14 @@ consteval std::string arguments_problem(const std::meta::info function,
     const auto reason = parameter_value_problem(values[index]);
     if (!reason.empty()) {
       return "has " + label + ": " + reason;
+    }
+    // skip_null says that an argument left out is disengaged, and a default
+    // argument that it is the default, so the annotation would do nothing.
+    if (std::meta::has_default_argument(values[index]) &&
+        has_annotation(values[index], ^^skip_null_t)) {
+      return "has " + label +
+             ": carries scrydantic::skip_null and has a default argument; each says "
+             "what an argument left out is, so keep the default argument alone";
     }
   }
   if (auto reason = parameter_keys_problem(values, first); !reason.empty()) {

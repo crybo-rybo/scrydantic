@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -125,9 +126,12 @@ template <typename Args, typename Context, typename Handler>
 // The call helpers below are keyed on the function and the context alone, or on
 // those and the argument object: their code depends only on the function's type
 // and the context type, which are the same in every translation unit, and on
-// `Args`, whose identity already carries the function's parameter names. Only
-// the templates keyed on a bound_function or a bound_tool read facts that can
-// differ between units.
+// `Args`, whose identity already carries the function's parameter names, their
+// annotations, and which of them have a default argument. Only the templates
+// keyed on a bound_function or a bound_tool read facts that can differ between
+// units. A call with fewer values than the function has parameters is made only
+// for an `Args` that marks the rest as defaulted, so only by a unit that sees
+// those default arguments.
 
 // Calls a function, on `object` when it is a non-static member function.
 template <std::meta::info Function, typename Object, typename... Values>
@@ -157,10 +161,68 @@ call_function(Object* object,
   }
 }
 
+// How many members of a synthesized argument object every call passes: those
+// before its first defaulted argument. A function's default arguments are its
+// last parameters', so every member from there on is one.
+consteval std::size_t required_argument_count(const std::meta::info arguments) {
+  const auto members = data_members_of(plain_type(arguments));
+  return static_cast<std::size_t>(std::ranges::find_if(members, is_defaulted_argument) -
+                                  members.begin());
+}
+
+// What a synthesized member holds for its parameter, to move into the call: the
+// member, or the value in a defaulted argument's std::optional, which the caller
+// has found engaged.
+template <std::meta::info Member, typename Args>
+[[nodiscard]] constexpr auto& held_argument(Args& arguments) noexcept {
+  if constexpr (is_defaulted_argument(Member)) {
+    return *arguments.[:Member:];
+  } else {
+    return arguments.[:Member:];
+  }
+}
+
+// Calls a function with the first `Count` members of its synthesized argument
+// object, one per parameter, which leaves each parameter after them to its
+// default argument.
+template <std::meta::info Function, typename Context, std::size_t Count,
+          typename Object, typename Args>
+decltype(auto) call_with_leading(Object* object,
+                                 const context_argument_t<Context>& context,
+                                 [[maybe_unused]] Args& arguments) {
+  static constexpr auto members = declared_members_v<Args>;
+  return [&]<std::size_t... Index>(std::index_sequence<Index...>) -> decltype(auto) {
+    return call_function<Function, Context>(
+        object, context, std::move(held_argument<members[Index]>(arguments))...);
+  }(std::make_index_sequence<Count>{});
+}
+
+// Calls a function with as many members of its synthesized argument object as
+// were given: the first `Count`, which the caller has found given, and each
+// defaulted argument after them until one that was left out. A call cannot
+// pass an argument after one it leaves out, so the members after that one are
+// not passed; decoding admits no argument object that gives one of them
+// (leaves_out_the_rest in decode.hpp). Each count is a call of its own, since
+// the default arguments are the function's and no value here.
+template <std::meta::info Function, typename Context, std::size_t Count,
+          typename Object, typename Args>
+decltype(auto) call_with_given(Object* object,
+                               const context_argument_t<Context>& context,
+                               Args& arguments) {
+  static constexpr auto members = declared_members_v<Args>;
+  if constexpr (Count < members.size()) {
+    if (arguments.[:members[Count]:].has_value()) {
+      return call_with_given<Function, Context, Count + 1>(object, context, arguments);
+    }
+  }
+  return call_with_leading<Function, Context, Count>(object, context, arguments);
+}
+
 // Spreads a decoded argument object over the function's parameter list: nothing,
 // the whole object, or one synthesized member per parameter. It returns exactly
 // what the function returns. This is the one call behind apply() and behind a
-// bound tool's handler.
+// bound tool's handler. A function without a default argument is called once,
+// with every member, as call_with_given comes to at that count.
 template <std::meta::info Function, typename Context, typename Object, typename Args>
 decltype(auto) apply_function(Object* object,
                               const context_argument_t<Context>& context,
@@ -171,11 +233,8 @@ decltype(auto) apply_function(Object* object,
   } else if constexpr (form == arguments_form::aggregate) {
     return call_function<Function, Context>(object, context, std::move(arguments));
   } else {
-    static constexpr auto members = declared_members_v<Args>;
-    return [&]<std::size_t... Index>(std::index_sequence<Index...>) -> decltype(auto) {
-      return call_function<Function, Context>(
-          object, context, std::move(arguments.[:members[Index]:])...);
-    }(std::make_index_sequence<members.size()>{});
+    return call_with_given<Function, Context, required_argument_count(^^Args)>(
+        object, context, arguments);
   }
 }
 

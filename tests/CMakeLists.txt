@@ -150,6 +150,7 @@ add_executable(
   codec/schema_default_tests.cpp
   codec/schema_keyword_tests.cpp
   codec/validator_tests.cpp
+  tools/default_argument_tests.cpp
   tools/function_binding_tests.cpp
   tools/json_tool_tests.cpp
   tools/output_schema_tests.cpp
@@ -183,9 +184,9 @@ if(SCRYDANTIC_BUILD_BENCHMARKS)
 endif()
 
 # A binding must generate code from the declarations its own translation unit
-# sees (a namespace's tools, a function's parameter names and annotations),
-# however the linker orders the units, so the same program is linked in both
-# orders.
+# sees (a namespace's tools, a function's parameter names, annotations, and
+# default arguments), however the linker orders the units, so the same program
+# is linked in both orders.
 foreach(SCRYDANTIC_LINK_ORDER IN ITEMS a_then_b b_then_a)
   if(SCRYDANTIC_LINK_ORDER STREQUAL "a_then_b")
     set(SCRYDANTIC_MULTI_TU_UNITS tools_a.cpp tools_b.cpp)
@@ -540,6 +541,11 @@ scrydantic_add_compile_fail_test(
   parameter-duplicate-key
   parameter_duplicate_key.cpp
   "scrydantic::bind<^^range_tools>(): range_tools::span has parameter `from` and parameter `until`, which both map to the JSON key \"from\""
+)
+scrydantic_add_compile_fail_test(
+  defaulted-skip-null-parameter
+  defaulted_skip_null_parameter.cpp
+  "scrydantic::bind<^^listing_tools>(): listing_tools::tagged has parameter `tag`: carries scrydantic::skip_null and has a default argument; each says what an argument left out is, so keep the default argument alone"
 )
 scrydantic_add_compile_fail_test(
   flattened-parameter
