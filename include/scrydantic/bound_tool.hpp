@@ -47,7 +47,8 @@ namespace scrydantic {
 /// spliced `Json` payloads byte for byte. A failure is an Error of one of three
 /// kinds. Arguments that fail to decode, including a validator's rejection, list
 /// their issues in `issues` and describe them in `model_message`. A refusal is the
-/// Error the tool returned, unchanged; one from tool_error() has empty `issues` and
+/// Error the tool returned, or a scrydantic::supplier of one of its parameters
+/// before the tool ran, unchanged; one from tool_error() has empty `issues` and
 /// the tool's text for the model in `model_message`. A result that the tool
 /// should not have returned is a host-side failure, with empty `issues` and
 /// `model_message` and the reason in `message`. That is a result that misses a

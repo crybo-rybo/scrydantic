@@ -159,6 +159,7 @@ add_executable(
   tools/output_schema_tests.cpp
   tools/parameter_annotation_tests.cpp
   tools/result_validation_tests.cpp
+  tools/supplied_parameter_tests.cpp
   tools/throwing_tool_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
@@ -692,6 +693,36 @@ scrydantic_add_compile_fail_test(
   apply-without-object
   apply_without_object.cpp
   "scrydantic::apply<^^Lamp::dim>(): Lamp::dim is a non-static member function; pass the object to call it on, as apply(object, arguments)"
+)
+scrydantic_add_compile_fail_test(
+  annotated-supplied-parameter
+  annotated_supplied_parameter.cpp
+  "scrydantic::bind<^^report_tools>(): report_tools::export_report has parameter `db` carrying scrydantic::description, which applies to an argument; the host supplies this parameter, through scrydantic::supplier<Database, Session>"
+)
+scrydantic_add_compile_fail_test(
+  supplied-reference-parameter
+  supplied_reference_parameter.cpp
+  "scrydantic::bind<^^clock_tools>(): clock_tools::wind has parameter `clock` of type Clock&, which cannot be initialized from the Clock that scrydantic::supplier<Clock, Session>::supply() returns"
+)
+scrydantic_add_compile_fail_test(
+  supplier-signature
+  supplier_signature.cpp
+  "scrydantic::bind<^^report_tools>(): report_tools::export_report has parameter `db`, which scrydantic::supplier<Database, Session> supplies, but that supplier has no static supply() that takes a const Session&"
+)
+scrydantic_add_compile_fail_test(
+  supplied-after-default
+  supplied_after_default.cpp
+  "scrydantic::bind<^^clock_tools>(): clock_tools::alarms has parameter `clock`, which the context supplies, after parameter `limit`, which has a default argument; a call that leaves an argument to its default passes nothing after it, so declare the supplied parameter before it"
+)
+scrydantic_add_compile_fail_test(
+  apply-refusing-supplier
+  apply_refusing_supplier.cpp
+  "scrydantic::apply<^^reports::purge>(): reports::purge has parameter `admin`, which scrydantic::supplier<Admin, Session> may refuse to supply, and apply() returns only what the function returns; call try_apply(), which returns the refusal"
+)
+scrydantic_add_compile_fail_test(
+  unsupplied-parameter
+  unsupplied_parameter.cpp
+  "scrydantic::bind<^^report_tools>(): report_tools::export_report has parameter `db`: const Database& is not a supported reflected value, and scrydantic::supplier<Database, Session> is not defined, so the context does not supply it"
 )
 scrydantic_add_compile_fail_test(
   mutable-handler

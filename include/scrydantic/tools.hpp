@@ -39,7 +39,9 @@
 /// a tool function or handler receives by const reference as its leading
 /// parameter, such as the identity of the call being serviced. `Context` names
 /// it; `void`, the default, means the tools take none, and then a leading
-/// parameter of any type is an argument the model supplies.
+/// parameter of any type is an argument the model supplies. A specialization
+/// of scrydantic::supplier lets the context supply a parameter of another type
+/// too, in any position.
 ///
 /// Tool discovery reads the declarations that precede the call in the calling
 /// translation unit: a namespace is open, so the tools bound are the ones declared
@@ -60,6 +62,55 @@
 /// parameter; leave it defaulted, or, on a wrapper, compute the same default
 /// with binding_of() and forward it.
 namespace scrydantic {
+
+/// Supplies one parameter of a bound function from the binding's call context.
+///
+/// Specialize it to give the functions of a binding with the context `Context`
+/// what they need from the host, one piece at a time, without making the
+/// context a bag that every function depends on whole:
+///
+///     template <> struct scrydantic::supplier<Database, Session> {
+///       static const Database& supply(const Session& session) {
+///         return session.database();
+///       }
+///     };
+///
+///     [[= scrydantic::tool{"Export the report"}]]
+///     Report export_report(std::string name, const Database& db);
+///
+/// A parameter whose type, without reference and cv-qualifiers, has a supplier
+/// for the binding's context is filled in by the host, wherever it stands in
+/// the parameter list. It is no member of the argument object and appears in no
+/// schema, a default argument of its own is never used, and it takes no
+/// Scrydantic annotation. The primary template is declared and not defined: a
+/// parameter of any other type is an argument, and one that the codec cannot
+/// read fails to compile as before. The leading `const Context&` is the one
+/// parameter supplied without a supplier, as the context itself. A binding
+/// without a context supplies nothing.
+///
+/// `supply` is a static member function called with the `const Context&` of the
+/// call. What it returns initializes the parameter, as an argument would: a
+/// reference is passed on as it is, and a value is held until the function
+/// returns and passed as an rvalue, so a value fills a parameter taken by
+/// value, by const reference, or by rvalue reference, and only a reference
+/// fills one taken by non-const lvalue reference. A supplier that cannot fill a
+/// parameter of its type is a compile-time error.
+///
+/// `supply` may instead return a Result of the value, and then a failed Result
+/// refuses the call, as a tool that returns one does: the call ends with that
+/// Error, unchanged, and the function does not run. A Result holds no reference;
+/// one of a `std::reference_wrapper` fills a reference parameter. The suppliers
+/// of one call run in the order of their parameters, after a tool's arguments
+/// have decoded, and none runs after one that refused.
+///
+/// Whether a parameter is supplied follows from the specializations that are
+/// declared where the function is bound. C++ requires a specialization to be
+/// declared before the first use that looks for it, in every translation unit
+/// that has one, with no diagnostic required: declare a supplier next to its
+/// parameter type or its context type, so that every binding sees it.
+/// @tparam Parameter Type of the parameter, without reference and cv-qualifiers.
+/// @tparam Context Call context of the binding.
+template <typename Parameter, typename Context> struct supplier;
 
 /// Callables accepted for a particular reflected argument aggregate.
 ///
@@ -142,8 +193,9 @@ consteval std::meta::info binding_of(const std::meta::info function,
 /// a tool's.
 ///
 /// The function needs no scrydantic::tool annotation; what it is named and what
-/// becomes of its result are the caller's to decide. Its parameters, after an
-/// explicit object parameter and an optional leading `const Context&`, are either
+/// becomes of its result are the caller's to decide. Its parameters, without an
+/// explicit object parameter, an optional leading `const Context&`, and those
+/// that the context supplies through a scrydantic::supplier, are either
 /// nothing, which gives an object without members that decodes from `{}`; one
 /// plain aggregate, which is the object itself; or any other list of named
 /// parameters of supported types, which gives an aggregate with one member per
@@ -208,7 +260,11 @@ decltype(auto) apply(arguments_t<Function, Context, Binding>&& arguments) {
 /// Calls a function of a binding that has a call context.
 ///
 /// The context goes to a function that takes a leading `const Context&`, and is
-/// left out for one that does not, so a wrapper calls both the same way.
+/// left out for one that does not, so a wrapper calls both the same way. The
+/// parameters that the context supplies through a scrydantic::supplier are
+/// filled in from it, each in its place among the arguments. A supplier that
+/// returns a Result may refuse, which this return type cannot say, so a
+/// function with such a parameter does not compile here: call try_apply().
 /// Otherwise this is apply(arguments).
 /// @tparam Function Reflection of a free function or a static member function.
 /// @tparam Context Call context type, which is not void. It is always named,
@@ -277,6 +333,67 @@ decltype(auto) apply(Object& object, const std::type_identity_t<Context>& contex
                      arguments_t<Function, Context, Binding>&& arguments) {
   return detail::apply_binding<Binding, Context>(std::addressof(object), context,
                                                  arguments);
+}
+
+/// Calls a function as apply(context, arguments) does, and returns a supplier's
+/// refusal instead of calling it.
+///
+/// apply() returns exactly what the function returns, so it has no place for
+/// the Error of a supplier that refuses, and does not compile for a function
+/// with a parameter whose supplier returns a Result. This returns a Result
+/// instead: failed with that Error, unchanged, when a supplier refused, in
+/// which case the function was not called, and otherwise holding what the
+/// function returned, moved into it. A function that returns `void` gives a
+/// Status, one that returns a Result gives a Result of that Result, so the two
+/// failures stay apart, and one that returns an lvalue reference gives a Result
+/// of a `std::reference_wrapper`, since a Result holds no reference. A function
+/// with no supplier that may refuse is called the same way and always succeeds,
+/// so a wrapper can call every function through this.
+/// @tparam Function Reflection of a free function or a static member function.
+/// @tparam Context Call context type, which is not void. It is always named,
+/// never deduced from `context`.
+/// @tparam Binding Leave defaulted, as for arguments_t, or forward the one the
+/// argument object was named with.
+/// @param context Call context that the suppliers read and a leading
+/// `const Context&` receives.
+/// @param arguments Argument object to consume.
+/// @return What the function returned, or the Error of the supplier that
+/// refused.
+template <std::meta::info Function, typename Context,
+          typename Binding = typename[:binding_of(Function, ^^Context):]>
+  requires(!std::is_void_v<Context>)
+[[nodiscard]] auto try_apply(const std::type_identity_t<Context>& context,
+                             arguments_t<Function, Context, Binding>&& arguments) {
+  return detail::try_apply_binding<Binding, Context>(static_cast<void*>(nullptr),
+                                                     context, arguments);
+}
+
+/// Calls a non-static member function on an object as apply(object, context,
+/// arguments) does, and returns a supplier's refusal instead of calling it.
+///
+/// This is try_apply(context, arguments) with the object of apply(object,
+/// arguments).
+/// @tparam Function Reflection of the function.
+/// @tparam Context Call context type, which is not void. It is always named,
+/// never deduced from `context`.
+/// @tparam Binding Leave defaulted, as for arguments_t, or forward the one the
+/// argument object was named with.
+/// @tparam Object Class of the object, `const` for a const object.
+/// @param object Object to call the function on.
+/// @param context Call context that the suppliers read and a leading
+/// `const Context&` receives.
+/// @param arguments Argument object to consume.
+/// @return What the function returned, or the Error of the supplier that
+/// refused.
+template <
+    std::meta::info Function, typename Context,
+    typename Binding = typename[:binding_of(Function, (^^Context)):], typename Object>
+  requires(!std::is_void_v<Context>)
+[[nodiscard]] auto try_apply(Object& object,
+                             const std::type_identity_t<Context>& context,
+                             arguments_t<Function, Context, Binding>&& arguments) {
+  return detail::try_apply_binding<Binding, Context>(std::addressof(object), context,
+                                                     arguments);
 }
 
 /// Reflects the tools bind<^^Entity, Context>() binds: the tool functions a
@@ -366,7 +483,8 @@ template <typename Args, typename Context = void, typename Handler>
 /// `[[= scrydantic::tool{"description"}]]`; `bind<^^npc_tools>()` binds every
 /// function so declared directly in that namespace, in declaration order. A tool
 /// is named after the function unless a scrydantic::name annotation overrides it.
-/// Its parameters, after an optional leading `const Context&`, are either nothing
+/// Its parameters, without an optional leading `const Context&` and those that
+/// the context supplies through a scrydantic::supplier, are either nothing
 /// (the tool takes `{}`), one plain aggregate (the argument object, as for
 /// bind_handler()), or any other list of named parameters of supported types,
 /// which is synthesized into an argument object with one member per parameter,
