@@ -233,6 +233,40 @@ Tool arguments that are not JSON fail the same way, as
 `tool arguments are not valid JSON: ...`, and so does `JsonView::parse`, as
 `JSON text is not valid: ...`. Its documentation lists the reasons.
 
+**Decoding text-only sources.** Some sources carry every value as text: the
+variables of a URL, the fields of a form, environment variables, command-line
+arguments. Others send a nested value as JSON text inside a string. Strict
+decoding rejects both, so `decode` takes a `DecodeOptions` for them. Both
+options are off by default:
+
+```cpp
+const scrydantic::DecodeOptions options{.coerce_scalars = true};
+auto reading = scrydantic::decode<Reading>(
+    R"({"degrees":"21.5","label":null})", options);
+reading->degrees; // 21.5
+```
+
+- `coerce_scalars` accepts a string where a `bool` or a number is required,
+  when its whole text is `true`, `false`, or a JSON number, with no whitespace
+  around it.
+- `coerce_structures` accepts a string where an array or an object is required,
+  when its text is JSON of that kind: `"[1,2]"` for a `std::vector<int>`, or
+  `"{\"city\":\"Oslo\"}"` for an aggregate.
+
+The value is then decoded as if it had been written in the string's place.
+`"5.0"` is not an integer, `"70000"` is out of range for a `std::int16_t`, and
+the member's constraints and validators apply. An issue has the path and the
+reason it has in a strict decode, such as `$.degrees must be a number` for
+`"warm"`, and an issue inside a coerced structure continues the path of its
+string. The text of a coerced structure counts toward the nesting limit from
+where its string stands: the arrays and objects around the string and the
+nesting of the text may add up to 256 (`max_json_depth`).
+
+Nothing else is converted. A number is not accepted for a string or for a
+`bool`, `"null"` and `""` are not `null`, and a `std::string` or `Json` member
+takes its string as it is. Schemas do not change: a schema says what a producer
+should send, and the options say what your program tolerates.
+
 `Result<T>` is `std::expected<T, Error>`, and `Status` is `Result<void>`. Check
 a result before you use its value or its error. At `-O2`, GCC can give a false
 `-Wfree-nonheap-object` warning when you move the error out of a result that
