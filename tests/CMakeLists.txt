@@ -140,6 +140,7 @@ add_executable(
   scrydantic_tests
   codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
+  codec/coercion_tests.cpp
   codec/constraint_tests.cpp
   codec/number_spelling_tests.cpp
   codec/validator_tests.cpp
