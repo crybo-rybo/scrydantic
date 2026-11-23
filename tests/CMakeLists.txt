@@ -147,6 +147,7 @@ add_executable(
   codec/json_schema_tests.cpp
   codec/map_tests.cpp
   codec/number_spelling_tests.cpp
+  codec/rename_all_tests.cpp
   codec/schema_default_tests.cpp
   codec/schema_keyword_tests.cpp
   codec/validator_tests.cpp
@@ -309,6 +310,46 @@ scrydantic_add_compile_fail_test(
   annotated-enumerator
   annotated_enumerator.cpp
   "does not satisfy scrydantic::SupportedValue: Gauge::level: Level::high carries scrydantic::description, which does not apply to enumerators; an enumerator takes only scrydantic::name"
+)
+scrydantic_add_compile_fail_test(
+  renamed-duplicate-key
+  renamed_duplicate_key.cpp
+  "does not satisfy scrydantic::Encodable: Limits has members max_tokens and maxTokens that both map to the JSON key \"maxTokens\""
+)
+scrydantic_add_compile_fail_test(
+  renamed-duplicate-enumerator-name
+  renamed_duplicate_enumerator_name.cpp
+  "does not satisfy scrydantic::Encodable: Level has enumerators Low and low that both map to the JSON string \"low\""
+)
+scrydantic_add_compile_fail_test(
+  renamed-tag-key
+  renamed_tag_key.cpp
+  "Post::attachment<Image>.type_: has the JSON key \"type\", which carries the variant's tag"
+)
+scrydantic_add_compile_fail_test(
+  two-rename-all
+  two_rename_all.cpp
+  "does not satisfy scrydantic::SupportedValue: Limits has more than one scrydantic::rename_all annotation"
+)
+scrydantic_add_compile_fail_test(
+  two-rename-all-enum
+  two_rename_all_enum.cpp
+  "does not satisfy scrydantic::Decodable: Gauge::level: Level has more than one scrydantic::rename_all annotation"
+)
+scrydantic_add_compile_fail_test(
+  rename-all-member
+  rename_all_member.cpp
+  "Limits::max_tokens: carries scrydantic::rename_all, which applies to classes and enums; scrydantic::name gives one member its key"
+)
+scrydantic_add_compile_fail_test(
+  rename-all-enumerator
+  rename_all_enumerator.cpp
+  "Gauge::level: Level::high_water carries scrydantic::rename_all, which does not apply to enumerators; an enumerator takes only scrydantic::name"
+)
+scrydantic_add_compile_fail_test(
+  rename-all-tool
+  rename_all_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::rename_all, which applies to classes and enums; a tool's arguments keep the names of its parameters"
 )
 scrydantic_add_compile_fail_test(
   endless-recursion

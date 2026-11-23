@@ -290,6 +290,81 @@ template <std::size_t Size> struct name : detail::fixed_text<Size> {
 /// @param value Key text whose extent is deduced.
 template <std::size_t Size> name(const char (&value)[Size]) -> name<Size>;
 
+/// The conventions that scrydantic::rename_all spells keys and enumerator
+/// names in. Each is also a name of its own in this namespace, so a rule is
+/// written `scrydantic::camel_case`.
+enum class naming_rule : std::uint8_t {
+  /// `read_only_hint` becomes `readOnlyHint`.
+  camel_case,
+  /// `read_only_hint` becomes `ReadOnlyHint`.
+  pascal_case,
+  /// `read_only_hint` becomes `read-only-hint`.
+  kebab_case,
+  /// `read_only_hint` becomes `READ_ONLY_HINT`.
+  screaming_snake_case,
+};
+
+using enum naming_rule;
+
+/// Derives the JSON key of every data member a class declares, or the JSON
+/// string of every enumerator a scoped enum declares, from its identifier.
+///
+/// Written between the class-key or `enum class` and the name:
+/// `struct [[= scrydantic::rename_all{scrydantic::camel_case}]] Tool {
+/// scrydantic::Json input_schema; };` is the object `{"inputSchema":...}`. The
+/// derived key is the member's key everywhere its identifier was: in encoding,
+/// decoding, generated schemas, decode-failure paths, and keys_v. The identifier
+/// is then no key at all, so decoding rejects `input_schema` as an unknown
+/// member. A scrydantic::name on a member or an enumerator wins over the rule.
+///
+/// The rule reads an identifier as words separated by underscores, and never
+/// splits a word anywhere else:
+/// - camel_case puts the first word's first letter in lower case and every
+///   later word's first letter in upper case, and joins the words;
+/// - pascal_case puts every word's first letter in upper case, and joins them;
+/// - kebab_case puts every letter in lower case, and joins the words with `-`;
+/// - screaming_snake_case puts every letter in upper case, and joins the words
+///   with `_`.
+///
+/// What a rule does not mention it leaves alone, which decides the edge cases:
+/// - Trailing underscores are dropped, so the member `default_`, named around a
+///   keyword, has the key `default`.
+/// - Leading underscores are kept, in front of the words: `_meta` is `_meta`
+///   under camel_case and `_Meta` under pascal_case. An identifier that is
+///   nothing but underscores is kept whole.
+/// - Underscores between two words separate them once, however many there are:
+///   `a__b` is `aB`.
+/// - A digit stays in its word, and has no case: `http2_enabled` is
+///   `http2Enabled`, and `sha_256` is `sha256`.
+/// - A capital inside a word starts no word. camel_case and pascal_case keep
+///   the letters after a word's first as written, so `userID` is `userID` and
+///   `UserID`, and `HTTPServer` is `hTTPServer` and `HTTPServer`; kebab_case
+///   makes them `userid` and `httpserver`, and screaming_snake_case `USERID`
+///   and `HTTPSERVER`.
+/// - Only the letters `a` to `z` and `A` to `Z` change case.
+///
+/// The rule covers what the class or enum itself declares. A member's type
+/// states its own rule or has none, so a class's JSON is the same wherever it
+/// is used, and a field that reaches an object through a scrydantic::flatten
+/// member follows the class that declares it. The keys of a map are data, and
+/// a scrydantic::tag is written out, so neither is renamed; nor are a tool's
+/// arguments, which keep their parameters' names.
+///
+/// Two members, or two enumerators, that end with the same string are the
+/// compile-time error they are without the rule, and so is a derived key that
+/// lands on a variant's tag key. The compiler also rejects two rename_all on one
+/// class or enum, and a rename_all on a data member, an enumerator, or a tool
+/// function.
+struct rename_all {
+  /// The convention the keys or names are spelled in.
+  naming_rule rule;
+
+  /// States the rule. There is no default: an annotation without one would not
+  /// say what it does.
+  /// @param chosen Convention to spell the keys or names in.
+  consteval explicit rename_all(const naming_rule chosen) noexcept : rule{chosen} {}
+};
+
 /// Names a class's discriminator value when it is an alternative of a `std::variant`.
 ///
 /// A reflected `std::variant<A, B, ...>` is a tagged union: each alternative is a

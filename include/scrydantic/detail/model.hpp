@@ -257,23 +257,131 @@ annotated_text(const std::meta::info entity,
   return std::nullopt;
 }
 
+// ---- Naming rules ------------------------------------------------------------
+
+// Only the ASCII letters have a case here: an identifier's other bytes are
+// digits or parts of a UTF-8 sequence, which no rule changes.
+consteval char ascii_upper(const char character) {
+  return character >= 'a' && character <= 'z' ? static_cast<char>(character - 'a' + 'A')
+                                              : character;
+}
+
+consteval char ascii_lower(const char character) {
+  return character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a')
+                                              : character;
+}
+
+// One character of a word as `rule` spells it. camel_case and pascal_case decide
+// a word's first character and leave the rest as written; the other two decide
+// every character.
+consteval char in_case(const naming_rule rule, const char character,
+                       const bool starts_word, const bool first_word) {
+  switch (rule) {
+  case naming_rule::camel_case:
+    if (!starts_word) {
+      return character;
+    }
+    return first_word ? ascii_lower(character) : ascii_upper(character);
+  case naming_rule::pascal_case:
+    return starts_word ? ascii_upper(character) : character;
+  case naming_rule::kebab_case:
+    return ascii_lower(character);
+  case naming_rule::screaming_snake_case:
+    return ascii_upper(character);
+  }
+  return character;
+}
+
+// What `rule` puts between two words, or nothing.
+consteval std::string_view word_separator(const naming_rule rule) {
+  switch (rule) {
+  case naming_rule::kebab_case:
+    return "-";
+  case naming_rule::screaming_snake_case:
+    return "_";
+  default:
+    return {};
+  }
+}
+
+// `identifier` as `rule` spells it. The identifier's words are what its
+// underscores separate, and nothing else is a boundary: splitting at a capital
+// or a digit would have to guess where `HTTPServer` or `sha256` divides, and a
+// guess is no rule. Leading underscores are not separators, since there is no
+// word before them; they are copied, so `_meta` keeps its underscore. Trailing
+// underscores separate a word from nothing and vanish, which is what makes
+// `default_` the key `default`. The text is built a character at a time, as
+// owned_text explains.
+consteval std::string renamed(const std::string_view identifier,
+                              const naming_rule rule) {
+  std::string text{};
+  std::size_t at = 0;
+  for (; at < identifier.size() && identifier[at] == '_'; ++at) {
+    text.push_back('_');
+  }
+  bool first_word = true;
+  bool starts_word = true;
+  for (; at < identifier.size(); ++at) {
+    if (identifier[at] == '_') {
+      starts_word = true;
+      continue;
+    }
+    if (starts_word && !first_word) {
+      for (const char character : word_separator(rule)) {
+        text.push_back(character);
+      }
+    }
+    text.push_back(in_case(rule, identifier[at], starts_word, first_word));
+    starts_word = false;
+    first_word = false;
+  }
+  return text;
+}
+
+// The rule a class or an enum states for the names of what it declares.
+consteval std::optional<naming_rule> naming_rule_of(const std::meta::info scope) {
+  for (const auto annotation : std::meta::annotations_of(scope)) {
+    if (annotation_matches(annotation, ^^rename_all)) {
+      return std::meta::extract<rename_all>(annotation).rule;
+    }
+  }
+  return std::nullopt;
+}
+
+// The identifier of a data member or an enumerator, spelled by the rename_all
+// of the class or enum that declares it, if that states one. The rule is read
+// from the entity's own parent, so it reaches no further than the declaration
+// it is written on: not into a member's type, and not out of a flattened class
+// into the object that holds it.
+consteval std::string_view declared_name_of(const std::meta::info entity) {
+  const auto identifier = std::meta::identifier_of(entity);
+  const auto rule = naming_rule_of(std::meta::parent_of(entity));
+  if (!rule) {
+    return identifier;
+  }
+  const auto text = renamed(identifier, *rule);
+  return {std::define_static_string(text), text.size()};
+}
+
 // The JSON key a data member is written under: its name annotation, or else its
-// identifier.
+// identifier, as its class's rename_all spells it. The schemas, the codec,
+// keys_v, issue paths, and the duplicate-key check all read the key here.
 consteval std::string_view json_key_of(const std::meta::info member) {
   if (const auto key = annotated_text(member, ^^name)) {
     return *key;
   }
-  return std::meta::identifier_of(member);
+  return declared_name_of(member);
 }
 
 // The string an enumerator is in JSON: its name annotation, or else its
-// identifier. The schema's `enum` list, encoding, decoding, and the reason an
-// unknown enumerator is rejected with all read it here, so they cannot disagree.
+// identifier, as its enum's rename_all spells it. The schema's `enum` list,
+// encoding, decoding, and the reason an unknown enumerator is rejected with all
+// read it here, so they cannot disagree.
 consteval std::string_view json_name_of(const std::meta::info enumerator) {
   if (const auto text = annotated_text(enumerator, ^^name)) {
     return *text;
   }
-  return std::meta::identifier_of(enumerator);
+  return declared_name_of(enumerator);
 }
 
 consteval std::optional<std::string_view> tag_of(const std::meta::info type) {

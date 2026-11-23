@@ -322,6 +322,20 @@ consteval std::string entity_name(const std::meta::info entity) {
   return own;
 }
 
+// The annotations that decide which keys an object has, on a function, which
+// has none: its arguments are named after its parameters, and an argument
+// aggregate carries these itself.
+consteval std::string key_annotation_problem(const std::meta::info function) {
+  if (has_annotation(function, ^^flatten_t)) {
+    return "carries scrydantic::flatten, which applies to data members";
+  }
+  if (has_annotation(function, ^^rename_all)) {
+    return "carries scrydantic::rename_all, which applies to classes and enums; a "
+           "tool's arguments keep the names of its parameters";
+  }
+  return {};
+}
+
 consteval std::string tool_annotation_problem(const std::meta::info function) {
   if (annotation_count(function, ^^tool) > 1) {
     return "has more than one scrydantic::tool annotation";
@@ -337,8 +351,8 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
            "ignore_unknown), which applies to data members or classes; a tool's "
            "description is its scrydantic::tool text";
   }
-  if (has_annotation(function, ^^flatten_t)) {
-    return "carries scrydantic::flatten, which applies to data members";
+  if (auto reason = key_annotation_problem(function); !reason.empty()) {
+    return reason;
   }
   for (const auto annotation : std::meta::annotations_of(function)) {
     if (is_constraint(annotation)) {
