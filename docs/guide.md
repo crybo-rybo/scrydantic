@@ -119,6 +119,7 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | `title{"..."}` | member, class | Sets the `title` of the member's or the class's schema. It is written to the schema only. |
 | `keyword{"key", "json"}`, `keyword_string{"key", "text"}` | member, class | Adds a keyword of your choosing, such as `format` or `examples`, to the member's or the class's schema. It is written to the schema only. Decoding does not check it. |
 | `name{"..."}` | member, enumerator, tool | Replaces the member's JSON key, the enumerator's JSON string, or the tool's name. |
+| `rename_all{rule}` | class, enum | Derives the JSON key of every member, or the JSON string of every enumerator, from its identifier, by `camel_case`, `pascal_case`, `kebab_case`, or `screaming_snake_case`. A `name` still wins. |
 | `tag{"..."}` | class | The class's `"type"` value when it is a variant alternative. |
 | `skip_null` | class, optional member | Leaves out an empty optional instead of writing `null`, and lets the input leave it out. On a class, it applies to every optional member. |
 | `emit_null` | optional member | Writes `null` again for one member of a `skip_null` class. |
@@ -142,10 +143,75 @@ scrydantic::encode(Profile{.name = "Ada"})->text;
 // {"display_name":"Ada","phone":null}
 ```
 
-**Enumerators.** An enumerator is written as its identifier unless it carries a
-`name`, which gives an enum a value that is not a C++ identifier: a keyword, a
-value with punctuation, or one in another case convention. The annotation goes
-after the enumerator's identifier:
+**Naming rules.** Where the JSON spells its keys in another convention than
+the C++ does, `rename_all` on the class derives every key from the member's
+identifier, and only the exceptions need a `name`:
+
+```cpp
+struct [[= scrydantic::rename_all{scrydantic::camel_case}]] Tool {
+  std::string name;
+  scrydantic::Json input_schema;                          // "inputSchema"
+  std::optional<bool> read_only_hint;                     // "readOnlyHint"
+  [[= scrydantic::name{"_meta"}]] scrydantic::Json meta;  // a name still wins
+};
+
+Tool tool{
+    .name = "search", .input_schema = {"{}"}, .read_only_hint = true, .meta = {"{}"}};
+scrydantic::encode(tool)->text;
+// {"_meta":{},"inputSchema":{},"name":"search","readOnlyHint":true}
+scrydantic::decode<Tool>(
+    R"({"_meta":{},"input_schema":{},"name":"search","readOnlyHint":true})")
+    .error().model_message;
+// $ contains unknown member "input_schema"
+// $.inputSchema is a required member
+```
+
+The derived key is the member's key everywhere: in the schema, in encoding and
+decoding, in issue paths, and in `keys_v`. On a scoped enum the same annotation
+derives the enumerators' strings:
+
+```cpp
+enum class [[= scrydantic::rename_all{scrydantic::screaming_snake_case}]] Level {
+  low_water,
+  high_water,
+  off,
+};
+
+scrydantic::schema_v<Level>;
+// {"enum":["LOW_WATER","HIGH_WATER","OFF"],"type":"string"}
+```
+
+A rule reads an identifier as words separated by underscores:
+
+| Rule | `read_only_hint` | `default_` | `http2_enabled` |
+|---|---|---|---|
+| `camel_case` | `readOnlyHint` | `default` | `http2Enabled` |
+| `pascal_case` | `ReadOnlyHint` | `Default` | `Http2Enabled` |
+| `kebab_case` | `read-only-hint` | `default` | `http2-enabled` |
+| `screaming_snake_case` | `READ_ONLY_HINT` | `DEFAULT` | `HTTP2_ENABLED` |
+
+Trailing underscores are dropped, so a member named around a keyword gets the
+keyword as its key. Leading underscores are kept (`_meta` stays `_meta` under
+`camel_case`), and several underscores between two words separate them once. A
+capital letter starts no word: `camel_case` and `pascal_case` set each word's
+first letter and keep the rest as written, so under `camel_case` `userID` stays
+`userID` and `HTTPServer` becomes `hTTPServer`, while `kebab_case` and
+`screaming_snake_case` set every letter. Where that is not the key you want,
+give the member a `name`.
+
+The rule covers what the class or enum itself declares. A member's type states
+its own rule or has none, so a class has the same JSON wherever it is used, and
+a field that comes from a flattened member follows the class that declares it.
+The keys of a map, a variant alternative's `tag`, and the arguments that a
+tool's parameter list names are never renamed. Two members that end with the
+same key do not compile, with or without a rule, and neither do two rules on
+one class or enum, or a rule on a member, an enumerator, or a tool function.
+
+**Enumerators.** An enumerator is written as its identifier, or as its enum's
+`rename_all` spells that, unless it carries a `name`, which gives an enum a
+value that is not a C++ identifier: a keyword, a value with punctuation, or one
+in another case convention. The annotation goes after the enumerator's
+identifier:
 
 ```cpp
 enum class Visibility {
