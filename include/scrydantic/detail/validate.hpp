@@ -57,7 +57,7 @@ template <typename Type>
 template <typename Root, std::meta::info Member, typename Owner>
 [[nodiscard]] bool validate_member(const Owner& object, const decode_cursor& parent,
                                    const std::size_t depth) {
-  constexpr field_layout field = fields_v<Root>[field_position_v<Root, Member>];
+  constexpr field_layout field = field_layouts_v<Root>[field_position_v<Root, Member>];
   constexpr std::string_view key = field.key_view();
   const decode_cursor here = parent.member(key);
   const auto& value = object.[:Member:];

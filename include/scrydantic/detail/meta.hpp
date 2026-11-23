@@ -913,7 +913,7 @@ template <typename Type> consteval auto object_keys() {
   if constexpr (!problem.empty()) {
     return std::array<std::string_view, 0>{};
   } else {
-    constexpr auto fields = fields_v<Type>;
+    constexpr auto fields = field_layouts_v<Type>;
     std::array<std::string_view, fields.size()> keys{};
     for (std::size_t index = 0; index < fields.size(); ++index) {
       keys[index] = fields[index].key_view();

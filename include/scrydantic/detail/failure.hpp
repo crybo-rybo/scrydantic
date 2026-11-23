@@ -148,7 +148,7 @@ public:
   // The cursor of a member or element of this cursor's value. The child points
   // at this cursor, so it must not outlive it; the rvalue overloads are deleted
   // so that a chain of temporaries cannot leave a dangling parent behind. `key`
-  // must be a static string (fields_v, tag_key), never text of the document.
+  // must be a static string (field_layouts_v, tag_key), never text of the document.
   [[nodiscard]] decode_cursor member(const std::string_view key) const& noexcept {
     return decode_cursor{report_, this, key, 0};
   }

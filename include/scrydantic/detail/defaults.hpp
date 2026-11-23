@@ -103,7 +103,7 @@ consteval bool append_default_number(std::string& output, const Float value) {
 
 template <typename Enum>
 consteval bool append_default_enumerator(std::string& output, const Enum value) {
-  template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
+  template for (constexpr std::meta::info enumerator : declared_enumerators_v<Enum>) {
     if (value == [:enumerator:]) {
       const auto name = json_name_of(enumerator);
       append_json_string(output, name);
@@ -162,7 +162,7 @@ consteval bool append_default_object(std::string& output, const Type& value,
   if (Tagged && !is_utf8(tag_of(^^Type).value_or(""))) {
     return false;
   }
-  template for (constexpr field_layout field : fields_v<Type>) {
+  template for (constexpr field_layout field : field_layouts_v<Type>) {
     constexpr std::meta::info member = field.member;
     constexpr std::string_view key = field.key_view();
     if (!is_utf8(key)) {
