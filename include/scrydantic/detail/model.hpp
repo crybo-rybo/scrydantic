@@ -228,6 +228,16 @@ consteval std::string_view json_key_of(const std::meta::info member) {
   return std::meta::identifier_of(member);
 }
 
+// The string an enumerator is in JSON: its name annotation, or else its
+// identifier. The schema's `enum` list, encoding, decoding, and the reason an
+// unknown enumerator is rejected with all read it here, so they cannot disagree.
+consteval std::string_view json_name_of(const std::meta::info enumerator) {
+  if (const auto text = annotated_text(enumerator, ^^name)) {
+    return *text;
+  }
+  return std::meta::identifier_of(enumerator);
+}
+
 consteval std::optional<std::string_view> tag_of(const std::meta::info type) {
   return annotated_text(plain_type(type), ^^tag);
 }
@@ -370,11 +380,11 @@ consteval std::string_view joined_names(const std::vector<std::string_view>& nam
   return static_string(text);
 }
 
-// The declared enumerator names, as the decode diagnostic lists them.
+// The declared enumerators' JSON names, as the decode diagnostic lists them.
 consteval std::string_view enumerator_names(const std::meta::info type) {
   std::vector<std::string_view> names{};
   for (const auto enumerator : std::meta::enumerators_of(plain_type(type))) {
-    names.push_back(std::meta::identifier_of(enumerator));
+    names.push_back(json_name_of(enumerator));
   }
   return joined_names(names);
 }
@@ -673,6 +683,8 @@ consteval std::string signed_decimal(const std::int64_t value) {
                    : decimal(static_cast<std::uint64_t>(value));
 }
 
+// By its identifier, not by json_name_of: a definition name spells the C++
+// type, and a scrydantic::name may hold characters a definition name refuses.
 consteval name_result enumerator_name(const std::meta::info constant) {
   for (const auto enumerator :
        std::meta::enumerators_of(std::meta::type_of(constant))) {

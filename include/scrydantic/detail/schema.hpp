@@ -129,7 +129,7 @@ consteval void append_enum_schema(std::vector<char>& output, const std::meta::in
     if (!first) {
       output.push_back(',');
     }
-    append_json_string(output, std::meta::identifier_of(enumerator));
+    append_json_string(output, json_name_of(enumerator));
     first = false;
   }
   append_json_literal(output, "],\"type\":\"string\"}");
