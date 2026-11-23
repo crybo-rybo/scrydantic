@@ -33,7 +33,8 @@ constructors of its own. Its members can be any of these types:
 | `std::map<std::string, T>`, `std::unordered_map<std::string, T>` | an object with any keys, each value a `T` |
 | `std::indirect<T>` | whatever `T` is |
 | another aggregate | an object |
-| `std::variant<A, B, ...>` of tagged aggregates | an object with a `"type"` member |
+| `std::variant<A, B, ...>` | the alternative that the value's JSON kind selects; aggregates with a `tag` are objects with a `"type"` member |
+| `std::monostate`, as a variant alternative | `null` |
 | `scrydantic::Json` | any JSON value, held as its canonical text |
 
 `std::int8_t` and `std::uint8_t` are character types in C++, so they are
@@ -170,16 +171,86 @@ An enum with one enumerator is a constant:
 name, and `name` is the only Scrydantic annotation an enumerator takes; either
 mistake is a compile-time error.
 
-**Variants.** Every alternative of a `std::variant` must be an aggregate with a
-distinct `tag`. The encoded object carries the tag under the key `"type"`, so an
-alternative cannot have a member whose key is `"type"`.
+**Variants.** A `std::variant` is one of several types, and the JSON value
+itself says which. It can say so in two ways, and one variant may use both.
+
+The first is the value's JSON kind. A variant holds at most one alternative of
+each kind, and a value is the alternative of its own kind:
+
+| JSON kind | Alternative |
+|---|---|
+| null | `std::monostate` |
+| boolean | `bool` |
+| integer | an integer type |
+| number | `float` or `double` |
+| string | `std::string` or a scoped enum |
+| array | `std::vector<T>` or `std::array<T, N>` |
+| object | an aggregate or a map |
+
+```cpp
+struct Item { std::string name; };
+
+struct Request {
+  std::variant<std::int64_t, std::string> id;    // 7 or "abc"
+  std::variant<Item, std::vector<Item>> items;   // one item or a list of them
+};
+
+scrydantic::encode(Request{.id = "abc", .items = Item{.name = "pen"}})->text;
+// {"id":"abc","items":{"name":"pen"}}
+
+scrydantic::schema_v<Request>
+// {"additionalProperties":false,
+//  "properties":{
+//    "id":{"anyOf":[{"maximum":9223372036854775807,
+//                    "minimum":-9223372036854775808,"type":"integer"},
+//                   {"type":"string"}]},
+//    "items":{"anyOf":[{...Item...},{"items":{...Item...},"type":"array"}]}},
+//  "required":["id","items"],"type":"object"}
+```
+
+An alternative is written exactly as its type is anywhere else, and the schema
+is the `anyOf` of the alternatives' schemas, in their order. Decoding reads a
+value as the one alternative its kind selects, so an issue inside it has that
+alternative's path and reason. A value of a kind that no alternative has is one
+`wrong_type` issue that lists the kinds: `$.id must be an integer or a string`.
+
+An integer type and a floating-point type may be alternatives together. A JSON
+integer that fits the integer type is the integer, and any other number is the
+floating-point one: for `std::variant<std::int32_t, double>`, `1` is the
+`int32_t`, and `1.5`, `1e2`, and `3000000000` are the `double`. JSON has only
+one `2`, so a `double` holding `2.0` is written `2` and reads back as the
+integer.
+
+The second way is a tag. Aggregates are all objects, so several of them in one
+variant must each carry a distinct `tag`. The encoded object carries the tag
+under the key `"type"`, so a tagged alternative cannot have a member whose key
+is `"type"`. The tagged aggregates may stand beside alternatives of other
+kinds:
 
 ```cpp
 struct [[= scrydantic::tag{"circle"}]] Circle { double radius; };
 struct [[= scrydantic::tag{"square"}]] Square { double side; };
 using Shape = std::variant<Circle, Square>;
 // Shape{Circle{1.5}} encodes as {"radius":1.5,"type":"circle"}
+
+using Label = std::variant<std::monostate, std::string, Circle, Square>;
+// Label{}          encodes as null
+// Label{"unit"}    encodes as "unit"
+// Label{Square{2}} encodes as {"side":2,"type":"square"}
 ```
+
+A variant's only aggregate needs no tag. Without one it is the plain object it
+is anywhere, as `Item` is above.
+
+A variant that some value would not settle is a compile-time error that names
+the two alternatives and the kind they share: a `std::string` beside an enum,
+two vectors, two integer types, an aggregate without a tag beside another
+aggregate, a map beside an aggregate. A `Json`, a `std::optional`, a
+`std::indirect`, and another variant have no one kind, so they cannot be
+alternatives: use `std::monostate` for null, and list a nested variant's
+alternatives in the outer one. `std::optional<std::variant<...>>` adds `null`
+as it does for any type, so that variant cannot hold `std::monostate` too. No
+constraint annotation applies to a variant member.
 
 **Flattened members.** `flatten` gives an object the fields of one of its
 members, so that types which share a set of fields can share its declaration:
@@ -488,7 +559,11 @@ nesting of the text may add up to 256 (`max_json_depth`).
 
 Nothing else is converted. A number is not accepted for a string or for a
 `bool`, `"null"` and `""` are not `null`, and a `std::string` or `Json` member
-takes its string as it is. Schemas do not change: a schema says what a producer
+takes its string as it is. So does a variant with a `std::string` or an enum
+alternative: a string is that alternative, whatever its text spells. A variant
+without one takes a string for the value it spells, and reads that value as the
+alternative of its kind, so `"5"` decodes into a `std::variant<std::int32_t,
+double>` as the `int32_t`. Schemas do not change: a schema says what a producer
 should send, and the options say what your program tolerates.
 
 `Result<T>` is `std::expected<T, Error>`, and `Status` is `Result<void>`. Check
@@ -800,7 +875,7 @@ result, see [For library authors](#for-library-authors).
 - `escape_json_string(text)` and `format_json_number(value)` spell a string or
   a number exactly as the encoder does, for JSON built by hand.
 - `keys_v<T>` lists the JSON keys of an aggregate, in encoded order, and
-  `tags_v<V>` lists the tags of a variant's alternatives.
+  `tags_v<V>` lists the tags of a variant whose alternatives all carry one.
 
 ## Compile-time errors
 
