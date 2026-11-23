@@ -155,6 +155,18 @@ consteval void append_sequence_schema(std::vector<char>& output,
   append_json_literal(output, "\"type\":\"array\"}");
 }
 
+// A map is an object that declares no member: any key is allowed, and the value
+// under each has the mapped type's schema, which may be a "$ref". The checks
+// admit no constraint on a map, so it takes no keywords.
+consteval void append_map_schema(std::vector<char>& output, const std::meta::info type,
+                                 const schema_text description_text,
+                                 const schema_references& references) {
+  append_json_literal(output, "{\"additionalProperties\":");
+  append_schema(output, mapped_of(type), std::nullopt, {}, references);
+  append_description_key(output, description_text);
+  append_json_literal(output, ",\"type\":\"object\"}");
+}
+
 // The "type" property a tagged alternative's schema gains.
 consteval void append_tag_property(std::vector<char>& output,
                                    const std::string_view tag_text) {
@@ -317,6 +329,8 @@ consteval void append_schema(std::vector<char>& output, const std::meta::info re
   case value_kind::vector:
   case value_kind::array:
     return append_sequence_schema(output, type, description_text, keywords, references);
+  case value_kind::map:
+    return append_map_schema(output, type, description_text, references);
   case value_kind::variant:
     return append_variant_schema(output, type, description_text, references);
   case value_kind::aggregate:

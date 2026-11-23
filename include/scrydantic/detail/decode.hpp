@@ -612,6 +612,41 @@ template <typename Array>
   return values;
 }
 
+// Every member of the object is an entry, read in key order, which is the order
+// the document holds them in and so the order their issues are reported in. The
+// document has already kept only the last of its members of one key. Keys that
+// differ as strings can still be one key to a map with a comparator or an
+// equality of its own, such as one that ignores case; the later entry then
+// replaces the earlier one's value, as the later of two equal keys does.
+template <typename Map>
+[[nodiscard]] decode_result<Map> read_map(const json_node view,
+                                          const decode_cursor& here) {
+  if (view.kind() != JsonKind::object) {
+    return here.fail(IssueKind::wrong_type, "must be an object");
+  }
+  Map values{};
+  const std::size_t size = view.size();
+  if constexpr (requires { values.reserve(size); }) {
+    values.reserve(size);
+  }
+  bool valid = true;
+  for (std::size_t index = 0; index < size && !here.stopped(); ++index) {
+    const std::string_view key = view.key_at(index);
+    if (auto decoded = read_value<typename Map::mapped_type>(view.value_at(index),
+                                                             here.entry(key))) {
+      // The keys arrive in the order of a std::map of std::less, where the hint
+      // makes each insertion constant time. To any other map it is only a hint.
+      values.insert_or_assign(values.end(), std::string{key}, std::move(*decoded));
+    } else {
+      valid = false;
+    }
+  }
+  if (!valid) {
+    return std::unexpected(decode_failure::reported);
+  }
+  return values;
+}
+
 // Booleans, strings, and raw JSON: the leaves that need no numeric range.
 template <typename Type>
 [[nodiscard]] decode_result<Type> read_plain_leaf(const json_node view,
@@ -648,6 +683,8 @@ decode_result<Type> read_value(const json_node view, const decode_cursor& here) 
     return read_vector<Type>(view, here);
   } else if constexpr (kind == value_kind::array) {
     return read_array<Type>(view, here);
+  } else if constexpr (kind == value_kind::map) {
+    return read_map<Type>(view, here);
   } else if constexpr (kind == value_kind::variant) {
     return read_variant<Type>(view, here);
   } else if constexpr (kind == value_kind::aggregate) {

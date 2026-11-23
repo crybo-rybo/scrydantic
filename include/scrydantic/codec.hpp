@@ -25,18 +25,22 @@ namespace scrydantic {
 ///
 /// Supported shapes are a deliberately closed matrix: booleans, bounded
 /// non-character integers, finite floats, strings, scoped enums, one optional layer,
-/// vectors except `vector<bool>`, fixed arrays, `std::indirect`, plain aggregates
+/// vectors except `vector<bool>`, fixed arrays, `std::map` and
+/// `std::unordered_map` keyed by `std::string`, `std::indirect`, plain aggregates
 /// of supported members, and tagged variants of such aggregates, each alternative
 /// carrying a distinct scrydantic::tag. An indirect encodes, decodes, and has the
 /// schema of the value it owns, and `std::optional<std::indirect<T>>` is its
-/// nullable form. An aggregate may contain itself, through `std::vector` or
-/// `std::indirect`, when every such cycle passes through a `std::optional`, a
-/// `std::vector`, or a variant alternative after the first, so that
-/// default-constructing it ends; its schema refers to it with `$ref`. Every
-/// supported value has a generated schema, encodes, and decodes. A member's
-/// constraint annotations must apply to its type and admit a value, in this
-/// family and in the others. Reflected entry points report the member path and
-/// the reason a type falls outside this family.
+/// nullable form. A map is the JSON object whose keys are data: its schema allows
+/// any key, encoding writes its keys in canonical order whatever its comparator
+/// or hash, and decoding makes an entry of every member. An aggregate may contain
+/// itself, through `std::vector`, a map, or `std::indirect`, when every such
+/// cycle passes through a `std::optional`, a `std::vector`, a map, or a variant
+/// alternative after the first, so that default-constructing it ends; its schema
+/// refers to it with `$ref`. Every supported value has a generated schema,
+/// encodes, and decodes. A member's constraint annotations must apply to its
+/// type and admit a value, in this family and in the others. Reflected entry
+/// points report the member path and the reason a type falls outside this
+/// family.
 template <typename Type>
 concept SupportedValue =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::supported)
@@ -101,10 +105,10 @@ inline constexpr std::string_view input_schema_v = detail::checked_input_schema<
 /// @param value Value to encode without modifying it.
 /// @return Canonical JSON, or an Error whose `message` names the path of a
 /// non-finite number, an undeclared enumerator value, an invalid Json, or a
-/// valueless variant or std::indirect, or says that a string is not valid UTF-8
-/// or that the value nests arrays and objects deeper than JsonView::parse
-/// accepts, and whose `model_message` is empty. Encoding stops at the first
-/// such failure, in the order the text is written.
+/// valueless variant or std::indirect, or says that a string or a map's key is
+/// not valid UTF-8 or that the value nests arrays and objects deeper than
+/// JsonView::parse accepts, and whose `model_message` is empty. Encoding stops
+/// at the first such failure, in the order the text is written.
 template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
   constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <meta>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/constraints.hpp>
@@ -15,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -153,6 +155,12 @@ private:
     return (path.empty() ? display(container) : path) + "[]";
   }
 
+  // The value under any key of a map, as "[]" is any element of an array.
+  static consteval std::string entry_path(const std::string& path,
+                                          const std::meta::info map) {
+    return (path.empty() ? display(map) : path) + "{}";
+  }
+
   // A nested alternative is named after the variant's path ("Doc::blocks[]<Text>");
   // a root one starts its own ("Text::body").
   static consteval std::string alternative_path(const std::string& path,
@@ -205,6 +213,17 @@ private:
       return problem(path, shown,
                      "is a union; use a tagged std::variant of aggregates");
     }
+    if (is_map_template(type)) {
+      return problem(path, shown,
+                     "has a key type other than std::string; a JSON object's keys "
+                     "are strings");
+    }
+    if (is_specialization_of(type, ^^std::multimap) ||
+        is_specialization_of(type, ^^std::unordered_multimap)) {
+      return problem(path, shown,
+                     "can hold one key more than once, which a JSON object cannot; "
+                     "use std::map or std::unordered_map");
+    }
     if (std::meta::is_class_type(type) && !is_complete_class(type)) {
       return problem(path, shown, "is an incomplete type");
     }
@@ -247,6 +266,12 @@ private:
     }
     if (kind == value_kind::variant) {
       return check_variant(type, path);
+    }
+    if (kind == value_kind::map) {
+      const auto mapped = mapped_of(type);
+      return is_qualified(mapped)
+                 ? problem(path, type, "has a cv-qualified or reference mapped type")
+                 : check(mapped, entry_path(path, type));
     }
     const auto element = element_of(type);
     if (is_qualified(element)) {
@@ -473,14 +498,14 @@ private:
 
   // Default construction builds every member, the value a std::indirect owns,
   // every element of a non-empty std::array, and a variant's first alternative;
-  // it leaves a std::optional disengaged and a std::vector empty. Decoding starts
-  // from a default-constructed value, so on a cycle of the former links alone it
-  // never ends. Encoding builds nothing, and the variant it is given may hold any
-  // alternative, but a value with such a cycle that passes through no variant is
-  // infinite or, through a reference, cyclic. Reflection cannot see what a
-  // default member initializer holds, so the walk assumes each member starts as
-  // its type's default. It starts from each aggregate the shape check reached, at
-  // the path it was reached by.
+  // it leaves a std::optional disengaged and a std::vector or a map empty.
+  // Decoding starts from a default-constructed value, so on a cycle of the
+  // former links alone it never ends. Encoding builds nothing, and the variant
+  // it is given may hold any alternative, but a value with such a cycle that
+  // passes through no variant is infinite or, through a reference, cyclic.
+  // Reflection cannot see what a default member initializer holds, so the walk
+  // assumes each member starts as its type's default. It starts from each
+  // aggregate the shape check reached, at the path it was reached by.
   consteval std::string check_recursion() {
     for (const auto& [type, path] : reached_) {
       if (auto text = check_construction(type, path); !text.empty()) {
@@ -563,6 +588,11 @@ consteval std::string tool_arguments_problem(const std::meta::info type) {
   if (is_qualified(type)) {
     return display(type) + " is cv-qualified or a reference; tool arguments are a "
                            "plain aggregate type";
+  }
+  // A map does decode from one JSON object, so it is told what it lacks instead.
+  if (kind_of(type) == value_kind::map) {
+    return display(type) + " is a map, whose keys are data; tool arguments are a "
+                           "plain aggregate, whose members name the arguments";
   }
   if (kind_of(type) != value_kind::aggregate) {
     return display(type) + " is not a plain aggregate; tool arguments decode from one "

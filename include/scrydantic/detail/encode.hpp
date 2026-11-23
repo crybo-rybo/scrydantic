@@ -20,6 +20,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 // Reflected encoding. The writer emits objects in canonical key order and strings
 // with canonical escapes directly, so the only parts of its output whose spelling
@@ -33,8 +34,9 @@
 // - Structure, `true`, `false`, and `null` are the writer's own bytes.
 // - A number is std::to_chars' text of an integer or of a finite float or
 //   double, or the canonical spelling of one; a non-finite number is refused.
-// - A string is checked to be UTF-8 as it is escaped. Keys, tags, and
-//   enumerator names are escaped at compile time, and checked then.
+// - A string is checked to be UTF-8 as it is escaped, and so is a map's key.
+//   Member keys, tags, and enumerator names are escaped at compile time, and
+//   checked then.
 // - A Json payload is read by the parser's own rules, with the arrays and
 //   objects open around it counted toward the depth limit.
 // - The writer refuses the array or object that would pass the depth limit.
@@ -242,6 +244,64 @@ write_sequence(std::string& output, const Sequence& value, const std::size_t dep
   return {};
 }
 
+// A map is written as an object with its keys in canonical order, as every
+// object is. A std::map that iterates in that order (iterates_in_key_order) is
+// written as it stands; any other map has pointers to its entries sorted first,
+// which is the one allocation writing a map costs. Whatever a map's comparator
+// or hash, two of its keys are never the same string, so no key is written
+// twice. A key is the value's own text, so it is escaped and checked as a string
+// is.
+template <spelling Spelling, typename Map>
+[[nodiscard]] encode_result<void> write_map(std::string& output, const Map& value,
+                                            const std::size_t depth) {
+  if (depth == max_json_depth) [[unlikely]] {
+    return nested_too_deep();
+  }
+  using Entry = typename Map::value_type;
+  bool first = true;
+  const auto write_entry = [&output, &first,
+                            depth](const Entry& entry) -> encode_result<void> {
+    if (!first) {
+      output.push_back(',');
+    }
+    first = false;
+    if (auto status = write_string(output, entry.first); !status) {
+      return status;
+    }
+    output.push_back(':');
+    if (auto status = write_value<typename Map::mapped_type, Spelling>(
+            output, entry.second, depth + 1);
+        !status) {
+      return std::unexpected(at_member(std::move(status.error()), entry.first));
+    }
+    return {};
+  };
+  output.push_back('{');
+  if constexpr (iterates_in_key_order(^^Map)) {
+    for (const Entry& entry : value) {
+      if (auto status = write_entry(entry); !status) {
+        return status;
+      }
+    }
+  } else {
+    std::vector<const Entry*> entries{};
+    entries.reserve(value.size());
+    for (const Entry& entry : value) {
+      entries.push_back(&entry);
+    }
+    std::ranges::sort(entries, {}, [](const Entry* const entry) {
+      return std::string_view{entry->first};
+    });
+    for (const Entry* const entry : entries) {
+      if (auto status = write_entry(*entry); !status) {
+        return status;
+      }
+    }
+  }
+  output.push_back('}');
+  return {};
+}
+
 // Whether the keys of Type's members are UTF-8, and its tag too when Tagged. A
 // scrydantic::name or scrydantic::tag can hold any bytes.
 template <typename Type, bool Tagged>
@@ -323,6 +383,16 @@ write_variant(std::string& output, const Variant& value, const std::size_t depth
       value);
 }
 
+template <spelling Spelling, typename Optional>
+[[nodiscard]] encode_result<void>
+write_optional(std::string& output, const Optional& value, const std::size_t depth) {
+  if (!value.has_value()) {
+    output.append("null");
+    return {};
+  }
+  return write_value<typename Optional::value_type, Spelling>(output, *value, depth);
+}
+
 // An indirect is written as the value it owns, which a move leaves it without.
 template <spelling Spelling, typename Indirect>
 [[nodiscard]] encode_result<void>
@@ -349,15 +419,13 @@ encode_result<void> write_value(std::string& output, const Type& value,
   } else if constexpr (kind == value_kind::enumeration) {
     return write_enum(output, value);
   } else if constexpr (kind == value_kind::optional) {
-    if (!value.has_value()) {
-      output.append("null");
-      return {};
-    }
-    return write_value<typename Type::value_type, Spelling>(output, *value, depth);
+    return write_optional<Spelling>(output, value, depth);
   } else if constexpr (kind == value_kind::indirect) {
     return write_indirect<Spelling>(output, value, depth);
   } else if constexpr (kind == value_kind::vector || kind == value_kind::array) {
     return write_sequence<Spelling>(output, value, depth);
+  } else if constexpr (kind == value_kind::map) {
+    return write_map<Spelling>(output, value, depth);
   } else if constexpr (kind == value_kind::variant) {
     return write_variant<Spelling>(output, value, depth);
   } else {

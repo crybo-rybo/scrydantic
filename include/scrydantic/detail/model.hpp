@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <map>
 #include <memory>
 #include <meta>
 #include <optional>
@@ -13,6 +15,7 @@
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -40,6 +43,7 @@ enum class value_kind : std::uint8_t {
   indirect,
   vector,
   array,
+  map,
   variant,
   aggregate,
 };
@@ -78,6 +82,12 @@ consteval bool is_character_type(const std::meta::info type) {
   return false;
 }
 
+// Whether `type` is a std::map or a std::unordered_map, whatever its key is.
+consteval bool is_map_template(const std::meta::info type) {
+  return is_specialization_of(type, ^^std::map) ||
+         is_specialization_of(type, ^^std::unordered_map);
+}
+
 consteval value_kind template_kind_of(const std::meta::info type) {
   if (is_specialization_of(type, ^^std::optional)) {
     return value_kind::optional;
@@ -90,6 +100,15 @@ consteval value_kind template_kind_of(const std::meta::info type) {
   }
   if (is_specialization_of(type, ^^std::array)) {
     return value_kind::array;
+  }
+  // A map is the JSON object whose keys are data, and a JSON key is a string.
+  // Its comparator, or its hash and equality, and its allocator change nothing
+  // about that object, so only the key and mapped types are looked at.
+  if (is_map_template(type)) {
+    return std::meta::dealias(std::meta::template_arguments_of(type)[0]) ==
+                   plain_type(^^std::string)
+               ? value_kind::map
+               : value_kind::unsupported;
   }
   if (is_specialization_of(type, ^^std::variant)) {
     return value_kind::variant;
@@ -144,6 +163,25 @@ consteval std::meta::info element_of(const std::meta::info container) {
 consteval std::size_t array_size_of(const std::meta::info array) {
   return std::meta::extract<std::size_t>(
       std::meta::template_arguments_of(plain_type(array))[1]);
+}
+
+// The second template argument of a map: the type of the value under each key.
+consteval std::meta::info mapped_of(const std::meta::info map) {
+  return std::meta::template_arguments_of(plain_type(map))[1];
+}
+
+// Whether iterating a map visits its keys in canonical order, which is lexical
+// byte order: a std::map ordered by std::less, of std::string or transparent,
+// which compares two strings as the JSON core compares two keys. Any other
+// comparator may order them otherwise, and a std::unordered_map has no order.
+consteval bool iterates_in_key_order(const std::meta::info map) {
+  const auto type = plain_type(map);
+  if (!is_specialization_of(type, ^^std::map)) {
+    return false;
+  }
+  const auto comparator = std::meta::dealias(std::meta::template_arguments_of(type)[2]);
+  // Parenthesized so clang-format, which does not know `^^`, lays them out.
+  return comparator == (^^std::less<std::string>) || comparator == (^^std::less<>);
 }
 
 // The value a type stands for once every std::indirect around it is seen
@@ -411,6 +449,8 @@ consteval void append_held_nodes(std::vector<schema_node>& nodes,
   case value_kind::vector:
   case value_kind::array:
     return append_held_nodes(nodes, element_of(plain));
+  case value_kind::map:
+    return append_held_nodes(nodes, mapped_of(plain));
   case value_kind::variant:
     for (const auto alternative : alternatives_of(plain)) {
       nodes.push_back({.type = plain_type(alternative), .tagged = true});

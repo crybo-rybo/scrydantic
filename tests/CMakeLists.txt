@@ -141,6 +141,7 @@ add_executable(
   codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
   codec/constraint_tests.cpp
+  codec/map_tests.cpp
   codec/number_spelling_tests.cpp
   codec/validator_tests.cpp
   tools/tool_binding_tests.cpp
@@ -434,4 +435,29 @@ scrydantic_add_compile_fail_test(
   keys-of-endless-recursion
   keys_of_endless_recursion.cpp
   "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)
+scrydantic_add_compile_fail_test(
+  constrained-map
+  constrained_map.cpp
+  "Labels::values: carries scrydantic::items, which applies to std::vector members, not to std::map<"
+)
+scrydantic_add_compile_fail_test(
+  non-string-map-key
+  non_string_map_key.cpp
+  "Names::by_id: std::map<int, bool> has a key type other than std::string; a JSON object's keys are strings"
+)
+scrydantic_add_compile_fail_test(
+  multimap-member
+  multimap_member.cpp
+  "int> can hold one key more than once, which a JSON object cannot; use std::map or std::unordered_map"
+)
+scrydantic_add_compile_fail_test(
+  unordered-multimap-member
+  unordered_multimap_member.cpp
+  "int> can hold one key more than once, which a JSON object cannot; use std::map or std::unordered_map"
+)
+scrydantic_add_compile_fail_test(
+  map-tool-arguments
+  map_tool_arguments.cpp
+  "int> is a map, whose keys are data; tool arguments are a plain aggregate, whose members name the arguments"
 )
