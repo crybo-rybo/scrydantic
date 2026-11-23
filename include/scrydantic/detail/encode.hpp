@@ -133,6 +133,19 @@ template <spelling Spelling, typename Number>
       return encode_fail("must be finite");
     }
   }
+  if constexpr (Spelling == spelling::canonical && std::same_as<Number, double>) {
+    // Below 2^53 the canonical spelling of a double is the same whichever
+    // text std::to_chars would write for it: where that text is digits alone,
+    // they are the digits of a whole number that the canonical writer spells
+    // as that integer too. So the double is spelled once, not once here and
+    // again to respell it. From 2^53 up, std::to_chars decides, by length,
+    // whether the text reads back as an integer or as a double.
+    constexpr double max_exact_whole = 0x1p53;
+    if (std::fabs(value) < max_exact_whole) {
+      append_canonical_json_number(output, value);
+      return {};
+    }
+  }
   // Wide enough for any 64-bit integer and for the shortest round-trip form of any
   // double (at most 24 characters), so to_chars cannot run out of room. With no
   // precision argument it writes the shortest text that reads back as the value.
