@@ -4,8 +4,10 @@
 #include <meta>
 #include <optional>
 #include <scrydantic/detail/constraints.hpp>
+#include <scrydantic/detail/defaults.hpp>
 #include <scrydantic/detail/json_number.hpp>
 #include <scrydantic/detail/json_string.hpp>
+#include <scrydantic/detail/keywords.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <string>
@@ -161,21 +163,35 @@ consteval void append_tag_property(std::vector<char>& output,
 }
 
 // What a member's schema states about the member, whatever value it holds: its
-// description. An optional member's schema states it beside the "anyOf", and a
-// reference beside the "$ref".
+// description, and the default it has when its key is absent. An optional
+// member's schema states them beside the "anyOf", where null is a value too, and
+// a reference beside the "$ref".
+//
+// A member has a default when decoding leaves it as its initializer set it: it
+// has an initializer, and skip_null does not cover it, since the absence of a
+// member that skip_null covers decodes as disengaged whatever its initializer.
+// The default is the program's own value, so nothing holds it to the member's
+// constraints, as nothing holds an absent member to them when decoding.
 consteval schema_keywords member_keywords(const field_layout& field) {
   schema_keywords keywords{};
   if (const auto text = annotated_text(field.member, ^^description)) {
     keywords.push_back({.key = "description", .value = string_value(*text)});
   }
+  if (!field.required && !field.omit_null) {
+    if (const auto text = default_of(field.member); !text.empty()) {
+      keywords.push_back({.key = "default", .value = owned_text(text)});
+    }
+  }
   return keywords;
 }
 
 // What a member's schema states about the value it holds: the keywords of its
-// constraints. An optional member's schema states them of the engaged value,
-// inside the "anyOf".
+// constraints, and its title. An optional member's schema states them of the
+// engaged value, inside the "anyOf".
 consteval schema_keywords value_keywords(const std::meta::info member) {
-  return constraint_keywords(member);
+  auto keywords = constraint_keywords(member);
+  keywords.append_range(extra_keywords(member));
+  return keywords;
 }
 
 // Writes the `properties` members, or with `required_only` the `required` names,
@@ -219,10 +235,18 @@ consteval void append_object_keys(std::vector<char>& output, const std::meta::in
 }
 
 // An aggregate's own schema, which a definition and the root write in place.
+// The class's title stands on it wherever it is written, unless `keywords`, a
+// member's, already state one: what a member says of its own value is the more
+// specific.
 consteval void append_object_schema(std::vector<char>& output, const schema_node node,
                                     schema_keywords keywords,
                                     const schema_references& references) {
   const auto tag_text = node.tagged ? tag_of(node.type) : schema_text{};
+  for (auto& keyword : extra_keywords(node.type)) {
+    if (!std::ranges::contains(keywords, keyword.key, &schema_keyword::key)) {
+      keywords.push_back(std::move(keyword));
+    }
+  }
   keywords.push_back({.key = "additionalProperties", .value = "false"});
   keywords.push_back(written_keyword("properties", [&](std::vector<char>& properties) {
     properties.push_back('{');
@@ -278,7 +302,8 @@ consteval void append_alternatives(std::vector<char>& output,
 
 // An optional variant joins null to the variant's own anyOf rather than nesting one
 // anyOf inside another. Constraints bound the engaged value, so their keywords go
-// to its schema, and null stays allowed.
+// to its schema, and null stays allowed. So does a title, but for an optional
+// variant's, which has no schema apart from the joined anyOf to go to.
 consteval void append_optional_schema(std::vector<char>& output,
                                       const std::meta::info type,
                                       schema_keywords member,
@@ -294,6 +319,9 @@ consteval void append_optional_schema(std::vector<char>& output,
     }
     append_json_literal(schemas, ",{\"type\":\"null\"}]");
   }));
+  if (kind_of(element) == value_kind::variant) {
+    member.append_range(value);
+  }
   append_schema_object(output, std::move(member));
 }
 

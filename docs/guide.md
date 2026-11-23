@@ -93,6 +93,7 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | Annotation | Goes on | What it does |
 |---|---|---|
 | `description{"..."}` | member | Sets the member's `description` in the schema. |
+| `title{"..."}` | member, class | Sets the `title` of the member's or the class's schema. It is written to the schema only. Encoding and decoding do not read it. |
 | `name{"..."}` | member, tool | Replaces the member's JSON key, or the tool's name. |
 | `tag{"..."}` | class | The class's `"type"` value when it is a variant alternative. |
 | `skip_null` | class, optional member | Leaves out an empty optional instead of writing `null`, and lets the input leave it out. On a class, it applies to every optional member. |
@@ -136,13 +137,64 @@ scrydantic::schema_v<Reading>
 // {"additionalProperties":false,
 //  "properties":{"degrees":{"type":"number"},
 //                "label":{"anyOf":[{"type":"string"},{"type":"null"}]},
-//                "unit":{"enum":["celsius","fahrenheit"],"type":"string"}},
+//                "unit":{"default":"celsius",
+//                        "enum":["celsius","fahrenheit"],"type":"string"}},
 //  "required":["degrees","label"],"type":"object"}
 ```
 
 (The real string has no whitespace.) The schemas use a portable subset of JSON
 Schema that model APIs accept: objects are closed, optionals and variants use
 `anyOf`, and integers carry their type's `minimum` and `maximum`.
+
+**Defaults.** A member with a default member initializer has a `default` in
+its schema: the value the member has when the input leaves it out, written as
+`encode` writes it. `unit` above is one. An optional member with an initializer
+states its default beside the `anyOf`, and an empty one states
+`"default":null`.
+
+The compiler reads the value from a default-constructed object of the class.
+Where it cannot, the schema has no `default` for the member and is otherwise the
+same:
+
+- An initializer of the class is not a constant expression, such as a call to a
+  function that is not `constexpr`. Then no member of that class has a
+  `default`.
+- `encode` would refuse the value (a NaN, an enum value that is not an
+  enumerator, a string that is not UTF-8), or the member is a `Json`.
+- The value is a `float` that is not exactly a decimal of six digits or fewer,
+  or a `double` from 2^53 up to 2^64. `0.5f` and `100.0f` have a default and
+  `0.1f` does not, because a schema cannot find at compile time the digits
+  `encode` writes for it. Use a `double` for such a default.
+
+A member that `skip_null` applies to has no `default`. Its absence decodes as
+an empty optional, whatever its initializer.
+
+A default is the program's own value, so it is not checked against the
+member's constraints, as decoding does not check an absent member:
+`[[= scrydantic::range{.min = 1}]] int count{};` has `"default":0` beside
+`"minimum":1`. Give such a member an initializer within its range, or none,
+which makes it required.
+
+**Titles.** `title{"..."}` gives a member's schema, or a class's, a `title`: a
+label that a form or generated documentation shows. Scrydantic never makes one
+up from an identifier.
+
+```cpp
+struct [[= scrydantic::title{"Postal address"}]] Address {
+  [[= scrydantic::title{"Postcode"}]] std::string code;
+};
+
+scrydantic::schema_v<Address>
+// {"additionalProperties":false,
+//  "properties":{"code":{"title":"Postcode","type":"string"}},
+//  "required":["code"],"title":"Postal address","type":"object"}
+```
+
+A class's title is on its schema wherever the class appears. A member of that
+type with a title of its own shows the member's instead. On a `std::optional`
+member a title goes with the value's schema, inside the `anyOf`, as a
+constraint does. An optional variant has no schema of its own inside the
+`anyOf`, so its title is beside it.
 
 A schema is written in place, with no `$ref`, unless the type is recursive.
 Then every type that contains itself is defined once under `$defs`, and a
@@ -155,6 +207,10 @@ scrydantic::schema_v<Comment>
 //                "text":{"type":"string"}},
 //  "required":["replies","text"],"type":"object"}
 ```
+
+A member whose type is recursive states its own `description`, `default`, and
+`title` beside the `$ref`. JSON Schema 2019-09 and later read a keyword there,
+and draft-07 ignores it.
 
 `input_schema_v<Args>` is the schema of a tool's argument object. It is the
 same as `schema_v<Args>`, but `Args` must be an aggregate.
@@ -325,7 +381,9 @@ result.error().model_message; // $.days is a required member
 **Parameters.** A tool can take no parameters, any list of named parameters,
 which become the members of the argument object, or one aggregate, which is the
 argument object. Use an aggregate to describe or constrain arguments:
-annotations on parameters themselves are a compile error.
+annotations on parameters themselves are a compile error. A parameter's default
+argument is never published as a `default`, because reflection cannot read its
+value. To publish one, take an aggregate and give its member an initializer.
 
 **Return values.** A tool can return any supported type, a `Result` of one,
 `void`, or `Status`. `void` and a successful `Status` return `{}`. To refuse a

@@ -424,31 +424,31 @@ static_assert(tags_are<StreamEvent>({"delta", "stop"}));
 
 static_assert(
     scrydantic::schema_v<Shape> ==
-    R"({"anyOf":[{"additionalProperties":false,"properties":{"radius":{"type":"number"},"type":{"enum":["circle"],"type":"string"}},"required":["type"],"type":"object"},{"additionalProperties":false,"properties":{"height":{"type":"number"},"type":{"enum":["rectangle"],"type":"string"},"width":{"type":"number"}},"required":["type"],"type":"object"}]})");
+    R"({"anyOf":[{"additionalProperties":false,"properties":{"radius":{"default":0,"type":"number"},"type":{"enum":["circle"],"type":"string"}},"required":["type"],"type":"object"},{"additionalProperties":false,"properties":{"height":{"default":0,"type":"number"},"type":{"enum":["rectangle"],"type":"string"},"width":{"default":0,"type":"number"}},"required":["type"],"type":"object"}]})");
 
 // An optional variant joins null to the alternatives; a described variant keeps
 // its description beside anyOf.
 static_assert(
     scrydantic::input_schema_v<Drawing> ==
-    R"({"additionalProperties":false,"properties":{"highlight":{"anyOf":[{"additionalProperties":false,"properties":{"radius":{"type":"number"},"type":{"enum":["circle"],"type":"string"}},"required":["type"],"type":"object"},{"additionalProperties":false,"properties":{"height":{"type":"number"},"type":{"enum":["rectangle"],"type":"string"},"width":{"type":"number"}},"required":["type"],"type":"object"},{"type":"null"}]},"shapes":{"description":"Shapes to draw","items":{"anyOf":[{"additionalProperties":false,"properties":{"radius":{"type":"number"},"type":{"enum":["circle"],"type":"string"}},"required":["type"],"type":"object"},{"additionalProperties":false,"properties":{"height":{"type":"number"},"type":{"enum":["rectangle"],"type":"string"},"width":{"type":"number"}},"required":["type"],"type":"object"}]},"type":"array"}},"required":["shapes"],"type":"object"})");
+    R"({"additionalProperties":false,"properties":{"highlight":{"anyOf":[{"additionalProperties":false,"properties":{"radius":{"default":0,"type":"number"},"type":{"enum":["circle"],"type":"string"}},"required":["type"],"type":"object"},{"additionalProperties":false,"properties":{"height":{"default":0,"type":"number"},"type":{"enum":["rectangle"],"type":"string"},"width":{"default":0,"type":"number"}},"required":["type"],"type":"object"},{"type":"null"}],"default":null},"shapes":{"description":"Shapes to draw","items":{"anyOf":[{"additionalProperties":false,"properties":{"radius":{"default":0,"type":"number"},"type":{"enum":["circle"],"type":"string"}},"required":["type"],"type":"object"},{"additionalProperties":false,"properties":{"height":{"default":0,"type":"number"},"type":{"enum":["rectangle"],"type":"string"},"width":{"default":0,"type":"number"}},"required":["type"],"type":"object"}]},"type":"array"}},"required":["shapes"],"type":"object"})");
 
 static_assert(
     scrydantic::schema_v<Edge> ==
-    R"({"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["empty"],"type":"string"}},"required":["type"],"type":"object"},{"additionalProperties":false,"properties":{"type":{"enum":["late"],"type":"string"},"zulu":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["type"],"type":"object"}]})");
+    R"({"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["empty"],"type":"string"}},"required":["type"],"type":"object"},{"additionalProperties":false,"properties":{"type":{"enum":["late"],"type":"string"},"zulu":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["type"],"type":"object"}]})");
 
 static_assert(
     scrydantic::schema_v<Renamed> ==
-    R"({"additionalProperties":false,"properties":{"a_first":{"description":"Sorted by its key","type":"string"},"max_tokens":{"maximum":4294967295,"minimum":0,"type":"integer"}},"required":["a_first"],"type":"object"})");
+    R"({"additionalProperties":false,"properties":{"a_first":{"description":"Sorted by its key","type":"string"},"max_tokens":{"default":0,"maximum":4294967295,"minimum":0,"type":"integer"}},"required":["a_first"],"type":"object"})");
 
 // A skip_null member may be absent, so only the emit_null one stays required.
 static_assert(
     scrydantic::schema_v<Sparse> ==
-    R"({"additionalProperties":false,"properties":{"absent":{"anyOf":[{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},{"type":"null"}]},"explicit_null":{"anyOf":[{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},{"type":"null"}]},"initialized":{"anyOf":[{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},{"type":"null"}]},"plain":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["explicit_null"],"type":"object"})");
+    R"({"additionalProperties":false,"properties":{"absent":{"anyOf":[{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},{"type":"null"}]},"explicit_null":{"anyOf":[{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},{"type":"null"}]},"initialized":{"anyOf":[{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},{"type":"null"}]},"plain":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["explicit_null"],"type":"object"})");
 
 // Lenient decoding does not open the schema: it describes what a producer sends.
 static_assert(
     scrydantic::schema_v<LenientInner> ==
-    R"({"additionalProperties":false,"properties":{"kept":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"})");
+    R"({"additionalProperties":false,"properties":{"kept":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"})");
 
 static_assert(scrydantic::schema_v<std::uint64_t> ==
               R"({"maximum":18446744073709551615,"minimum":0,"type":"integer"})");
@@ -2307,12 +2307,12 @@ static_assert(scrydantic::schema_v<std::indirect<recursive::Category>> ==
 
 static_assert(
     scrydantic::schema_v<recursive::Chain> ==
-    R"({"additionalProperties":false,"properties":{"next":{"anyOf":[{"$ref":"#"},{"type":"null"}]},"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"})");
+    R"({"additionalProperties":false,"properties":{"next":{"anyOf":[{"$ref":"#"},{"type":"null"}]},"value":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"})");
 
 // Below a root that is not recursive, the same type is a definition.
 static_assert(
     scrydantic::schema_v<std::vector<recursive::Chain>> ==
-    R"({"$defs":{"recursive.Chain":{"additionalProperties":false,"properties":{"next":{"anyOf":[{"$ref":"#/$defs/recursive.Chain"},{"type":"null"}]},"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"}},"items":{"$ref":"#/$defs/recursive.Chain"},"type":"array"})");
+    R"({"$defs":{"recursive.Chain":{"additionalProperties":false,"properties":{"next":{"anyOf":[{"$ref":"#/$defs/recursive.Chain"},{"type":"null"}]},"value":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[],"type":"object"}},"items":{"$ref":"#/$defs/recursive.Chain"},"type":"array"})");
 
 static_assert(
     scrydantic::schema_v<recursive::Team> ==
@@ -2326,11 +2326,11 @@ static_assert(
 // Only the alternatives that recurse are definitions; the leaf stays in place.
 static_assert(
     scrydantic::schema_v<recursive::Expression> ==
-    R"({"$defs":{"recursive.Negate":{"additionalProperties":false,"properties":{"operand":{"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]},"type":{"enum":["negate"],"type":"string"}},"required":["operand","type"],"type":"object"},"recursive.Sum":{"additionalProperties":false,"properties":{"terms":{"items":{"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]},"type":"array"},"type":{"enum":["sum"],"type":"string"}},"required":["terms","type"],"type":"object"}},"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]})");
+    R"({"$defs":{"recursive.Negate":{"additionalProperties":false,"properties":{"operand":{"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"default":0,"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]},"type":{"enum":["negate"],"type":"string"}},"required":["operand","type"],"type":"object"},"recursive.Sum":{"additionalProperties":false,"properties":{"terms":{"items":{"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"default":0,"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]},"type":"array"},"type":{"enum":["sum"],"type":"string"}},"required":["terms","type"],"type":"object"}},"anyOf":[{"additionalProperties":false,"properties":{"type":{"enum":["literal"],"type":"string"},"value":{"default":0,"type":"number"}},"required":["type"],"type":"object"},{"$ref":"#/$defs/recursive.Negate"},{"$ref":"#/$defs/recursive.Sum"}]})");
 
 static_assert(
     scrydantic::schema_v<recursive::Forest> ==
-    R"({"$defs":{"recursive.Node-int32":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Node-int32"},"type":"array"},"value":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["children"],"type":"object"},"recursive.Node-string":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Node-string"},"type":"array"},"value":{"type":"string"}},"required":["children"],"type":"object"}},"additionalProperties":false,"properties":{"numbers":{"items":{"$ref":"#/$defs/recursive.Node-int32"},"type":"array"},"words":{"anyOf":[{"$ref":"#/$defs/recursive.Node-string"},{"type":"null"}]}},"required":["numbers","words"],"type":"object"})");
+    R"({"$defs":{"recursive.Node-int32":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Node-int32"},"type":"array"},"value":{"default":0,"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":["children"],"type":"object"},"recursive.Node-string":{"additionalProperties":false,"properties":{"children":{"items":{"$ref":"#/$defs/recursive.Node-string"},"type":"array"},"value":{"default":"","type":"string"}},"required":["children"],"type":"object"}},"additionalProperties":false,"properties":{"numbers":{"items":{"$ref":"#/$defs/recursive.Node-int32"},"type":"array"},"words":{"anyOf":[{"$ref":"#/$defs/recursive.Node-string"},{"type":"null"}]}},"required":["numbers","words"],"type":"object"})");
 
 static_assert(
     scrydantic::schema_v<recursive::Shelves> ==

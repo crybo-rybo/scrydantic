@@ -196,30 +196,31 @@ template <typename Type>
 static_assert(
     scrydantic::schema_v<Ages> ==
     R"({"additionalProperties":false,"properties":{)"
-    R"("at_least":{"maximum":4294967295,"minimum":1,"type":"integer"},)"
-    R"("at_most":{"maximum":10,"minimum":-32768,"type":"integer"},)"
-    R"("exclusive":{"exclusiveMaximum":10,"exclusiveMinimum":0,"type":"integer"},)"
-    R"("inclusive":{"maximum":150,"minimum":0,"type":"integer"},)"
-    R"("mixed":{"exclusiveMaximum":5,"minimum":-5,"type":"integer"}},)"
+    R"("at_least":{"default":0,"maximum":4294967295,"minimum":1,"type":"integer"},)"
+    R"("at_most":{"default":0,"maximum":10,"minimum":-32768,"type":"integer"},)"
+    R"("exclusive":{"default":0,"exclusiveMaximum":10,"exclusiveMinimum":0,"type":"integer"},)"
+    R"("inclusive":{"default":0,"maximum":150,"minimum":0,"type":"integer"},)"
+    R"("mixed":{"default":0,"exclusiveMaximum":5,"minimum":-5,"type":"integer"}},)"
     R"("required":[],"type":"object"})");
 
 // A floating-point bound is spelled as the encoder spells the double, a float
 // bound as the double it is, and a whole bound of an integer as an integer.
-static_assert(scrydantic::schema_v<Shares> ==
-              R"({"additionalProperties":false,"properties":{)"
-              R"("celsius":{"minimum":-273.15,"type":"number"},)"
-              R"("share":{"exclusiveMinimum":0,"maximum":1,"type":"number"},)"
-              R"("tiny":{"exclusiveMaximum":0.10000000149011612,"type":"number"},)"
-              R"("whole":{"maximum":100,"minimum":-2147483648,"type":"integer"},)"
-              R"("wide":{"maximum":1E300,"minimum":1E-7,"type":"number"}},)"
-              R"("required":[],"type":"object"})");
+static_assert(
+    scrydantic::schema_v<Shares> ==
+    R"({"additionalProperties":false,"properties":{)"
+    R"("celsius":{"default":0,"minimum":-273.15,"type":"number"},)"
+    R"("share":{"default":0,"exclusiveMinimum":0,"maximum":1,"type":"number"},)"
+    R"("tiny":{"default":0,"exclusiveMaximum":0.10000000149011612,"type":"number"},)"
+    R"("whole":{"default":0,"maximum":100,"minimum":-2147483648,"type":"integer"},)"
+    R"("wide":{"default":0,"maximum":1E300,"minimum":1E-7,"type":"number"}},)"
+    R"("required":[],"type":"object"})");
 
 static_assert(
     scrydantic::schema_v<Steps> ==
     R"({"additionalProperties":false,"properties":{)"
-    R"("both":{"maximum":20,"minimum":0,"multipleOf":3,"type":"integer"},)"
-    R"("five":{"maximum":2147483647,"minimum":-2147483648,"multipleOf":5,"type":"integer"},)"
-    R"("quarter":{"multipleOf":0.25,"type":"number"}},)"
+    R"("both":{"default":0,"maximum":20,"minimum":0,"multipleOf":3,"type":"integer"},)"
+    R"("five":{"default":0,"maximum":2147483647,"minimum":-2147483648,"multipleOf":5,"type":"integer"},)"
+    R"("quarter":{"default":0,"multipleOf":0.25,"type":"number"}},)"
     R"("required":[],"type":"object"})");
 
 // A pattern is written as a JSON string, escapes and all.
@@ -258,7 +259,7 @@ static_assert(
 static_assert(
     scrydantic::schema_v<Mark> ==
     R"({"anyOf":[{"additionalProperties":false,"properties":{)"
-    R"("radius":{"exclusiveMinimum":0,"type":"number"},)"
+    R"("radius":{"default":0,"exclusiveMinimum":0,"type":"number"},)"
     R"("type":{"enum":["circle"],"type":"string"}},"required":["type"],"type":"object"},)"
     R"({"additionalProperties":false,"properties":{)"
     R"("text":{"minLength":1,"type":"string"},)"
@@ -536,10 +537,11 @@ static_assert(scrydantic::keys_v<Budget>.size() == 1 &&
 static_assert(scrydantic::tags_v<Mark>.size() == 2 &&
               scrydantic::tags_v<Mark>[0] == "circle" &&
               scrydantic::tags_v<Mark>[1] == "label");
-static_assert(scrydantic::schema_v<Budget> ==
-              R"({"additionalProperties":false,"properties":{"max_tokens":)"
-              R"({"maximum":4096,"minimum":1,"type":"integer"}},"required":[],)"
-              R"("type":"object"})");
+static_assert(
+    scrydantic::schema_v<Budget> ==
+    R"({"additionalProperties":false,"properties":{"max_tokens":)"
+    R"({"default":0,"maximum":4096,"minimum":1,"type":"integer"}},"required":[],)"
+    R"("type":"object"})");
 
 TEST_CASE("a renamed member's constraint issue is at its wire name") {
   const auto decoded = decode_text<Budget>(R"({"max_tokens":0})");
@@ -606,7 +608,7 @@ static_assert(
     R"("required":["children","title"],"type":"object"}},)"
     R"("additionalProperties":false,"properties":{)"
     R"("contents":{"$ref":"#/$defs/constrained.Outline"},)"
-    R"("edition":{"maximum":2147483647,"minimum":1,"type":"integer"}},)"
+    R"("edition":{"default":0,"maximum":2147483647,"minimum":1,"type":"integer"}},)"
     R"("required":["contents"],"type":"object"})");
 
 TEST_CASE("constraints check the value an indirect owns") {

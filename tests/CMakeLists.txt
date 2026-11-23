@@ -142,6 +142,8 @@ add_executable(
   codec/codec_tests.cpp
   codec/constraint_tests.cpp
   codec/number_spelling_tests.cpp
+  codec/schema_default_tests.cpp
+  codec/schema_keyword_tests.cpp
   codec/validator_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
@@ -409,6 +411,21 @@ scrydantic_add_compile_fail_test(
   checked-tool
   checked_tool.cpp
   "scrydantic::bind<^^order_tools>(): order_tools::order carries scrydantic::check, which applies to data members and classes"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-title
+  duplicate_title.cpp
+  "Profile::name: has more than one scrydantic::title annotation"
+)
+scrydantic_add_compile_fail_test(
+  empty-title
+  empty_title.cpp
+  "scrydantic::title must not be empty"
+)
+scrydantic_add_compile_fail_test(
+  titled-tool
+  titled_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::title, which applies to data members and classes"
 )
 scrydantic_add_compile_fail_test(
   annotated-parameter

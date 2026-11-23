@@ -9,6 +9,7 @@
 #include <meta>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/constraints.hpp>
+#include <scrydantic/detail/keywords.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
@@ -324,7 +325,10 @@ private:
                            ", which applies to data members");
       }
     }
-    const auto reason = validators_problem(type, type);
+    auto reason = extra_keywords_problem(type);
+    if (reason.empty()) {
+      reason = validators_problem(type, type);
+    }
     return reason.empty() ? reason : problem(path, type, reason);
   }
 
@@ -399,7 +403,8 @@ private:
       return at_path(here, "carries scrydantic::tool, which applies to "
                            "functions");
     }
-    return {};
+    const auto reason = extra_keywords_problem(member);
+    return reason.empty() ? reason : at_path(here, reason);
   }
 
   // Runs after every member passed, so each has an identifier and a valid key.

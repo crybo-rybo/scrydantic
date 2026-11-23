@@ -7,6 +7,7 @@
 #include <meta>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/constraints.hpp>
+#include <scrydantic/detail/keywords.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <scrydantic/error.hpp>
@@ -297,6 +298,10 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
     }
     if (annotation_matches(annotation, ^^check_t)) {
       return "carries scrydantic::check, which applies to data members and classes";
+    }
+    if (const auto name = extra_keyword_name(annotation); !name.empty()) {
+      return "carries " + owned_text(name) +
+             ", which applies to data members and classes";
     }
   }
   if (!has_annotation(function, ^^name) && !std::meta::has_identifier(function)) {

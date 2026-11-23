@@ -155,6 +155,32 @@ template <const std::string_view& View> [[nodiscard]] consteval auto description
   return annotation{typename annotation::view_tag{}, View};
 }
 
+/// Gives the schema of a data member, or of a class, a `title`: a short label
+/// for it, which a generated form or document shows in place of its key.
+///
+/// **It is written to the schema only.** Encoding and decoding neither read nor
+/// check it. On a data member the text becomes the `title` of the member's
+/// schema: `[[= scrydantic::title{"Display name"}]] std::string name;` has the
+/// schema `{"title":"Display name","type":"string"}`. On a std::optional member
+/// it titles the engaged value, as a constraint bounds it, and through a
+/// std::indirect the value it owns. On a class, written between the class-key
+/// and the class name, it becomes the `title` of the object schema wherever the
+/// class is written, and of its entry under `$defs` when the class is recursive.
+/// A member of such a class's type that carries a title of its own shows the
+/// member's. Scrydantic never makes a title up from an identifier: a schema has
+/// one only where it is written. A title must not be empty, and a member or a
+/// class has at most one.
+/// @tparam Size Character-array extent including the null terminator.
+template <std::size_t Size> struct title : detail::fixed_text<Size> {
+  static_assert(Size > 1, "scrydantic::title must not be empty");
+
+  using detail::fixed_text<Size>::fixed_text;
+};
+
+/// Deduces a title extent from a string literal.
+/// @param value Title text whose extent is deduced.
+template <std::size_t Size> title(const char (&value)[Size]) -> title<Size>;
+
 /// Overrides the JSON key of one data member, or the name of one tool function.
 ///
 /// On a data member the key replaces the member's identifier in encoding,

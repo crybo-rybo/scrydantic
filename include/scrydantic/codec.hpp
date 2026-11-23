@@ -76,7 +76,11 @@ concept ToolArguments = detail::tool_arguments_problem(^^Type).empty();
 /// Handler result types are supported roots too. A tool binding never sends a
 /// result schema to a model; it is here so a host can export its own tool
 /// contracts. A member's constraint annotations add their keywords to its schema,
-/// and decoding checks every one of them but `pattern`. A type outside
+/// and decoding checks every one of them but `pattern`. A member with a default
+/// member initializer states it as `default`, spelled as encode() spells it,
+/// wherever the default-constructed class is a constant expression and the value
+/// is one whose spelling is known at compile time; elsewhere the keyword is left
+/// out. A scrydantic::title adds its keyword and nothing else. A type outside
 /// SupportedValue fails to compile with the offending member path and the reason.
 /// @tparam Value Type satisfying SupportedValue.
 template <typename Value>
