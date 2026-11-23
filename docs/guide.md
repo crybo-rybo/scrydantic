@@ -33,7 +33,7 @@ constructors of its own. Its members can be any of these types:
 | `std::map<std::string, T>`, `std::unordered_map<std::string, T>` | an object with any keys, each value a `T` |
 | `std::indirect<T>` | whatever `T` is |
 | another aggregate | an object |
-| `std::variant<A, B, ...>` | the alternative that the value's JSON kind selects; aggregates with a `tag` are objects with a `"type"` member |
+| `std::variant<A, B, ...>` | the alternative that the value's JSON kind selects; aggregates with a `tag` are objects that also carry the tag, under `"type"` or the key a `tag_key` names |
 | `std::monostate`, as a variant alternative | `null` |
 | `scrydantic::Json` | any JSON value, held as its canonical text |
 
@@ -121,7 +121,9 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | `keyword{"key", "json"}`, `keyword_string{"key", "text"}` | member, class | Adds a keyword of your choosing, such as `format` or `examples`, to the member's or the class's schema. It is written to the schema only. Decoding does not check it. |
 | `name{"..."}` | member, enumerator, tool | Replaces the member's JSON key, the enumerator's JSON string, or the tool's name. |
 | `rename_all{rule}` | class, enum | Derives the JSON key of every member, or the JSON string of every enumerator, from its identifier, by `camel_case`, `pascal_case`, `kebab_case`, or `screaming_snake_case`. A `name` still wins. |
-| `tag{"..."}` | class | The class's `"type"` value when it is a variant alternative. |
+| `tag{"..."}` | class | The class's tag when it is a variant alternative: the value its object carries under `"type"`. |
+| `tag_key{"..."}` | class with a `tag` | Names the key that the tag is carried under, in place of `"type"`. |
+| `default_tag` | class with a `tag` | Makes the class the alternative that an object without the tag is read as. |
 | `skip_null` | class, optional member | Leaves out an empty optional instead of writing `null`, and lets the input leave it out. On a class, it applies to every optional member. |
 | `emit_null` | optional member | Writes `null` again for one member of a `skip_null` class. |
 | `ignore_unknown` | class | Decoding ignores members the class does not declare, instead of rejecting them. |
@@ -207,10 +209,11 @@ give the member a `name`.
 The rule covers what the class or enum itself declares. A member's type states
 its own rule or has none, so a class has the same JSON wherever it is used, and
 a field that comes from a flattened member follows the class that declares it.
-The keys of a map, a variant alternative's `tag`, and the arguments that a
-tool's parameter list names are never renamed. Two members that end with the
-same key do not compile, with or without a rule, and neither do two rules on
-one class or enum, or a rule on a member, an enumerator, or a tool function.
+The keys of a map, a variant alternative's `tag` and `tag_key`, and the
+arguments that a tool's parameter list names are never renamed. Two members
+that end with the same key do not compile, with or without a rule, and neither
+do two rules on one class or enum, or a rule on a member, an enumerator, or a
+tool function.
 
 **Enumerators.** An enumerator is written as its identifier, or as its enum's
 `rename_all` spells that, unless it carries a `name`, which gives an enum a
@@ -312,15 +315,59 @@ using Label = std::variant<std::monostate, std::string, Circle, Square>;
 A variant's only aggregate needs no tag. Without one it is the plain object it
 is anywhere, as `Item` is above.
 
+The tag's key is `"type"` unless the alternatives name another with `tag_key`.
+The schema, the encoded object, decoding, and the paths of its issues all use
+that key, and it is the key that no member of the alternative may have. Every
+tagged alternative of one variant names the same key, where one that names none
+names `"type"`.
+
+`default_tag` marks the one alternative that an object without the key is.
+Decoding reads such an object as that alternative, where it would otherwise
+report a missing tag. An object that has the key with a value that is no
+alternative's tag is still an error. Encoding writes the tag all the same, and
+the alternative's schema keeps the tag's property but does not require it. This
+suits a format that gained its discriminator after the fact, where an object
+without one is of the kind there was before:
+
+```cpp
+struct [[= scrydantic::tag{"form"}, = scrydantic::tag_key{"mode"},
+         = scrydantic::default_tag]]
+FormRequest { std::string message; };
+
+struct [[= scrydantic::tag{"url"}, = scrydantic::tag_key{"mode"}]]
+UrlRequest { std::string message; std::string url; };
+
+using InputRequest = std::variant<FormRequest, UrlRequest>;
+// InputRequest{FormRequest{"Name?"}} encodes as {"message":"Name?","mode":"form"}
+// {"message":"hi"}                   decodes as a FormRequest
+// {"message":"hi","mode":"fax"}      fails: $.mode must be one of: form, url
+
+scrydantic::schema_v<InputRequest>
+// {"anyOf":[
+//   {"additionalProperties":false,
+//    "properties":{"message":{"type":"string"},
+//                  "mode":{"enum":["form"],"type":"string"}},
+//    "required":["message"],"type":"object"},
+//   {"additionalProperties":false,
+//    "properties":{"message":{"type":"string"},
+//                  "mode":{"enum":["url"],"type":"string"},
+//                  "url":{"type":"string"}},
+//    "required":["message","mode","url"],"type":"object"}]}
+```
+
+Outside a variant `tag_key` and `default_tag` have no effect, as `tag` has
+none, and each needs a `tag` on the same class.
+
 A variant that some value would not settle is a compile-time error that names
 the two alternatives and the kind they share: a `std::string` beside an enum,
 two vectors, two integer types, an aggregate without a tag beside another
-aggregate, a map beside an aggregate. A `Json`, a `std::optional`, a
-`std::indirect`, and another variant have no one kind, so they cannot be
-alternatives: use `std::monostate` for null, and list a nested variant's
-alternatives in the outer one. `std::optional<std::variant<...>>` adds `null`
-as it does for any type, so that variant cannot hold `std::monostate` too. No
-constraint annotation applies to a variant member.
+aggregate, a map beside an aggregate. So is a variant whose tagged alternatives
+name two tag keys, or in which two carry `default_tag`. A `Json`, a
+`std::optional`, a `std::indirect`, and another variant have no one kind, so
+they cannot be alternatives: use `std::monostate` for null, and list a nested
+variant's alternatives in the outer one. `std::optional<std::variant<...>>`
+adds `null` as it does for any type, so that variant cannot hold
+`std::monostate` too. No constraint annotation applies to a variant member.
 
 **Flattened members.** `flatten` gives an object the fields of one of its
 members, so that types which share a set of fields can share its declaration:
