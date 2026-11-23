@@ -141,9 +141,14 @@ add_executable(
   codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
   codec/constraint_tests.cpp
+  codec/enumerator_name_tests.cpp
   codec/flatten_tests.cpp
+  codec/json_schema_tests.cpp
+  codec/map_tests.cpp
   codec/number_spelling_tests.cpp
   codec/validator_tests.cpp
+  tools/json_tool_tests.cpp
+  tools/output_schema_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
 )
@@ -234,7 +239,12 @@ scrydantic_add_compile_fail_test(
 scrydantic_add_compile_fail_test(
   unsupported-schema-root
   unsupported_schema_root.cpp
-  "does not satisfy scrydantic::SupportedValue: scrydantic::Json is raw JSON, which has no schema"
+  "does not satisfy scrydantic::SupportedValue: std::basic_string_view<char> is encode-only borrowed text; decoding and schemas take std::string"
+)
+scrydantic_add_compile_fail_test(
+  constrained-json
+  constrained_json.cpp
+  "Envelope::payload: carries scrydantic::length, which applies to std::string members, not to scrydantic::Json"
 )
 scrydantic_add_compile_fail_test(
   untagged-variant
@@ -280,6 +290,21 @@ scrydantic_add_compile_fail_test(
   flattened-endless-recursion
   flattened_endless_recursion.cpp
   "Link::next.link: Link contains itself through no std::optional, std::vector, or variant alternative after the first, so default-constructing it, as decoding does, never ends"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-enumerator-name
+  duplicate_enumerator_name.cpp
+  "does not satisfy scrydantic::Encodable: Level has enumerators low and minimum that both map to the JSON string \"low\""
+)
+scrydantic_add_compile_fail_test(
+  two-enumerator-names
+  two_enumerator_names.cpp
+  "does not satisfy scrydantic::Decodable: Gauge::level: Level::low has more than one scrydantic::name annotation"
+)
+scrydantic_add_compile_fail_test(
+  annotated-enumerator
+  annotated_enumerator.cpp
+  "does not satisfy scrydantic::SupportedValue: Gauge::level: Level::high carries scrydantic::description, which does not apply to enumerators; an enumerator takes only scrydantic::name"
 )
 scrydantic_add_compile_fail_test(
   endless-recursion
@@ -470,4 +495,29 @@ scrydantic_add_compile_fail_test(
   keys-of-endless-recursion
   keys_of_endless_recursion.cpp
   "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)
+scrydantic_add_compile_fail_test(
+  constrained-map
+  constrained_map.cpp
+  "Labels::values: carries scrydantic::items, which applies to std::vector members, not to std::map<"
+)
+scrydantic_add_compile_fail_test(
+  non-string-map-key
+  non_string_map_key.cpp
+  "Names::by_id: std::map<int, bool> has a key type other than std::string; a JSON object's keys are strings"
+)
+scrydantic_add_compile_fail_test(
+  multimap-member
+  multimap_member.cpp
+  "int> can hold one key more than once, which a JSON object cannot; use std::map or std::unordered_map"
+)
+scrydantic_add_compile_fail_test(
+  unordered-multimap-member
+  unordered_multimap_member.cpp
+  "int> can hold one key more than once, which a JSON object cannot; use std::map or std::unordered_map"
+)
+scrydantic_add_compile_fail_test(
+  map-tool-arguments
+  map_tool_arguments.cpp
+  "int> is a map, whose keys are data; tool arguments are a plain aggregate, whose members name the arguments"
 )

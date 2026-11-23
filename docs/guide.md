@@ -25,10 +25,11 @@ constructors of its own. Its members can be any of these types:
 | integers, such as `int` or `std::uint64_t` | an integer within the type's range |
 | `float`, `double` | a finite number |
 | `std::string` | a string |
-| a scoped `enum class` | the enumerator's name, as a string |
+| a scoped `enum class` | the enumerator's name, as a string: its identifier, or the `name` annotation it carries |
 | `std::optional<T>` | `T` or `null` |
 | `std::vector<T>` (not `vector<bool>`) | an array |
 | `std::array<T, N>` | an array of exactly `N` elements |
+| `std::map<std::string, T>`, `std::unordered_map<std::string, T>` | an object with any keys, each value a `T` |
 | `std::indirect<T>` | whatever `T` is |
 | another aggregate | an object |
 | `std::variant<A, B, ...>` of tagged aggregates | an object with a `"type"` member |
@@ -37,7 +38,7 @@ constructors of its own. Its members can be any of these types:
 `std::int8_t` and `std::uint8_t` are character types in C++, so they are
 rejected. Use `std::int16_t`. `char` and the other character types are rejected
 too. Encoding also accepts `std::string_view` and reference members, which
-decoding cannot fill.
+decoding cannot fill and which have no schema.
 
 A decoded `Json` member holds the canonical text of its value, not the input's
 own bytes. Keys are sorted, whitespace is dropped, and each number is read as a
@@ -71,7 +72,28 @@ struct Reading {
 
 To make an optional member also optional on input, see `skip_null` below.
 
-**Recursion.** A model can contain itself through `std::vector<T>` or
+**Maps.** Use a map for an object whose keys are data, not member names:
+
+```cpp
+struct Scores { std::map<std::string, int> by_player; };
+
+scrydantic::encode(Scores{{{"zed", 1}, {"amy", 2}}})->text;
+// {"by_player":{"amy":2,"zed":1}}
+
+scrydantic::decode<Scores>(R"({"by_player":{"amy":"two","a b":1.5}})")
+    .error().message;
+// $.by_player["a b"] must be an integer
+// $.by_player.amy must be an integer
+```
+
+The key type must be `std::string`. The mapped type can be any type from the
+table. A custom comparator, hash, or allocator is fine. Encoding writes the
+keys in sorted order whatever order the map keeps them in, so an
+`unordered_map` is sorted each time it is written. If the input repeats a key,
+the last one wins. `std::multimap` is rejected, and so are constraints on a
+map: `items` on one is a compile error.
+
+**Recursion.** A model can contain itself through `std::vector<T>`, a map, or
 `std::optional<std::indirect<T>>`:
 
 ```cpp
@@ -93,7 +115,7 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | Annotation | Goes on | What it does |
 |---|---|---|
 | `description{"..."}` | member | Sets the member's `description` in the schema. |
-| `name{"..."}` | member, tool | Replaces the member's JSON key, or the tool's name. |
+| `name{"..."}` | member, enumerator, tool | Replaces the member's JSON key, the enumerator's JSON string, or the tool's name. |
 | `tag{"..."}` | class | The class's `"type"` value when it is a variant alternative. |
 | `skip_null` | class, optional member | Leaves out an empty optional instead of writing `null`, and lets the input leave it out. On a class, it applies to every optional member. |
 | `emit_null` | optional member | Writes `null` again for one member of a `skip_null` class. |
@@ -116,6 +138,34 @@ struct [[= scrydantic::skip_null]] Profile {
 scrydantic::encode(Profile{.name = "Ada"})->text;
 // {"display_name":"Ada","phone":null}
 ```
+
+**Enumerators.** An enumerator is written as its identifier unless it carries a
+`name`, which gives an enum a value that is not a C++ identifier: a keyword, a
+value with punctuation, or one in another case convention. The annotation goes
+after the enumerator's identifier:
+
+```cpp
+enum class Visibility {
+  public_ [[= scrydantic::name{"public"}]],
+  private_ [[= scrydantic::name{"private"}]],
+  internal,
+};
+struct Post { Visibility visibility; };
+
+scrydantic::schema_v<Visibility>;
+// {"enum":["public","private","internal"],"type":"string"}
+scrydantic::encode(Post{Visibility::public_})->text;
+// {"visibility":"public"}
+scrydantic::decode<Post>(R"({"visibility":"public_"})").error().model_message;
+// $.visibility is not a declared enumerator; must be one of: public, private, internal
+```
+
+An enum with one enumerator is a constant:
+`enum class Version { v2 [[= scrydantic::name{"2.0"}]] };` has the schema
+`{"enum":["2.0"],"type":"string"}`, and a member of that type decodes from
+`"2.0"` and nothing else. Two enumerators of one enum cannot end with the same
+name, and `name` is the only Scrydantic annotation an enumerator takes; either
+mistake is a compile-time error.
 
 **Variants.** Every alternative of a `std::variant` must be an aggregate with a
 distinct `tag`. The encoded object carries the tag under the key `"type"`, so an
@@ -178,6 +228,18 @@ scrydantic::schema_v<Reading>
 Schema that model APIs accept: objects are closed, optionals and variants use
 `anyOf`, and integers carry their type's `minimum` and `maximum`.
 
+A map is the one open object. Its schema allows any key, and gives the schema
+of every value as `additionalProperties`:
+
+```cpp
+scrydantic::schema_v<Scores>
+// {"additionalProperties":false,
+//  "properties":{"by_player":{
+//    "additionalProperties":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},
+//    "type":"object"}},
+//  "required":["by_player"],"type":"object"}
+```
+
 A schema is written in place, with no `$ref`, unless the type is recursive.
 Then every type that contains itself is defined once under `$defs`, and a
 recursive root refers to itself as `{"$ref":"#"}`:
@@ -190,8 +252,24 @@ scrydantic::schema_v<Comment>
 //  "required":["replies","text"],"type":"object"}
 ```
 
+A `Json` can hold any JSON value, so its schema is the empty schema `{}`, which
+accepts every value. It has one wherever it sits: as a member, an element, a
+tool parameter or result, or the root. A constraint on a `Json` member is a
+compile error.
+
+```cpp
+struct Payload { scrydantic::Json data; };
+
+scrydantic::schema_v<Payload>
+// {"additionalProperties":false,"properties":{"data":{}},
+//  "required":["data"],"type":"object"}
+scrydantic::schema_v<std::optional<scrydantic::Json>> // {"anyOf":[{},{"type":"null"}]}
+scrydantic::schema_v<std::vector<scrydantic::Json>>   // {"items":{},"type":"array"}
+```
+
 `input_schema_v<Args>` is the schema of a tool's argument object. It is the
-same as `schema_v<Args>`, but `Args` must be an aggregate.
+same as `schema_v<Args>`, but `Args` must be an aggregate. A map cannot be the
+argument object, but it can be a member of one.
 
 ## Encoding
 
@@ -341,9 +419,9 @@ Reading forecast(std::string city, std::int32_t days);
 std::vector<scrydantic::BoundTool<>> tools = scrydantic::bind<^^weather>();
 ```
 
-Each `BoundTool` has a `name`, a `description`, an `input_schema`, and an
-`invoke` handler. The handler takes the arguments as `Json` and returns a
-`Result<Json>`:
+Each `BoundTool` has a `name`, a `description`, an `input_schema`, an
+`output_schema`, and an `invoke` handler. The handler takes the arguments as
+`Json` and returns a `Result<Json>`:
 
 ```cpp
 tools[0].input_schema.text;
@@ -351,6 +429,7 @@ tools[0].input_schema.text;
 //  "properties":{"city":{"type":"string"},
 //                "days":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},
 //  "required":["city","days"],"type":"object"}
+tools[0].output_schema->text; // the same text as scrydantic::schema_v<Reading>
 
 auto result = tools[0].invoke(scrydantic::Json{.text = R"({"city":"Oslo"})"});
 result.error().model_message; // $.days is a required member
@@ -359,11 +438,37 @@ result.error().model_message; // $.days is a required member
 **Parameters.** A tool can take no parameters, any list of named parameters,
 which become the members of the argument object, or one aggregate, which is the
 argument object. Use an aggregate to describe or constrain arguments:
-annotations on parameters themselves are a compile error.
+annotations on parameters themselves are a compile error. A `Json` parameter
+takes any JSON value, for a tool that stores or forwards a document without
+reading it. Its schema is `{}`, and the tool receives the value's canonical
+text:
+
+```cpp
+namespace documents {
+[[= scrydantic::tool{"Store a document"}]]
+std::string store(scrydantic::Json document) { return document.text; }
+}
+
+auto stored = scrydantic::bind<^^documents>();
+stored[0].input_schema.text;
+// {"additionalProperties":false,"properties":{"document":{}},
+//  "required":["document"],"type":"object"}
+stored[0].invoke(scrydantic::Json{.text = R"({"document":{"b":[1, 2.50],"a":null}})"})->text;
+// "{\"a\":null,\"b\":[1,2.5]}"
+```
 
 **Return values.** A tool can return any supported type, a `Result` of one,
-`void`, or `Status`. `void` and a successful `Status` return `{}`. To refuse a
-call with a message for the model, return `std::unexpected(tool_error("..."))`.
+`void`, or `Status`. `void` and a successful `Status` return `{}`. A returned
+`Json`, alone or as a member, is checked and then sent as the tool wrote it. To
+refuse a call with a message for the model, return
+`std::unexpected(tool_error("..."))`.
+
+A tool that returns `T` or `Result<T>` publishes `schema_v<T>` as its
+`output_schema`, for a host that lists what its tools return beside what they
+take. It is a `std::optional<Json>`, and it is empty for a tool that returns
+`void` or `Status`: the `{}` such a tool answers with says only that the call
+succeeded. A tool that returns `Json` has the output schema `{}`. The handler
+does not check a result against its schema.
 
 **Failures.** `invoke` returns the same `Error` type for three kinds of
 failure. A host tells them apart by `issues` and `model_message`:
@@ -501,9 +606,33 @@ open_ticket(scrydantic::Json{.text = R"({"title":"Fix the lamp"})"})->text; // 1
 open_ticket(scrydantic::Json{.text = R"({"title":"Oil the door"})"})->text; // 2
 ```
 
+`bind_handler` returns the handler alone, so it carries no schema. To list such
+a tool, build the `BoundTool` yourself. `output_schema` may stay empty, or take
+the schema of what the callable returns:
+
+```cpp
+using scrydantic::Json;
+
+scrydantic::BoundTool<> tool{
+    .name = "open_ticket",
+    .description = "Open a ticket",
+    .input_schema = Json{.text = std::string{scrydantic::input_schema_v<Ticket>}},
+    .output_schema = Json{.text = std::string{scrydantic::schema_v<std::int64_t>}},
+    .invoke = scrydantic::bind_handler<Ticket>(
+        [next_id](Ticket) { return next_id->fetch_add(1); }),
+};
+```
+
 **Without handlers.** `describe<^^ns>()`, or `describe<Toolbox>()` for a
-class, returns the name, description, and input schema of each tool as
-compile-time constants, for a manifest that needs no handlers.
+class, returns the name, description, input schema, and output schema of each
+tool as compile-time constants, for a manifest that needs no handlers. A
+descriptor's `output_schema` is a `std::string_view`, empty for a tool that
+returns no value:
+
+```cpp
+static constexpr auto described = scrydantic::describe<^^weather>();
+static_assert(described[0].output_schema == scrydantic::schema_v<Reading>);
+```
 
 ## Working with raw JSON
 

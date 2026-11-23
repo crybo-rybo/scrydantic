@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <meta>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/constraints.hpp>
@@ -15,14 +16,15 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace scrydantic::detail {
 
-// The three value families. They share one checker and differ only in the leaves
-// they admit and in whether a value must be storable, since only decoding builds
-// values.
+// The three value families. They share one checker. Encoding only reads a value,
+// so `encodable` alone admits std::string_view and a value that cannot be stored.
+// Only `supported` has a schema, so it alone needs a name for each definition.
 enum class value_family : std::uint8_t {
   supported,
   encodable,
@@ -183,6 +185,12 @@ private:
     return (path.empty() ? display(container) : path) + "[]";
   }
 
+  // The value under any key of a map, as "[]" is any element of an array.
+  static consteval std::string entry_path(const std::string& path,
+                                          const std::meta::info map) {
+    return (path.empty() ? display(map) : path) + "{}";
+  }
+
   // A nested alternative is named after the variant's path ("Doc::blocks[]<Text>");
   // a root one starts its own ("Text::body").
   static consteval std::string alternative_path(const std::string& path,
@@ -199,12 +207,6 @@ private:
                  : problem(path, shown,
                            "is encode-only borrowed text; decoding and schemas "
                            "take std::string");
-    case value_kind::json:
-      return family_ == value_family::supported
-                 ? problem(path, shown,
-                           "is raw JSON, which has no schema; it is Encodable and "
-                           "Decodable but not a SupportedValue")
-                 : std::string{};
     case value_kind::enumeration:
       return check_enum(plain_type(shown), path);
     default:
@@ -235,6 +237,17 @@ private:
       return problem(path, shown,
                      "is a union; use a tagged std::variant of aggregates");
     }
+    if (is_map_template(type)) {
+      return problem(path, shown,
+                     "has a key type other than std::string; a JSON object's keys "
+                     "are strings");
+    }
+    if (is_specialization_of(type, ^^std::multimap) ||
+        is_specialization_of(type, ^^std::unordered_multimap)) {
+      return problem(path, shown,
+                     "can hold one key more than once, which a JSON object cannot; "
+                     "use std::map or std::unordered_map");
+    }
     if (std::meta::is_class_type(type) && !is_complete_class(type)) {
       return problem(path, shown, "is an incomplete type");
     }
@@ -250,6 +263,48 @@ private:
     if (enumerators.empty()) {
       return problem(path, type, "has no enumerators");
     }
+    for (const auto enumerator : enumerators) {
+      if (auto text = check_enumerator_annotations(enumerator, path); !text.empty()) {
+        return text;
+      }
+    }
+    if (auto text = check_enumerator_values(type, path); !text.empty()) {
+      return text;
+    }
+    return check_enumerator_names(type, path);
+  }
+
+  // An enumerator takes scrydantic::name and no other annotation of
+  // Scrydantic's, since nothing reads one there. The test is the namespace the
+  // annotation's type is declared in, not a list of today's annotations, so one
+  // added later is rejected here until an enumerator gives it a meaning.
+  static consteval std::string
+  check_enumerator_annotations(const std::meta::info enumerator,
+                               const std::string& path) {
+    if (annotation_count(enumerator, ^^name) > 1) {
+      return problem(path, enumerator, "has more than one scrydantic::name annotation");
+    }
+    for (const auto annotation : std::meta::annotations_of(enumerator)) {
+      const auto type = plain_type(std::meta::type_of(annotation));
+      if (std::meta::has_parent(type) &&
+          std::meta::parent_of(type) == (^^::scrydantic) &&
+          !annotation_matches(annotation, ^^name)) {
+        const auto named = std::meta::has_template_arguments(type)
+                               ? std::meta::template_of(type)
+                               : type;
+        return problem(
+            path, enumerator,
+            "carries scrydantic::" + owned_text(std::meta::identifier_of(named)) +
+                ", which does not apply to enumerators; an enumerator "
+                "takes only scrydantic::name");
+      }
+    }
+    return {};
+  }
+
+  static consteval std::string check_enumerator_values(const std::meta::info type,
+                                                       const std::string& path) {
+    const auto enumerators = std::meta::enumerators_of(type);
     for (std::size_t left = 0; left < enumerators.size(); ++left) {
       for (std::size_t right = left + 1; right < enumerators.size(); ++right) {
         if (std::meta::constant_of(enumerators[left]) ==
@@ -260,6 +315,27 @@ private:
                              " and " +
                              owned_text(std::meta::identifier_of(enumerators[right])) +
                              " with one value, so that value has no single name");
+        }
+      }
+    }
+    return {};
+  }
+
+  // Two enumerators with one JSON name would make that string decode to
+  // whichever is declared first, as two members with one key would write it twice.
+  static consteval std::string check_enumerator_names(const std::meta::info type,
+                                                      const std::string& path) {
+    const auto enumerators = std::meta::enumerators_of(type);
+    for (std::size_t left = 0; left < enumerators.size(); ++left) {
+      for (std::size_t right = left + 1; right < enumerators.size(); ++right) {
+        const auto name = json_name_of(enumerators[left]);
+        if (name == json_name_of(enumerators[right])) {
+          return problem(
+              path, type,
+              "has enumerators " +
+                  owned_text(std::meta::identifier_of(enumerators[left])) + " and " +
+                  owned_text(std::meta::identifier_of(enumerators[right])) +
+                  " that both map to the JSON string \"" + owned_text(name) + "\"");
         }
       }
     }
@@ -277,6 +353,12 @@ private:
     }
     if (kind == value_kind::variant) {
       return check_variant(type, path);
+    }
+    if (kind == value_kind::map) {
+      const auto mapped = mapped_of(type);
+      return is_qualified(mapped)
+                 ? problem(path, type, "has a cv-qualified or reference mapped type")
+                 : check(mapped, entry_path(path, type));
     }
     const auto element = element_of(type);
     if (is_qualified(element)) {
@@ -537,14 +619,14 @@ private:
 
   // Default construction builds every member, the value a std::indirect owns,
   // every element of a non-empty std::array, and a variant's first alternative;
-  // it leaves a std::optional disengaged and a std::vector empty. Decoding starts
-  // from a default-constructed value, so on a cycle of the former links alone it
-  // never ends. Encoding builds nothing, and the variant it is given may hold any
-  // alternative, but a value with such a cycle that passes through no variant is
-  // infinite or, through a reference, cyclic. Reflection cannot see what a
-  // default member initializer holds, so the walk assumes each member starts as
-  // its type's default. It starts from each aggregate the shape check reached, at
-  // the path it was reached by.
+  // it leaves a std::optional disengaged and a std::vector or a map empty.
+  // Decoding starts from a default-constructed value, so on a cycle of the
+  // former links alone it never ends. Encoding builds nothing, and the variant
+  // it is given may hold any alternative, but a value with such a cycle that
+  // passes through no variant is infinite or, through a reference, cyclic.
+  // Reflection cannot see what a default member initializer holds, so the walk
+  // assumes each member starts as its type's default. It starts from each
+  // aggregate the shape check reached, at the path it was reached by.
   consteval std::string check_recursion() {
     for (const auto& [type, path] : reached_) {
       if (auto text = check_construction(type, path); !text.empty()) {
@@ -627,6 +709,11 @@ consteval std::string tool_arguments_problem(const std::meta::info type) {
   if (is_qualified(type)) {
     return display(type) + " is cv-qualified or a reference; tool arguments are a "
                            "plain aggregate type";
+  }
+  // A map does decode from one JSON object, so it is told what it lacks instead.
+  if (kind_of(type) == value_kind::map) {
+    return display(type) + " is a map, whose keys are data; tool arguments are a "
+                           "plain aggregate, whose members name the arguments";
   }
   if (kind_of(type) != value_kind::aggregate) {
     return display(type) + " is not a plain aggregate; tool arguments decode from one "
@@ -736,6 +823,16 @@ consteval bool is_acknowledgment(const std::meta::info result) {
   return type == (^^void) || type == plain_type(^^Status);
 }
 
+// The value a tool's return type sends to the model, which is the type its
+// output schema describes: the value type of a Result, or else the type itself.
+consteval std::meta::info result_value_type(const std::meta::info result) {
+  const auto type = plain_type(result);
+  const bool is_result =
+      is_specialization_of(type, ^^std::expected) &&
+      plain_type(std::meta::template_arguments_of(type)[1]) == (^^Error);
+  return is_result ? std::meta::template_arguments_of(type)[0] : result;
+}
+
 // Why a tool's return type cannot be sent to the model; empty when it can. The
 // text follows "returns", so it completes a sentence about the handler.
 consteval std::string result_type_problem(const std::meta::info result) {
@@ -745,13 +842,7 @@ consteval std::string result_type_problem(const std::meta::info result) {
   if (is_acknowledgment(result)) {
     return {};
   }
-  const auto type = plain_type(result);
-  const bool is_result =
-      is_specialization_of(type, ^^std::expected) &&
-      plain_type(std::meta::template_arguments_of(type)[1]) == (^^Error);
-  const auto reason =
-      value_problem(is_result ? std::meta::template_arguments_of(type)[0] : result,
-                    value_family::supported);
+  const auto reason = value_problem(result_value_type(result), value_family::supported);
   if (reason.empty()) {
     return {};
   }
