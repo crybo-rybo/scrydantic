@@ -120,6 +120,7 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | `title{"..."}` | member, class | Sets the `title` of the member's or the class's schema. It is written to the schema only. |
 | `keyword{"key", "json"}`, `keyword_string{"key", "text"}` | member, class | Adds a keyword of your choosing, such as `format` or `examples`, to the member's or the class's schema. It is written to the schema only. Decoding does not check it. |
 | `name{"..."}` | member, enumerator, tool | Replaces the member's JSON key, the enumerator's JSON string, or the tool's name. |
+| `rename_all{rule}` | class, enum | Derives the JSON key of every member, or the JSON string of every enumerator, from its identifier, by `camel_case`, `pascal_case`, `kebab_case`, or `screaming_snake_case`. A `name` still wins. |
 | `tag{"..."}` | class | The class's `"type"` value when it is a variant alternative. |
 | `skip_null` | class, optional member | Leaves out an empty optional instead of writing `null`, and lets the input leave it out. On a class, it applies to every optional member. |
 | `emit_null` | optional member | Writes `null` again for one member of a `skip_null` class. |
@@ -143,10 +144,75 @@ scrydantic::encode(Profile{.name = "Ada"})->text;
 // {"display_name":"Ada","phone":null}
 ```
 
-**Enumerators.** An enumerator is written as its identifier unless it carries a
-`name`, which gives an enum a value that is not a C++ identifier: a keyword, a
-value with punctuation, or one in another case convention. The annotation goes
-after the enumerator's identifier:
+**Naming rules.** Where the JSON spells its keys in another convention than
+the C++ does, `rename_all` on the class derives every key from the member's
+identifier, and only the exceptions need a `name`:
+
+```cpp
+struct [[= scrydantic::rename_all{scrydantic::camel_case}]] Tool {
+  std::string name;
+  scrydantic::Json input_schema;                          // "inputSchema"
+  std::optional<bool> read_only_hint;                     // "readOnlyHint"
+  [[= scrydantic::name{"_meta"}]] scrydantic::Json meta;  // a name still wins
+};
+
+Tool tool{
+    .name = "search", .input_schema = {"{}"}, .read_only_hint = true, .meta = {"{}"}};
+scrydantic::encode(tool)->text;
+// {"_meta":{},"inputSchema":{},"name":"search","readOnlyHint":true}
+scrydantic::decode<Tool>(
+    R"({"_meta":{},"input_schema":{},"name":"search","readOnlyHint":true})")
+    .error().model_message;
+// $ contains unknown member "input_schema"
+// $.inputSchema is a required member
+```
+
+The derived key is the member's key everywhere: in the schema, in encoding and
+decoding, in issue paths, and in `keys_v`. On a scoped enum the same annotation
+derives the enumerators' strings:
+
+```cpp
+enum class [[= scrydantic::rename_all{scrydantic::screaming_snake_case}]] Level {
+  low_water,
+  high_water,
+  off,
+};
+
+scrydantic::schema_v<Level>;
+// {"enum":["LOW_WATER","HIGH_WATER","OFF"],"type":"string"}
+```
+
+A rule reads an identifier as words separated by underscores:
+
+| Rule | `read_only_hint` | `default_` | `http2_enabled` |
+|---|---|---|---|
+| `camel_case` | `readOnlyHint` | `default` | `http2Enabled` |
+| `pascal_case` | `ReadOnlyHint` | `Default` | `Http2Enabled` |
+| `kebab_case` | `read-only-hint` | `default` | `http2-enabled` |
+| `screaming_snake_case` | `READ_ONLY_HINT` | `DEFAULT` | `HTTP2_ENABLED` |
+
+Trailing underscores are dropped, so a member named around a keyword gets the
+keyword as its key. Leading underscores are kept (`_meta` stays `_meta` under
+`camel_case`), and several underscores between two words separate them once. A
+capital letter starts no word: `camel_case` and `pascal_case` set each word's
+first letter and keep the rest as written, so under `camel_case` `userID` stays
+`userID` and `HTTPServer` becomes `hTTPServer`, while `kebab_case` and
+`screaming_snake_case` set every letter. Where that is not the key you want,
+give the member a `name`.
+
+The rule covers what the class or enum itself declares. A member's type states
+its own rule or has none, so a class has the same JSON wherever it is used, and
+a field that comes from a flattened member follows the class that declares it.
+The keys of a map, a variant alternative's `tag`, and the arguments that a
+tool's parameter list names are never renamed. Two members that end with the
+same key do not compile, with or without a rule, and neither do two rules on
+one class or enum, or a rule on a member, an enumerator, or a tool function.
+
+**Enumerators.** An enumerator is written as its identifier, or as its enum's
+`rename_all` spells that, unless it carries a `name`, which gives an enum a
+value that is not a C++ identifier: a keyword, a value with punctuation, or one
+in another case convention. The annotation goes after the enumerator's
+identifier:
 
 ```cpp
 enum class Visibility {
@@ -642,7 +708,8 @@ std::vector<scrydantic::BoundTool<>> tools = scrydantic::bind<^^weather>();
 
 Each `BoundTool` has a `name`, a `description`, an `input_schema`, an
 `output_schema`, and an `invoke` handler. The handler takes the arguments as
-`Json` and returns a `Result<Json>`:
+`Json` text, or as a `JsonView` that is already parsed (see **Parsed
+arguments**), and returns a `Result<Json>`:
 
 ```cpp
 tools[0].input_schema.text;
@@ -726,14 +793,30 @@ arguments     issues  model_message            message
 {"id":1}      0                                the value holds a string that is not valid UTF-8, so it cannot be JSON
 ```
 
-An MCP-style host sets `isError` for all three. It returns the model's text
-for the first two, and logs the third as a failure of its own:
+The table covers returned errors only. A handler does not catch: an exception
+thrown by the tool, or by a validator that throws although it must not, leaves
+`invoke`, and `ToolSet::invoke` after it, with its type and message intact. A
+host that calls tools for a model catches around the call, or the first tool
+that throws ends the host.
+
+Such a host reports all three, and a thrown exception, as a failed call. It
+returns the model's text for the first two, and logs the third as a failure of
+its own. For a tool that threw, the model gets a fixed message and the log gets
+the exception's text, which was written for a developer and can say what the
+model should not be told:
 
 ```cpp
 struct Reply { std::string text; bool is_error{}; };
 
 Reply call(const scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
-  auto result = tool.invoke(std::move(arguments));
+  scrydantic::Result<scrydantic::Json> result;
+  try {
+    result = tool.invoke(std::move(arguments));
+  } catch (const std::exception& thrown) {
+    // The tool threw. The log gets the exception's text, the model a fixed one.
+    std::cerr << "tool threw: " << thrown.what() << '\n';
+    return {.text = "the tool failed", .is_error = true};
+  }
   if (result) {
     return {.text = result->text};
   }
@@ -752,6 +835,9 @@ Reply call(const scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
   return {.text = "the tool failed", .is_error = true};
 }
 ```
+
+A tool may throw a type that does not derive from `std::exception`. A host that
+runs tools it did not write adds `catch (...)`.
 
 `invoke` returns a tool's own `Error` unchanged, so the table holds only when a
 tool refuses with `tool_error()` and gives the model some text. If a tool returns
@@ -810,6 +896,33 @@ set->tools();                       // every tool, in the order given, to list
 A set does not change once it is made. To add or remove tools, take them back
 with `release()`, which leaves the set empty, and make a new set from them.
 
+**Parsed arguments.** A host usually receives a tool call inside a larger
+message, and parses the message to find the tool's name. Pass the arguments as
+the `JsonView` that you already have. The handler decodes that part of your
+document where it is, so nothing is written out as text and parsed a second
+time:
+
+```cpp
+auto message = scrydantic::JsonView::parse(
+    R"({"id":7,"call":{"name":"forecast","arguments":{"city":"Oslo","days":2}}})");
+auto call = message->find("call");
+auto arguments = call->find("arguments");
+
+set->invoke(*call->find("name")->string(), *arguments); // by name
+set->find("forecast")->invoke(*arguments);              // one tool
+```
+
+A view goes wherever `invoke` takes a `Json`: after the context if there is
+one, in a `ToolSet`, and in a `bind_handler` handler. Both calls return the same
+result for the same arguments. Only a text call can fail with `tool arguments
+are not valid JSON`, because a view is JSON already. A view of something that is
+not an object fails as its text does:
+
+```cpp
+auto list = scrydantic::JsonView::parse(R"(["Oslo",2])");
+set->invoke("forecast", *list).error().model_message; // $ must be an object
+```
+
 Calling a tool does not change the set either. A handler can be called through
 a `const` reference, so a `const` set, or a `const` vector of bound tools, can
 serve calls, and several threads can share one. Concurrent calls are then as
@@ -846,6 +959,21 @@ scrydantic::BoundTool<> tool{
     .invoke = scrydantic::bind_handler<Ticket>(
         [next_id](Ticket) { return next_id->fetch_add(1); }),
 };
+```
+
+`invoke` also takes a callable of your own that reads the JSON itself and
+returns a `Result<Json>`. Write it to take a `const JsonView&`, and it is given
+the view of a view call and the parsed text of a text call. A callable that
+takes `Json` still works. It is given a text call's text as it was passed, not
+parsed and not checked, and for a view call the view's canonical text, which
+`to_json()` writes once per call:
+
+```cpp
+tool.invoke = [](const scrydantic::JsonView& arguments)
+    -> scrydantic::Result<scrydantic::Json> {
+  return scrydantic::Json{.text = std::to_string(arguments.size())};
+};
+tool.invoke(scrydantic::Json{.text = R"({"title":"Fix the lamp"})"})->text; // 1
 ```
 
 **Without handlers.** `describe<^^ns>()`, or `describe<Toolbox>()` for a

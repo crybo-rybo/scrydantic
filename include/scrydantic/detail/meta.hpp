@@ -260,6 +260,9 @@ private:
     if (!std::meta::is_scoped_enum_type(type)) {
       return problem(path, type, "is an unscoped enum; reflected enums are enum class");
     }
+    if (annotation_count(type, ^^rename_all) > 1) {
+      return problem(path, type, "has more than one scrydantic::rename_all annotation");
+    }
     const auto enumerators = std::meta::enumerators_of(type);
     if (enumerators.empty()) {
       return problem(path, type, "has no enumerators");
@@ -327,16 +330,21 @@ private:
   static consteval std::string check_enumerator_names(const std::meta::info type,
                                                       const std::string& path) {
     const auto enumerators = std::meta::enumerators_of(type);
+    // Each name is asked for once, since under a rename_all it is derived.
+    std::vector<std::string_view> names{};
+    for (const auto enumerator : enumerators) {
+      names.push_back(json_name_of(enumerator));
+    }
     for (std::size_t left = 0; left < enumerators.size(); ++left) {
       for (std::size_t right = left + 1; right < enumerators.size(); ++right) {
-        const auto name = json_name_of(enumerators[left]);
-        if (name == json_name_of(enumerators[right])) {
-          return problem(
-              path, type,
-              "has enumerators " +
-                  owned_text(std::meta::identifier_of(enumerators[left])) + " and " +
-                  owned_text(std::meta::identifier_of(enumerators[right])) +
-                  " that both map to the JSON string \"" + owned_text(name) + "\"");
+        if (names[left] == names[right]) {
+          return problem(path, type,
+                         "has enumerators " +
+                             owned_text(std::meta::identifier_of(enumerators[left])) +
+                             " and " +
+                             owned_text(std::meta::identifier_of(enumerators[right])) +
+                             " that both map to the JSON string \"" +
+                             owned_text(names[left]) + "\"");
         }
       }
     }
@@ -435,6 +443,9 @@ private:
                                                        const std::string& path) {
     if (annotation_count(type, ^^tag) > 1) {
       return problem(path, type, "has more than one scrydantic::tag annotation");
+    }
+    if (annotation_count(type, ^^rename_all) > 1) {
+      return problem(path, type, "has more than one scrydantic::rename_all annotation");
     }
     if (has_annotation(type, ^^name) || has_annotation(type, ^^emit_null_t)) {
       return problem(path, type,
@@ -558,6 +569,11 @@ private:
       return at_path(here, "carries scrydantic::tag or ignore_unknown, which "
                            "apply to class types");
     }
+    if (has_annotation(member, ^^rename_all)) {
+      return at_path(here, "carries scrydantic::rename_all, which applies to "
+                           "classes and enums; scrydantic::name gives one "
+                           "member its key");
+    }
     if (has_annotation(member, ^^tool)) {
       return at_path(here, "carries scrydantic::tool, which applies to "
                            "functions");
@@ -572,15 +588,19 @@ private:
   static consteval std::string check_keys(const std::meta::info type,
                                           const std::string& path) {
     const auto fields = keyed_fields(type);
+    // Each key is asked for once, since under a rename_all it is derived.
+    std::vector<std::string_view> keys{};
+    for (const auto& field : fields) {
+      keys.push_back(json_key_of(field.member));
+    }
     for (std::size_t left = 0; left < fields.size(); ++left) {
       for (std::size_t right = left + 1; right < fields.size(); ++right) {
-        const auto key = json_key_of(fields[left].member);
-        if (key == json_key_of(fields[right].member)) {
+        if (keys[left] == keys[right]) {
           return problem(path, type,
                          "has members " + field_name(fields[left]) + " and " +
                              field_name(fields[right]) +
-                             " that both map to the JSON key \"" + owned_text(key) +
-                             "\"");
+                             " that both map to the JSON key \"" +
+                             owned_text(keys[left]) + "\"");
         }
       }
     }
