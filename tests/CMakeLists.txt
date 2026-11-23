@@ -145,6 +145,7 @@ add_executable(
   codec/number_spelling_tests.cpp
   codec/validator_tests.cpp
   tools/json_tool_tests.cpp
+  tools/output_schema_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
 )

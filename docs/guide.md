@@ -322,9 +322,9 @@ Reading forecast(std::string city, std::int32_t days);
 std::vector<scrydantic::BoundTool<>> tools = scrydantic::bind<^^weather>();
 ```
 
-Each `BoundTool` has a `name`, a `description`, an `input_schema`, and an
-`invoke` handler. The handler takes the arguments as `Json` and returns a
-`Result<Json>`:
+Each `BoundTool` has a `name`, a `description`, an `input_schema`, an
+`output_schema`, and an `invoke` handler. The handler takes the arguments as
+`Json` and returns a `Result<Json>`:
 
 ```cpp
 tools[0].input_schema.text;
@@ -332,6 +332,7 @@ tools[0].input_schema.text;
 //  "properties":{"city":{"type":"string"},
 //                "days":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},
 //  "required":["city","days"],"type":"object"}
+tools[0].output_schema->text; // the same text as scrydantic::schema_v<Reading>
 
 auto result = tools[0].invoke(scrydantic::Json{.text = R"({"city":"Oslo"})"});
 result.error().model_message; // $.days is a required member
@@ -364,6 +365,13 @@ stored[0].invoke(scrydantic::Json{.text = R"({"document":{"b":[1, 2.50],"a":null
 `Json`, alone or as a member, is checked and then sent as the tool wrote it. To
 refuse a call with a message for the model, return
 `std::unexpected(tool_error("..."))`.
+
+A tool that returns `T` or `Result<T>` publishes `schema_v<T>` as its
+`output_schema`, for a host that lists what its tools return beside what they
+take. It is a `std::optional<Json>`, and it is empty for a tool that returns
+`void` or `Status`: the `{}` such a tool answers with says only that the call
+succeeded. A tool that returns `Json` has the output schema `{}`. The handler
+does not check a result against its schema.
 
 **Failures.** `invoke` returns the same `Error` type for three kinds of
 failure. A host tells them apart by `issues` and `model_message`:
@@ -501,9 +509,33 @@ open_ticket(scrydantic::Json{.text = R"({"title":"Fix the lamp"})"})->text; // 1
 open_ticket(scrydantic::Json{.text = R"({"title":"Oil the door"})"})->text; // 2
 ```
 
+`bind_handler` returns the handler alone, so it carries no schema. To list such
+a tool, build the `BoundTool` yourself. `output_schema` may stay empty, or take
+the schema of what the callable returns:
+
+```cpp
+using scrydantic::Json;
+
+scrydantic::BoundTool<> tool{
+    .name = "open_ticket",
+    .description = "Open a ticket",
+    .input_schema = Json{.text = std::string{scrydantic::input_schema_v<Ticket>}},
+    .output_schema = Json{.text = std::string{scrydantic::schema_v<std::int64_t>}},
+    .invoke = scrydantic::bind_handler<Ticket>(
+        [next_id](Ticket) { return next_id->fetch_add(1); }),
+};
+```
+
 **Without handlers.** `describe<^^ns>()`, or `describe<Toolbox>()` for a
-class, returns the name, description, and input schema of each tool as
-compile-time constants, for a manifest that needs no handlers.
+class, returns the name, description, input schema, and output schema of each
+tool as compile-time constants, for a manifest that needs no handlers. A
+descriptor's `output_schema` is a `std::string_view`, empty for a tool that
+returns no value:
+
+```cpp
+static constexpr auto described = scrydantic::describe<^^weather>();
+static_assert(described[0].output_schema == scrydantic::schema_v<Reading>);
+```
 
 ## Working with raw JSON
 

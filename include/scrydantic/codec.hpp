@@ -78,9 +78,9 @@ concept ToolArguments = detail::tool_arguments_problem(^^Type).empty();
 
 /// Canonical JSON Schema generated for any supported reflected value.
 ///
-/// Handler result types are supported roots too. A tool binding never sends a
-/// result schema to a model; it is here so a host can export its own tool
-/// contracts. A member's constraint annotations add their keywords to its schema,
+/// A tool's result type is a supported root too: bind() and describe() publish
+/// its schema as the tool's `output_schema`, beside the `input_schema` of its
+/// arguments. A member's constraint annotations add their keywords to its schema,
 /// and decoding checks every one of them but `pattern`. A type outside
 /// SupportedValue fails to compile with the offending member path and the reason.
 /// @tparam Value Type satisfying SupportedValue.

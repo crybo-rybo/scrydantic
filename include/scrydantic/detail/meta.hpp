@@ -666,6 +666,16 @@ consteval bool is_acknowledgment(const std::meta::info result) {
   return type == (^^void) || type == plain_type(^^Status);
 }
 
+// The value a tool's return type sends to the model, which is the type its
+// output schema describes: the value type of a Result, or else the type itself.
+consteval std::meta::info result_value_type(const std::meta::info result) {
+  const auto type = plain_type(result);
+  const bool is_result =
+      is_specialization_of(type, ^^std::expected) &&
+      plain_type(std::meta::template_arguments_of(type)[1]) == (^^Error);
+  return is_result ? std::meta::template_arguments_of(type)[0] : result;
+}
+
 // Why a tool's return type cannot be sent to the model; empty when it can. The
 // text follows "returns", so it completes a sentence about the handler.
 consteval std::string result_type_problem(const std::meta::info result) {
@@ -675,13 +685,7 @@ consteval std::string result_type_problem(const std::meta::info result) {
   if (is_acknowledgment(result)) {
     return {};
   }
-  const auto type = plain_type(result);
-  const bool is_result =
-      is_specialization_of(type, ^^std::expected) &&
-      plain_type(std::meta::template_arguments_of(type)[1]) == (^^Error);
-  const auto reason =
-      value_problem(is_result ? std::meta::template_arguments_of(type)[0] : result,
-                    value_family::supported);
+  const auto reason = value_problem(result_value_type(result), value_family::supported);
   if (reason.empty()) {
     return {};
   }

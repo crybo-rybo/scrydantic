@@ -29,9 +29,9 @@
 
 /// Reflected tools: functions, namespaces, and toolbox classes annotated with
 /// scrydantic::tool become tool contracts (name, description, generated input
-/// schema) and handlers that decode their arguments strictly, call the C++
-/// function, and encode what it returns. <scrydantic/bound_tool.hpp>, which
-/// this header includes, declares what a binding produces: BoundTool, its
+/// and output schemas) and handlers that decode their arguments strictly, call
+/// the C++ function, and encode what it returns. <scrydantic/bound_tool.hpp>,
+/// which this header includes, declares what a binding produces: BoundTool, its
 /// ToolFunction handler, and ToolDescriptor.
 ///
 /// A binding may give its tools a call context: a type of the host's choosing that
@@ -130,6 +130,11 @@ consteval std::meta::info toolbox_tools_of(const std::meta::info type,
 /// supported value, a Result of one, `void`, or Status; the last two answer `{}`
 /// on success. The argument schema is input_schema_v<Args>.
 ///
+/// What comes back is the bare handler, which has nowhere to carry a schema. A
+/// host that builds a BoundTool around it sets `input_schema` from
+/// input_schema_v<Args> and, to publish what the callable returns, `output_schema`
+/// from schema_v of that type; bind() does both for an annotated function.
+///
 /// The template is unconstrained so that a rejected type fails with a diagnostic
 /// naming the offending member and the reason; ToolArguments and ToolHandlerFor
 /// are the SFINAE-friendly form of the same checks.
@@ -168,8 +173,10 @@ template <typename Args, typename Context = void, typename Handler>
 /// (the tool takes `{}`), one plain aggregate (the argument object, as for
 /// bind_handler()), or any other list of named parameters of supported types,
 /// which is synthesized into an argument object with one required member per
-/// parameter. It returns what a bind_handler() callable may return. A function
-/// that breaks these rules fails to compile with its name and the reason.
+/// parameter. It returns what a bind_handler() callable may return: a function
+/// that returns `T` or `Result<T>` gives its tool the output schema schema_v<T>,
+/// and one that returns `void` or Status gives it none. A function that breaks
+/// these rules fails to compile with its name and the reason.
 /// @tparam Entity Reflection of a tool function, a static member function, or a
 /// namespace.
 /// @tparam Context Call context the tools may take first, or void for none.
@@ -221,8 +228,9 @@ template <typename Context = void, typename Toolbox,
 
 /// Describes the tools bind<^^Entity, Context>() would bind, without handlers.
 ///
-/// The descriptors are constant expressions, so a host can build a manifest at
-/// compile time.
+/// Each descriptor holds the name, the description, and the input and output
+/// schemas that bind() gives the tool. The descriptors are constant expressions,
+/// so a host can build a manifest at compile time.
 /// @tparam Entity Reflection of a tool function, a static member function, or a
 /// namespace.
 /// @tparam Context Call context the tools may take first, or void for none.
