@@ -29,6 +29,7 @@ constructors of its own. Its members can be any of these types:
 | `std::optional<T>` | `T` or `null` |
 | `std::vector<T>` (not `vector<bool>`) | an array |
 | `std::array<T, N>` | an array of exactly `N` elements |
+| `std::map<std::string, T>`, `std::unordered_map<std::string, T>` | an object with any keys, each value a `T` |
 | `std::indirect<T>` | whatever `T` is |
 | another aggregate | an object |
 | `std::variant<A, B, ...>` of tagged aggregates | an object with a `"type"` member |
@@ -71,7 +72,28 @@ struct Reading {
 
 To make an optional member also optional on input, see `skip_null` below.
 
-**Recursion.** A model can contain itself through `std::vector<T>` or
+**Maps.** Use a map for an object whose keys are data, not member names:
+
+```cpp
+struct Scores { std::map<std::string, int> by_player; };
+
+scrydantic::encode(Scores{{{"zed", 1}, {"amy", 2}}})->text;
+// {"by_player":{"amy":2,"zed":1}}
+
+scrydantic::decode<Scores>(R"({"by_player":{"amy":"two","a b":1.5}})")
+    .error().message;
+// $.by_player["a b"] must be an integer
+// $.by_player.amy must be an integer
+```
+
+The key type must be `std::string`. The mapped type can be any type from the
+table. A custom comparator, hash, or allocator is fine. Encoding writes the
+keys in sorted order whatever order the map keeps them in, so an
+`unordered_map` is sorted each time it is written. If the input repeats a key,
+the last one wins. `std::multimap` is rejected, and so are constraints on a
+map: `items` on one is a compile error.
+
+**Recursion.** A model can contain itself through `std::vector<T>`, a map, or
 `std::optional<std::indirect<T>>`:
 
 ```cpp
@@ -144,6 +166,18 @@ scrydantic::schema_v<Reading>
 Schema that model APIs accept: objects are closed, optionals and variants use
 `anyOf`, and integers carry their type's `minimum` and `maximum`.
 
+A map is the one open object. Its schema allows any key, and gives the schema
+of every value as `additionalProperties`:
+
+```cpp
+scrydantic::schema_v<Scores>
+// {"additionalProperties":false,
+//  "properties":{"by_player":{
+//    "additionalProperties":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},
+//    "type":"object"}},
+//  "required":["by_player"],"type":"object"}
+```
+
 A schema is written in place, with no `$ref`, unless the type is recursive.
 Then every type that contains itself is defined once under `$defs`, and a
 recursive root refers to itself as `{"$ref":"#"}`:
@@ -157,7 +191,8 @@ scrydantic::schema_v<Comment>
 ```
 
 `input_schema_v<Args>` is the schema of a tool's argument object. It is the
-same as `schema_v<Args>`, but `Args` must be an aggregate.
+same as `schema_v<Args>`, but `Args` must be an aggregate. A map cannot be the
+argument object, but it can be a member of one.
 
 ## Encoding
 
