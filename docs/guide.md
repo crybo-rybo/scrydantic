@@ -651,14 +651,30 @@ arguments     issues  model_message            message
 {"id":1}      0                                the value holds a string that is not valid UTF-8, so it cannot be JSON
 ```
 
-An MCP-style host sets `isError` for all three. It returns the model's text
-for the first two, and logs the third as a failure of its own:
+The table covers returned errors only. A handler does not catch: an exception
+thrown by the tool, or by a validator that throws although it must not, leaves
+`invoke`, and `ToolSet::invoke` after it, with its type and message intact. A
+host that calls tools for a model catches around the call, or the first tool
+that throws ends the host.
+
+Such a host reports all three, and a thrown exception, as a failed call. It
+returns the model's text for the first two, and logs the third as a failure of
+its own. For a tool that threw, the model gets a fixed message and the log gets
+the exception's text, which was written for a developer and can say what the
+model should not be told:
 
 ```cpp
 struct Reply { std::string text; bool is_error{}; };
 
 Reply call(const scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
-  auto result = tool.invoke(std::move(arguments));
+  scrydantic::Result<scrydantic::Json> result;
+  try {
+    result = tool.invoke(std::move(arguments));
+  } catch (const std::exception& thrown) {
+    // The tool threw. The log gets the exception's text, the model a fixed one.
+    std::cerr << "tool threw: " << thrown.what() << '\n';
+    return {.text = "the tool failed", .is_error = true};
+  }
   if (result) {
     return {.text = result->text};
   }
@@ -677,6 +693,9 @@ Reply call(const scrydantic::BoundTool<>& tool, scrydantic::Json arguments) {
   return {.text = "the tool failed", .is_error = true};
 }
 ```
+
+A tool may throw a type that does not derive from `std::exception`. A host that
+runs tools it did not write adds `catch (...)`.
 
 `invoke` returns a tool's own `Error` unchanged, so the table holds only when a
 tool refuses with `tool_error()` and gives the model some text. If a tool returns
