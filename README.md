@@ -51,8 +51,9 @@ bound[0].invoke(scrydantic::Json{.text = R"({"a":2,"b":3})"})->text;  // "5"
 
 **[Read the guide](docs/guide.md)** for the supported types, the annotations,
 constraints and validators, error handling, and tool binding.
-[`examples/mcp_tools.cpp`](examples/mcp_tools.cpp) serves MCP-style
-`tools/list` and `tools/call` requests from a few annotated functions.
+[`examples/tool_host.cpp`](examples/tool_host.cpp) is a small host for a few
+annotated functions: it lists each tool's schemas, calls tools by name, and
+handles each way a call can fail, a tool that throws included.
 
 ## Requirements
 
