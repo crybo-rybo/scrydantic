@@ -143,6 +143,7 @@ add_executable(
   codec/coercion_tests.cpp
   codec/constraint_tests.cpp
   codec/enumerator_name_tests.cpp
+  codec/field_metadata_tests.cpp
   codec/flatten_tests.cpp
   codec/json_schema_tests.cpp
   codec/kind_variant_tests.cpp
@@ -758,6 +759,31 @@ scrydantic_add_compile_fail_test(
   keys-of-endless-recursion
   keys_of_endless_recursion.cpp
   "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)
+scrydantic_add_compile_fail_test(
+  fields-of-non-object
+  fields_of_non_object.cpp
+  "std::variant<Circle> is not a plain aggregate, so it has no JSON object keys"
+)
+scrydantic_add_compile_fail_test(
+  fields-of-endless-recursion
+  fields_of_endless_recursion.cpp
+  "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)
+scrydantic_add_compile_fail_test(
+  field-members-of-non-object
+  field_members_of_non_object.cpp
+  "std::vector<Point> is not a plain aggregate, so it has no JSON object keys"
+)
+scrydantic_add_compile_fail_test(
+  enumerators-of-non-enum
+  enumerators_of_non_enum.cpp
+  "Palette is not an enum, so it has no enumerator names"
+)
+scrydantic_add_compile_fail_test(
+  enumerators-of-unscoped-enum
+  enumerators_of_unscoped_enum.cpp
+  "Color does not satisfy scrydantic::Encodable: Color is an unscoped enum; reflected enums are enum class"
 )
 scrydantic_add_compile_fail_test(
   constrained-map

@@ -206,7 +206,7 @@ template <typename Enum>
     return here.fail(IssueKind::wrong_type, "must be an enumerator name");
   }
   const auto text = *view.string();
-  template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
+  template for (constexpr std::meta::info enumerator : declared_enumerators_v<Enum>) {
     if (text == json_name_of(enumerator)) {
       return [:enumerator:];
     }
@@ -491,22 +491,22 @@ template <std::meta::info Member, typename Value, typename Source>
 }
 
 // Where `Member` stands among Type's fields in key order: its index in
-// fields_v<Type>. The member may be one that a class flattened into Type
+// field_layouts_v<Type>. The member may be one that a class flattened into Type
 // declares; it is still one field of Type, since an object that held such a
 // class twice would have each of its keys twice, which the checks reject.
 template <typename Type, std::meta::info Member>
 inline constexpr std::size_t field_position_v = [] {
   std::size_t position = 0;
-  while (fields_v<Type>[position].member != Member) {
+  while (field_layouts_v<Type>[position].member != Member) {
     ++position;
   }
   return position;
 }();
 
-// The values of Type's fields in an object, in key order as fields_v<Type> is;
+// The values of Type's fields in an object, in key order as field_layouts_v<Type> is;
 // a field the object lacks has a node with no value.
 template <typename Type>
-using field_values = std::array<json_node, fields_v<Type>.size()>;
+using field_values = std::array<json_node, field_layouts_v<Type>.size()>;
 
 inline void report_unknown_key(const std::string_view key, const decode_cursor& here) {
   std::string reason{"contains unknown member "};
@@ -536,7 +536,7 @@ template <typename Type, bool Tagged>
   const std::size_t size = view.size();
   std::size_t position = 0;
   [[maybe_unused]] std::size_t slot = 0;
-  template for (constexpr field_layout field : fields_v<Type>) {
+  template for (constexpr field_layout field : field_layouts_v<Type>) {
     // A member whose key sorts before this field's is no field's: every field
     // before this one has already met the keys up to its own.
     for (; position < size; ++position) {
@@ -573,7 +573,7 @@ template <typename Type, bool Tagged>
 template <typename Root, std::meta::info Member, typename Owner>
 [[nodiscard]] bool read_member(Owner& object, const json_node found,
                                const decode_cursor& parent) {
-  constexpr field_layout field = fields_v<Root>[field_position_v<Root, Member>];
+  constexpr field_layout field = field_layouts_v<Root>[field_position_v<Root, Member>];
   constexpr std::string_view key = field.key_view();
   using Value = std::remove_cv_t<typename[:value_type_of(Member):]>;
   const decode_cursor here = parent.member(key);
@@ -631,9 +631,9 @@ template <typename Root, std::meta::info Member>
     if constexpr (is_defaulted_argument(later) && is_declared_after(later, Member)) {
       if (found[field_position_v<Root, later>]) {
         constexpr std::string_view key =
-            fields_v<Root>[field_position_v<Root, Member>].key_view();
+            field_layouts_v<Root>[field_position_v<Root, Member>].key_view();
         constexpr std::string_view reason = required_when_given(
-            fields_v<Root>[field_position_v<Root, later>].key_view());
+            field_layouts_v<Root>[field_position_v<Root, later>].key_view());
         parent.member(key).report(IssueKind::missing_member, reason);
         return false;
       }

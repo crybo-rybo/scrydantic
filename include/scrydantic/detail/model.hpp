@@ -653,7 +653,7 @@ consteval std::vector<field_layout> fields_of(const std::meta::info type) {
 }
 
 template <typename Type>
-inline constexpr auto fields_v = std::define_static_array(fields_of(^^Type));
+inline constexpr auto field_layouts_v = std::define_static_array(fields_of(^^Type));
 
 // The object that declares a field of `object`: `object` itself, or the member
 // flattened into it, at any depth, that the `Depth` members at `Path` lead to.
@@ -681,7 +681,7 @@ inline constexpr auto alternatives_v =
     std::define_static_array(alternatives_of(^^Variant));
 
 template <typename Enum>
-inline constexpr auto enumerators_v =
+inline constexpr auto declared_enumerators_v =
     std::define_static_array(std::meta::enumerators_of(^^Enum));
 
 // ---- Static text -------------------------------------------------------------

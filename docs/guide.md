@@ -1157,6 +1157,34 @@ result, see [For library authors](#for-library-authors).
   a number exactly as the encoder does, for JSON built by hand.
 - `keys_v<T>` lists the JSON keys of an aggregate, in encoded order, and
   `tags_v<V>` lists the tags of a variant whose alternatives all carry one.
+- `fields_v<T>` lists the aggregate's fields in the order of `keys_v<T>`. Each
+  is a `FieldDescriptor` with the field's `key`, its `description`, whether it
+  is `required`, and its `schema`.
+- `field_members_v<T>` is the reflection of the data member behind each field,
+  in the same order, for compile-time code that splices a member's type or
+  reads annotations of its own.
+- `enumerators_v<E>` lists the JSON names of an enum's enumerators, in
+  declaration order.
+
+These lists hold what the codec and the schema already use, so a help text, a
+form, or a table built from them follows `name`, `rename_all`, `skip_null`,
+`flatten`, and default member initializers without restating them. For the
+`Booking` of [Constraints and validators](#constraints-and-validators):
+
+```cpp
+for (const scrydantic::FieldDescriptor& field : scrydantic::fields_v<Booking>) {
+  std::cout << field.key << (field.required ? " (required) " : " ") << field.schema
+            << '\n';
+}
+// city (required) {"type":"string"}
+// guests (required) {"maximum":8,"minimum":1,"type":"integer"}
+// note {"default":"","maxLength":200,"type":"string"}
+```
+
+A field's `schema` is the text under its key in `schema_v<T>`. Where the
+member's type contains itself, that text holds a `$ref`, which resolves against
+`schema_v<T>` and not on its own. A type that can be encoded but has no schema,
+such as one with a `std::string_view` member, has fields with an empty `schema`.
 
 ## Compile-time errors
 
@@ -1189,6 +1217,10 @@ steps that `bind` is made of are public for this, and none of them needs a
   own included. The member of a parameter with a default argument is a
   `std::optional` of the parameter's type, which is empty when the input left
   the member out.
+- `fields_v<arguments_t<^^fn>>` lists the function's parameters: each one's
+  key, its description, whether a call must give it, and its schema.
+  `field_members_v` gives the member behind each, to read your own annotations
+  from.
 - `apply<^^fn>(std::move(arguments))` calls the function with that object and
   returns exactly what the function returns: any type, including `void`, a
   reference, a `Result`, and a type that Scrydantic cannot encode. Nothing
