@@ -819,9 +819,9 @@ take an aggregate and give its members initializers.
 All of this applies to a parameter that becomes a member. A lone aggregate
 parameter is the whole argument object instead. Annotate its members, not the
 parameter. Its default argument is never used, because the object is always
-given. A Scrydantic annotation on such a parameter, on a call context, or on an
-explicit object parameter is a compile-time error, and so are `flatten` and
-`emit_null` on any parameter.
+given. A Scrydantic annotation on such a parameter, on a call context or a
+parameter that the context supplies, or on an explicit object parameter is a
+compile-time error, and so are `flatten` and `emit_null` on any parameter.
 
 A `Json` parameter takes any JSON value, for a tool that stores or forwards a
 document without reading it. Its schema is `{}`, and the tool receives the
@@ -982,6 +982,92 @@ std::string whoami(const Session& session) { return session.user; }
 auto tools = scrydantic::bind<^^session_tools, Session>();
 tools[0].invoke(Session{"ada"}, scrydantic::Json{.text = "{}"}); // "ada"
 ```
+
+A tool that needs one thing from the host does not have to take the whole
+context. Specialize `scrydantic::supplier<Parameter, Context>` for each type
+that the context can supply. A tool then takes a parameter of that type in any
+position, and the host fills it in. A supplied parameter is not a member of the
+argument object, so it is not in the schema and the model cannot set it:
+
+```cpp
+struct Desk {
+  std::string user;
+  const Database* database;
+  std::stop_token stop;
+};
+
+template <> struct scrydantic::supplier<Database, Desk> {
+  static const Database& supply(const Desk& desk) { return *desk.database; }
+};
+
+template <> struct scrydantic::supplier<std::stop_token, Desk> {
+  static std::stop_token supply(const Desk& desk) { return desk.stop; }
+};
+
+namespace desk_tools {
+[[= scrydantic::tool{"Export the report"}]]
+Report export_report(std::string name, const Database& db, std::stop_token stop);
+}
+
+auto desk_tools = scrydantic::bind<^^desk_tools, Desk>();
+desk_tools[0].input_schema.text;
+// {"additionalProperties":false,"properties":{"name":{"type":"string"}},
+//  "required":["name"],"type":"object"}
+desk_tools[0].invoke(desk, scrydantic::Json{.text = R"({"name":"q3"})"});
+// export_report("q3", *desk.database, desk.stop)
+```
+
+The parameter's type, without reference and cv-qualifiers, selects the
+supplier. What `supply` returns initializes the parameter, as an argument
+would. A reference is passed on. A value is kept until the tool returns, so the
+tool can take it by value, by const reference, or by rvalue reference. Only a
+reference that `supply` returns can fill a parameter that is taken by non-const
+reference.
+
+A supplier can refuse the call. If `supply` returns a `Result`, a failed one
+ends the call with its `Error`, unchanged, and the tool does not run:
+
+```cpp
+struct Admin { std::string name; };
+
+template <> struct scrydantic::supplier<Admin, Desk> {
+  static scrydantic::Result<Admin> supply(const Desk& desk) {
+    if (desk.user != "ada") {
+      return std::unexpected(
+          scrydantic::tool_error("only an administrator may do this"));
+    }
+    return Admin{desk.user};
+  }
+};
+
+namespace desk_tools {
+[[= scrydantic::tool{"Delete a report"}]]
+void delete_report(std::string name, Admin admin);
+}
+
+desk_tools[1].invoke(Desk{.user = "bob"}, scrydantic::Json{.text = R"({"name":"q3"})"})
+    .error().model_message; // only an administrator may do this
+```
+
+Suppliers run in the order of their parameters, after the arguments have
+decoded, and none runs after one has refused. A `Result` cannot hold a
+reference. To fill a reference parameter, a supplier that can refuse returns a
+`Result` of a `std::reference_wrapper`.
+
+A supplied parameter is not an argument, so three things follow. A Scrydantic
+annotation on it is a compile-time error. Its own default argument is never
+used. It cannot follow a parameter that has a default argument and that the
+model supplies, because a call that leaves that argument out can pass nothing
+after it. This is also a compile-time error.
+
+A binding without a context supplies nothing. There, the same parameter is an
+argument, or a compile-time error if the codec cannot read its type. The
+context itself is still taken only as the leading `const Context&`.
+
+Declare each specialization next to its parameter type or its context type, so
+that every binding of that pair sees it. C++ does not allow a specialization
+that some uses see and others do not, and a compiler does not have to report
+it.
 
 **Dispatching by name.** `ToolSet<Context>::make(tools)` gathers bound tools,
 such as the results of several `bind` calls, so a host can call them by the name
@@ -1233,6 +1319,26 @@ initialized from that object:
 scrydantic::apply<^^greet, Session>(session, std::move(*arguments));
 scrydantic::apply<^^Timer::lap, Session>(timer, session, std::move(*arguments));
 ```
+
+**Supplied parameters.** `arguments_t` leaves out the parameters that the
+context supplies, as **Call context** describes, and `apply` fills them in.
+`apply` returns exactly what the function returns, so it cannot report a
+supplier that refuses. It does not compile for a function with a parameter
+whose supplier returns a `Result`. Call `try_apply` for such a function, or for
+every function. It takes what `apply` takes and returns a `Result`. The
+`Result` holds what the function returned, or it failed with the supplier's
+`Error` and the function did not run:
+
+```cpp
+auto deleted = scrydantic::try_apply<^^desk_tools::delete_report, Desk>(
+    desk, std::move(*arguments));
+if (!deleted) { /* deleted.error() is the supplier's refusal */ }
+```
+
+A function that returns `void` gives a `Status`. A function that returns a
+`Result` gives a `Result` of that `Result`, which keeps the function's failure
+apart from the supplier's. A function that returns an lvalue reference gives a
+`Result` of a `std::reference_wrapper`.
 
 **Finding your functions.** `annotated_functions_of` is the walk that `bind`
 finds tools with. It skips the templates and namespace aliases in a namespace,
