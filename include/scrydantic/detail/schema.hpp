@@ -29,8 +29,6 @@
 // whose only recursion is its root needs no "$defs" at all.
 namespace scrydantic::detail {
 
-using schema_text = std::optional<std::string_view>;
-
 using schema_keywords = std::vector<schema_keyword>;
 
 // The nodes a schema refers to rather than writes in place. A root node is
@@ -174,12 +172,12 @@ consteval void append_map_schema(std::vector<char>& output, const std::meta::inf
   append_typed_schema(output, "object", std::move(keywords));
 }
 
-// The "type" property a tagged alternative's schema gains.
+// The property a tagged alternative's schema gains under its tag key.
 consteval void append_tag_property(std::vector<char>& output,
-                                   const std::string_view tag_text) {
-  append_json_string(output, tag_key);
+                                   const std::meta::info alternative) {
+  append_json_string(output, tag_key_of(alternative));
   append_json_literal(output, ":{\"enum\":[");
-  append_json_string(output, tag_text);
+  append_json_string(output, *tag_of(alternative));
   append_json_literal(output, "],\"type\":\"string\"}");
 }
 
@@ -221,12 +219,15 @@ consteval schema_keywords value_keywords(const std::meta::info member) {
 }
 
 // Writes the `properties` members, or with `required_only` the `required` names,
-// merging the tag key into its sorted position when there is one.
-consteval void append_object_keys(std::vector<char>& output, const std::meta::info type,
-                                  const schema_text tag_text, const bool required_only,
+// merging the tag key of a tagged node into its sorted position. The tag is
+// required but of the alternative that an object without it is read as, whose
+// schema keeps the property and leaves its key out of `required`.
+consteval void append_object_keys(std::vector<char>& output, const schema_node node,
+                                  const bool required_only,
                                   const schema_references& references) {
+  const auto key_of_tag = tag_key_of(node.type);
   bool first = true;
-  bool tag_pending = tag_text.has_value();
+  bool tag_pending = node.tagged && !(required_only && is_default_tagged(node.type));
   const auto separate = [&output, &first] {
     if (!first) {
       output.push_back(',');
@@ -237,15 +238,15 @@ consteval void append_object_keys(std::vector<char>& output, const std::meta::in
     if (tag_pending && before) {
       separate();
       if (required_only) {
-        append_json_string(output, tag_key);
+        append_json_string(output, key_of_tag);
       } else {
-        append_tag_property(output, *tag_text);
+        append_tag_property(output, node.type);
       }
       tag_pending = false;
     }
   };
-  for (const auto& field : fields_of(type)) {
-    flush_tag(field.key_view() > tag_key);
+  for (const auto& field : fields_of(node.type)) {
+    flush_tag(field.key_view() > key_of_tag);
     if (required_only && !field.required) {
       continue;
     }
@@ -267,7 +268,6 @@ consteval void append_object_keys(std::vector<char>& output, const std::meta::in
 consteval void append_object_schema(std::vector<char>& output, const schema_node node,
                                     schema_keywords keywords,
                                     const schema_references& references) {
-  const auto tag_text = node.tagged ? tag_of(node.type) : schema_text{};
   for (auto& keyword : extra_keywords(node.type)) {
     if (!std::ranges::contains(keywords, keyword.key, &schema_keyword::key)) {
       keywords.push_back(std::move(keyword));
@@ -276,12 +276,12 @@ consteval void append_object_schema(std::vector<char>& output, const schema_node
   keywords.push_back({.key = "additionalProperties", .value = "false"});
   keywords.push_back(written_keyword("properties", [&](std::vector<char>& properties) {
     properties.push_back('{');
-    append_object_keys(properties, node.type, tag_text, false, references);
+    append_object_keys(properties, node, false, references);
     properties.push_back('}');
   }));
   keywords.push_back(written_keyword("required", [&](std::vector<char>& required) {
     required.push_back('[');
-    append_object_keys(required, node.type, tag_text, true, references);
+    append_object_keys(required, node, true, references);
     required.push_back(']');
   }));
   append_typed_schema(output, "object", std::move(keywords));

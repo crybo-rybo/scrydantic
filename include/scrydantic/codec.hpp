@@ -314,9 +314,10 @@ template <typename Type> [[nodiscard]] Status validate(const Type& value) {
 /// the key that encoding, decoding, schemas, and failure paths use. The keys are
 /// in lexical order, which is also the order JsonView::key_at() visits a parsed
 /// object in. Every declared member is listed, also one that decoding treats as
-/// optional. A tagged alternative also carries its tag under `"type"` when it is
-/// encoded in a variant; that key is not a member, so it is not listed. A type
-/// that is not an Encodable plain aggregate fails to compile with the reason.
+/// optional. A tagged alternative also carries its tag under its tag key,
+/// `"type"` or the one its scrydantic::tag_key names, when it is encoded in a
+/// variant; that key is not a member, so it is not listed. A type that is not an
+/// Encodable plain aggregate fails to compile with the reason.
 ///
 /// Usage: `for (const std::string_view key : scrydantic::keys_v<Request>)`, or
 /// `template for` to visit the keys at compile time.
@@ -328,7 +329,8 @@ inline constexpr auto keys_v = detail::object_keys<std::remove_cvref_t<Type>>();
 ///
 /// `tags_v<Variant>[index]` is the scrydantic::tag of
 /// `std::variant_alternative_t<index, Variant>`: the value that the encoded
-/// object carries under `"type"`, and that decoding selects the alternative by.
+/// object carries under the variant's tag key, `"type"` or the one a
+/// scrydantic::tag_key names, and that decoding selects the alternative by.
 /// A host that receives the tag apart from the object, such as the event name
 /// of a server-sent event, can match it here before it decodes. The list pairs
 /// a tag with every alternative, so a variant with an alternative that carries

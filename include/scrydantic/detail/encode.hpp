@@ -303,11 +303,12 @@ template <spelling Spelling, typename Map>
   return {};
 }
 
-// Whether the keys of Type's members are UTF-8, and its tag too when Tagged. A
-// scrydantic::name or scrydantic::tag can hold any bytes.
+// Whether the keys of Type's members are UTF-8, and its tag and tag key too
+// when Tagged. A scrydantic::name, tag, or tag_key can hold any bytes.
 template <typename Type, bool Tagged>
 inline constexpr bool utf8_keys_v =
-    (!Tagged || is_utf8(tag_of(^^Type).value_or(""))) &&
+    (!Tagged ||
+     (is_utf8(tag_of(^^Type).value_or("")) && is_utf8(tag_key_of(^^Type)))) &&
     std::ranges::all_of(fields_v<Type>, [](const field_layout& field) {
       return is_utf8(field.key_view());
     });
@@ -347,7 +348,7 @@ template <typename Type, bool Tagged, spelling Spelling>
   template for (constexpr field_layout field : fields_v<Type>) {
     constexpr std::meta::info member = field.member;
     constexpr std::string_view key = field.key_view();
-    if constexpr (Tagged && key > tag_key) {
+    if constexpr (Tagged && key > tag_key_of(^^Type)) {
       write_tag();
     }
     const auto& owner = declaring_object<field.path, field.depth>(value);

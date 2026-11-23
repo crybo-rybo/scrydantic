@@ -149,17 +149,18 @@ consteval bool append_default_object(std::string& output, const Type& value,
     }
     first = false;
   };
+  constexpr std::string_view key_of_tag = tag_key_of(^^Type);
   bool tag_pending = Tagged;
   const auto write_tag = [&] {
     if (tag_pending) {
       separate();
-      append_json_string(output, tag_key);
+      append_json_string(output, key_of_tag);
       output.push_back(':');
       append_json_string(output, tag_of(^^Type).value_or(""));
       tag_pending = false;
     }
   };
-  if (Tagged && !is_utf8(tag_of(^^Type).value_or(""))) {
+  if (Tagged && !(is_utf8(tag_of(^^Type).value_or("")) && is_utf8(key_of_tag))) {
     return false;
   }
   template for (constexpr field_layout field : fields_v<Type>) {
@@ -168,7 +169,7 @@ consteval bool append_default_object(std::string& output, const Type& value,
     if (!is_utf8(key)) {
       return false;
     }
-    if (key > tag_key) {
+    if (key > key_of_tag) {
       write_tag();
     }
     const auto& owner = declaring_object<field.path, field.depth>(value);

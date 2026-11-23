@@ -527,7 +527,7 @@ template <typename Type, bool Tagged>
   bool known = true;
   const auto undeclared = [&here, &known](const std::string_view key) {
     if constexpr (!ignores_unknown(^^Type)) {
-      if ((!Tagged || key != tag_key) && !here.stopped()) {
+      if ((!Tagged || key != tag_key_of(^^Type)) && !here.stopped()) {
         report_unknown_key(key, here);
         known = false;
       }
@@ -756,19 +756,30 @@ template <typename Variant, std::meta::info Alternative>
 }
 
 // Reads `view`, an object, as the tagged alternative of Variant that its tag
-// names. A missing or unknown tag leaves no alternative to check the object
-// against, so it is the variant's only issue.
+// names. An object without the tag is the alternative that carries
+// scrydantic::default_tag, where the variant has one. Otherwise a missing tag,
+// like an unknown one, leaves no alternative to check the object against, so it
+// is the variant's only issue.
 template <typename Variant>
 [[nodiscard]] decode_result<Variant> read_tagged(const json_node view,
                                                  const decode_cursor& here) {
+  // The checks admit one tag key for a variant's tagged alternatives, and the
+  // first alternative that is an object is one of them.
+  static constexpr std::string_view key_of_tag =
+      tag_key_of(kind_alternative_v<Variant, alternative_kind::object>);
   static constexpr std::string_view tags = tag_names(^^Variant);
-  const decode_cursor tag = here.member(tag_key);
-  const auto discriminator = view.find(tag_key);
+  constexpr std::meta::info without_tag = default_alternative_of(^^Variant);
+  const decode_cursor tag = here.member(key_of_tag);
+  const auto discriminator = view.find(key_of_tag);
   if (!discriminator) {
-    tag.report(IssueKind::missing_tag,
-               std::string{"is a required member; must be one of: "} +
-                   std::string{tags});
-    return decode_failed<Variant>();
+    if constexpr (without_tag != std::meta::info{}) {
+      return read_alternative<Variant, without_tag>(view, here);
+    } else {
+      tag.report(IssueKind::missing_tag,
+                 std::string{"is a required member; must be one of: "} +
+                     std::string{tags});
+      return decode_failed<Variant>();
+    }
   }
 
   const auto selected = discriminator.string();

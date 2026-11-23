@@ -25,9 +25,6 @@
 // which of those three asks it.
 namespace scrydantic::detail {
 
-// The key under which a tagged variant alternative carries its discriminator.
-inline constexpr std::string_view tag_key = "type";
-
 // The closed set of shapes the codec knows. Leaves come first, so a check can split
 // them from the composites with one comparison.
 enum class value_kind : std::uint8_t {
@@ -388,8 +385,32 @@ consteval std::optional<std::string_view> tag_of(const std::meta::info type) {
   return annotated_text(plain_type(type), ^^tag);
 }
 
+// The key under which a tagged variant alternative carries its tag: the one its
+// scrydantic::tag_key names, or else "type". The schema's tag property and its
+// `required` entry, the encoded object, decoding, the paths of the missing_tag
+// and unknown_tag issues, a default written to a schema, and the check that no
+// member takes the key all read it here.
+consteval std::string_view tag_key_of(const std::meta::info type) {
+  return annotated_text(plain_type(type), ^^tag_key).value_or("type");
+}
+
+// Whether a tagged alternative is the one that an object without the tag key
+// is, which its scrydantic::default_tag says.
+consteval bool is_default_tagged(const std::meta::info type) {
+  return has_annotation(plain_type(type), ^^default_tag_t);
+}
+
 consteval bool ignores_unknown(const std::meta::info type) {
   return has_annotation(plain_type(type), ^^ignore_unknown_t);
+}
+
+// Whether `entity` carries an annotation that says something of a class alone:
+// what its objects are as variant alternatives, or which members decoding
+// reads. The checks ask it of a member and of a function, which are neither.
+consteval bool has_class_annotation(const std::meta::info entity) {
+  return has_annotation(entity, ^^tag) || has_annotation(entity, ^^tag_key) ||
+         has_annotation(entity, ^^default_tag_t) ||
+         has_annotation(entity, ^^ignore_unknown_t);
 }
 
 // The annotation that a member of a synthesized argument object carries when
@@ -448,7 +469,7 @@ consteval bool is_flattened(const std::meta::info member) {
 // alternative share the numbers: a JSON integer within the integer
 // alternative's range is that alternative, and any other number the
 // floating-point one. And aggregates that each carry a scrydantic::tag share
-// the objects, told apart by the tag under tag_key. A variant of such
+// the objects, told apart by the tag under their tag key. A variant of such
 // aggregates alone, the tagged union, is the case where every alternative is
 // an object.
 //
@@ -501,6 +522,18 @@ consteval alternative_kind alternative_kind_of(const std::meta::info alternative
 consteval bool is_tagged_alternative(const std::meta::info alternative) {
   return kind_of(alternative) == value_kind::aggregate &&
          tag_of(alternative).has_value();
+}
+
+// The tagged alternative of `variant` that an object without the tag key is
+// read as, or the null reflection when the variant has none. The checks admit
+// at most one.
+consteval std::meta::info default_alternative_of(const std::meta::info variant) {
+  for (const auto alternative : alternatives_of(variant)) {
+    if (is_tagged_alternative(alternative) && is_default_tagged(alternative)) {
+      return alternative;
+    }
+  }
+  return {};
 }
 
 // The first alternative of `variant` that has `kind`, or the null reflection
@@ -689,10 +722,10 @@ consteval std::string_view member_prefix(const std::string_view key) {
   return static_string(text);
 }
 
-// `"type":"<tag>"`, the member a tagged alternative's object gains.
+// `"<tag key>":"<tag>"`, the member a tagged alternative's object gains.
 consteval std::string_view tag_member(const std::meta::info alternative) {
   std::string text{};
-  append_json_string(text, tag_key);
+  append_json_string(text, tag_key_of(alternative));
   text.push_back(':');
   append_json_string(text, *tag_of(alternative));
   return static_string(text);

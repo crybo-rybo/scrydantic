@@ -32,12 +32,14 @@ enum class IssueKind : std::uint8_t {
   unknown_member,
   /// A string that names none of an enumeration's declared enumerators.
   unknown_enumerator,
-  /// A tagged variant's object has no `type` member, so no alternative was
-  /// chosen and none of its other members were checked.
+  /// A tagged variant's object has no member under the tag key, `type` or the
+  /// one a scrydantic::tag_key names, and no alternative carries
+  /// scrydantic::default_tag, so no alternative was chosen and none of its
+  /// other members were checked.
   missing_tag,
-  /// A tagged variant's `type` member is not a string naming one of its
-  /// declared tags, so no alternative was chosen and none of its other members
-  /// were checked.
+  /// A tagged variant's member under the tag key is not a string naming one of
+  /// its declared tags, so no alternative was chosen and none of its other
+  /// members were checked.
   unknown_tag,
   /// An array whose length is not its fixed-size type's.
   wrong_size,
