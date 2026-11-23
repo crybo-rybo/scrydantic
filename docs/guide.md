@@ -13,6 +13,7 @@ in prose, but not in code.
 - [Tools](#tools)
 - [Working with raw JSON](#working-with-raw-json)
 - [Compile-time errors](#compile-time-errors)
+- [For library authors](#for-library-authors)
 
 ## Models
 
@@ -471,6 +472,9 @@ open_ticket(scrydantic::Json{.text = R"({"title":"Oil the door"})"})->text; // 2
 class, returns the name, description, and input schema of each tool as
 compile-time constants, for a manifest that needs no handlers.
 
+**Without `tool`.** To call any function with JSON arguments and keep its typed
+result, see [For library authors](#for-library-authors).
+
 ## Working with raw JSON
 
 - `Json` holds JSON text in its `text` member. Making one does not parse it.
@@ -501,3 +505,115 @@ The concepts `SupportedValue`, `Encodable`, `Decodable`, `ToolArguments`,
 write a library on top of Scrydantic, `<scrydantic/diagnostics.hpp>` gives you
 the reason as text, such as `encodable_diagnostic<T>()`, so that your own
 functions can fail the same way.
+
+## For library authors
+
+A library on top of Scrydantic may call functions with JSON arguments by rules
+of its own. A command, a route, or a remote procedure is not a tool with a
+description for a model, and what it returns may not become JSON at all. The
+steps that `bind` is made of are public for this, and none of them needs a
+`tool` annotation:
+
+- `arguments_t<^^fn>` is the argument object of a function, formed from its
+  parameters as **Parameters** describes for a tool. It is an ordinary reflected
+  type: `input_schema_v` gives its schema, `decode` reads it, and `keys_v`
+  lists its keys.
+- `apply<^^fn>(std::move(arguments))` calls the function with that object and
+  returns exactly what the function returns: any type, including `void`, a
+  reference, a `Result`, and a type that Scrydantic cannot encode.
+- `arguments_diagnostic<^^fn>("mylib::add")` is the reason that a function's
+  parameters cannot form an argument object, as text that starts with the name
+  of your own function. It is empty when they can.
+- `annotated_functions_of(^^scope, ^^annotation)` lists the functions of a
+  namespace or a class that carry your own annotation, in declaration order.
+
+Here a small library runs a function as a command. It reads the schema at
+compile time, decodes the arguments from a `JsonView`, calls the function, and
+gets its typed result, a duration, which it prints in its own way:
+
+```cpp
+namespace shell {
+
+struct command {}; // this library's own annotation
+
+template <std::meta::info Function,
+          typename Binding = typename[:scrydantic::binding_of(Function, ^^void):]>
+std::string run(const scrydantic::JsonView& input) {
+  constexpr std::string_view problem =
+      scrydantic::arguments_diagnostic<Function>("shell::run");
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return {};
+  } else {
+    using Arguments = scrydantic::arguments_t<Function, void, Binding>;
+    static constexpr std::string_view schema = scrydantic::input_schema_v<Arguments>;
+
+    auto arguments = scrydantic::decode<Arguments>(input);
+    if (!arguments) {
+      return arguments.error().message + "; expected " + std::string{schema};
+    }
+    const std::chrono::seconds left =
+        scrydantic::apply<Function, void, Binding>(std::move(*arguments));
+    return std::to_string(left.count()) + " s";
+  }
+}
+
+} // namespace shell
+
+namespace timers {
+[[= shell::command{}]]
+std::chrono::seconds remaining(std::string name, std::int32_t laps);
+
+[[= shell::command{}]]
+std::chrono::seconds snooze();
+}
+
+const auto input = scrydantic::JsonView::parse(R"({"name":"tea","laps":2})");
+shell::run<^^timers::remaining>(*input); // 180 s
+
+const auto short_input = scrydantic::JsonView::parse(R"({"name":"tea"})");
+shell::run<^^timers::remaining>(*short_input);
+// $.laps is a required member; expected {"additionalProperties":false,
+//  "properties":{"laps":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"},
+//                "name":{"type":"string"}},
+//  "required":["laps","name"],"type":"object"}
+```
+
+A function that cannot be bound fails once, under the library's name:
+
+```text
+shell::run<^^timers::reset>(): timers::reset has parameter `clock`: timers::Clock* is not a supported reflected value
+```
+
+**The `Binding` parameter.** A function's parameter names come from the
+declarations that the calling translation unit has seen, and `binding_of`
+records them in a type. `arguments_t` and `apply` take that type as the template
+parameter after the context, and compute it by default. A template of your own,
+like `run` above, must compute the same default on its own parameter list and
+pass it on. Then two translation units that declare one function with different
+parameter names each get their own code. `bind` has a `Tools` parameter for the
+same reason, with `tools_of` and `toolbox_tools_of` as its defaults.
+
+**Context and objects.** A call context is the second template argument, as
+for `bind`, and goes first in the call. A non-static member function is called
+on an object, which goes before the context. An explicit object parameter is
+initialized from that object:
+
+```cpp
+scrydantic::apply<^^greet, Session>(session, std::move(*arguments));
+scrydantic::apply<^^Timer::lap, Session>(timer, session, std::move(*arguments));
+```
+
+**Finding your functions.** `annotated_functions_of` is the walk that `bind`
+finds tools with. It skips the templates and namespace aliases in a namespace,
+on which `std::meta::annotations_of` throws:
+
+```cpp
+template for (constexpr auto function : std::define_static_array(
+                  scrydantic::annotated_functions_of(^^timers, ^^shell::command))) {
+  std::cout << std::meta::identifier_of(function) << ' '
+            << scrydantic::keys_v<scrydantic::arguments_t<function>>.size() << '\n';
+}
+// remaining 2
+// snooze 0
+```
