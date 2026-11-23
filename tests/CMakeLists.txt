@@ -141,9 +141,13 @@ add_executable(
   codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
   codec/constraint_tests.cpp
+  codec/enumerator_name_tests.cpp
+  codec/json_schema_tests.cpp
   codec/map_tests.cpp
   codec/number_spelling_tests.cpp
   codec/validator_tests.cpp
+  tools/json_tool_tests.cpp
+  tools/output_schema_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
 )
@@ -234,7 +238,12 @@ scrydantic_add_compile_fail_test(
 scrydantic_add_compile_fail_test(
   unsupported-schema-root
   unsupported_schema_root.cpp
-  "does not satisfy scrydantic::SupportedValue: scrydantic::Json is raw JSON, which has no schema"
+  "does not satisfy scrydantic::SupportedValue: std::basic_string_view<char> is encode-only borrowed text; decoding and schemas take std::string"
+)
+scrydantic_add_compile_fail_test(
+  constrained-json
+  constrained_json.cpp
+  "Envelope::payload: carries scrydantic::length, which applies to std::string members, not to scrydantic::Json"
 )
 scrydantic_add_compile_fail_test(
   untagged-variant
@@ -245,6 +254,21 @@ scrydantic_add_compile_fail_test(
   duplicate-key
   duplicate_key.cpp
   "does not satisfy scrydantic::Encodable: Limits has members limit and max_tokens that both map to the JSON key"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-enumerator-name
+  duplicate_enumerator_name.cpp
+  "does not satisfy scrydantic::Encodable: Level has enumerators low and minimum that both map to the JSON string \"low\""
+)
+scrydantic_add_compile_fail_test(
+  two-enumerator-names
+  two_enumerator_names.cpp
+  "does not satisfy scrydantic::Decodable: Gauge::level: Level::low has more than one scrydantic::name annotation"
+)
+scrydantic_add_compile_fail_test(
+  annotated-enumerator
+  annotated_enumerator.cpp
+  "does not satisfy scrydantic::SupportedValue: Gauge::level: Level::high carries scrydantic::description, which does not apply to enumerators; an enumerator takes only scrydantic::name"
 )
 scrydantic_add_compile_fail_test(
   endless-recursion

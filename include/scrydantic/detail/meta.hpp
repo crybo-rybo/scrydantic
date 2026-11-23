@@ -22,9 +22,9 @@
 
 namespace scrydantic::detail {
 
-// The three value families. They share one checker and differ only in the leaves
-// they admit and in whether a value must be storable, since only decoding builds
-// values.
+// The three value families. They share one checker. Encoding only reads a value,
+// so `encodable` alone admits std::string_view and a value that cannot be stored.
+// Only `supported` has a schema, so it alone needs a name for each definition.
 enum class value_family : std::uint8_t {
   supported,
   encodable,
@@ -177,12 +177,6 @@ private:
                  : problem(path, shown,
                            "is encode-only borrowed text; decoding and schemas "
                            "take std::string");
-    case value_kind::json:
-      return family_ == value_family::supported
-                 ? problem(path, shown,
-                           "is raw JSON, which has no schema; it is Encodable and "
-                           "Decodable but not a SupportedValue")
-                 : std::string{};
     case value_kind::enumeration:
       return check_enum(plain_type(shown), path);
     default:
@@ -239,6 +233,48 @@ private:
     if (enumerators.empty()) {
       return problem(path, type, "has no enumerators");
     }
+    for (const auto enumerator : enumerators) {
+      if (auto text = check_enumerator_annotations(enumerator, path); !text.empty()) {
+        return text;
+      }
+    }
+    if (auto text = check_enumerator_values(type, path); !text.empty()) {
+      return text;
+    }
+    return check_enumerator_names(type, path);
+  }
+
+  // An enumerator takes scrydantic::name and no other annotation of
+  // Scrydantic's, since nothing reads one there. The test is the namespace the
+  // annotation's type is declared in, not a list of today's annotations, so one
+  // added later is rejected here until an enumerator gives it a meaning.
+  static consteval std::string
+  check_enumerator_annotations(const std::meta::info enumerator,
+                               const std::string& path) {
+    if (annotation_count(enumerator, ^^name) > 1) {
+      return problem(path, enumerator, "has more than one scrydantic::name annotation");
+    }
+    for (const auto annotation : std::meta::annotations_of(enumerator)) {
+      const auto type = plain_type(std::meta::type_of(annotation));
+      if (std::meta::has_parent(type) &&
+          std::meta::parent_of(type) == (^^::scrydantic) &&
+          !annotation_matches(annotation, ^^name)) {
+        const auto named = std::meta::has_template_arguments(type)
+                               ? std::meta::template_of(type)
+                               : type;
+        return problem(
+            path, enumerator,
+            "carries scrydantic::" + owned_text(std::meta::identifier_of(named)) +
+                ", which does not apply to enumerators; an enumerator "
+                "takes only scrydantic::name");
+      }
+    }
+    return {};
+  }
+
+  static consteval std::string check_enumerator_values(const std::meta::info type,
+                                                       const std::string& path) {
+    const auto enumerators = std::meta::enumerators_of(type);
     for (std::size_t left = 0; left < enumerators.size(); ++left) {
       for (std::size_t right = left + 1; right < enumerators.size(); ++right) {
         if (std::meta::constant_of(enumerators[left]) ==
@@ -249,6 +285,27 @@ private:
                              " and " +
                              owned_text(std::meta::identifier_of(enumerators[right])) +
                              " with one value, so that value has no single name");
+        }
+      }
+    }
+    return {};
+  }
+
+  // Two enumerators with one JSON name would make that string decode to
+  // whichever is declared first, as two members with one key would write it twice.
+  static consteval std::string check_enumerator_names(const std::meta::info type,
+                                                      const std::string& path) {
+    const auto enumerators = std::meta::enumerators_of(type);
+    for (std::size_t left = 0; left < enumerators.size(); ++left) {
+      for (std::size_t right = left + 1; right < enumerators.size(); ++right) {
+        const auto name = json_name_of(enumerators[left]);
+        if (name == json_name_of(enumerators[right])) {
+          return problem(
+              path, type,
+              "has enumerators " +
+                  owned_text(std::meta::identifier_of(enumerators[left])) + " and " +
+                  owned_text(std::meta::identifier_of(enumerators[right])) +
+                  " that both map to the JSON string \"" + owned_text(name) + "\"");
         }
       }
     }
@@ -702,6 +759,16 @@ consteval bool is_acknowledgment(const std::meta::info result) {
   return type == (^^void) || type == plain_type(^^Status);
 }
 
+// The value a tool's return type sends to the model, which is the type its
+// output schema describes: the value type of a Result, or else the type itself.
+consteval std::meta::info result_value_type(const std::meta::info result) {
+  const auto type = plain_type(result);
+  const bool is_result =
+      is_specialization_of(type, ^^std::expected) &&
+      plain_type(std::meta::template_arguments_of(type)[1]) == (^^Error);
+  return is_result ? std::meta::template_arguments_of(type)[0] : result;
+}
+
 // Why a tool's return type cannot be sent to the model; empty when it can. The
 // text follows "returns", so it completes a sentence about the handler.
 consteval std::string result_type_problem(const std::meta::info result) {
@@ -711,13 +778,7 @@ consteval std::string result_type_problem(const std::meta::info result) {
   if (is_acknowledgment(result)) {
     return {};
   }
-  const auto type = plain_type(result);
-  const bool is_result =
-      is_specialization_of(type, ^^std::expected) &&
-      plain_type(std::meta::template_arguments_of(type)[1]) == (^^Error);
-  const auto reason =
-      value_problem(is_result ? std::meta::template_arguments_of(type)[0] : result,
-                    value_family::supported);
+  const auto reason = value_problem(result_value_type(result), value_family::supported);
   if (reason.empty()) {
     return {};
   }

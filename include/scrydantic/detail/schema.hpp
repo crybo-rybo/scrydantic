@@ -95,6 +95,18 @@ consteval void append_described_type(std::vector<char>& output,
   output.push_back('}');
 }
 
+// A Json holds any JSON value, so its schema is the empty one, which accepts
+// every value. The checks admit no constraint on a Json, so it takes no keywords.
+consteval void append_any_schema(std::vector<char>& output,
+                                 const schema_text description_text) {
+  output.push_back('{');
+  if (description_text.has_value()) {
+    append_json_literal(output, "\"description\":");
+    append_json_string(output, *description_text);
+  }
+  output.push_back('}');
+}
+
 // An integer has one lower and one upper bound: the constraints' where they set
 // one, which a valid constraint keeps within the type, and the type's own where
 // they do not.
@@ -129,7 +141,7 @@ consteval void append_enum_schema(std::vector<char>& output, const std::meta::in
     if (!first) {
       output.push_back(',');
     }
-    append_json_string(output, std::meta::identifier_of(enumerator));
+    append_json_string(output, json_name_of(enumerator));
     first = false;
   }
   append_json_literal(output, "],\"type\":\"string\"}");
@@ -319,6 +331,8 @@ consteval void append_schema(std::vector<char>& output, const std::meta::info re
     return append_described_type(output, description_text, "number", keywords);
   case value_kind::string:
     return append_described_type(output, description_text, "string", keywords);
+  case value_kind::json:
+    return append_any_schema(output, description_text);
   case value_kind::enumeration:
     return append_enum_schema(output, type, description_text);
   case value_kind::optional:

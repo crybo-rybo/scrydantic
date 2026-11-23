@@ -4,6 +4,7 @@
 #error "Scrydantic requires a compiler implementing P2996 (GCC 16.2 or newer)"
 #endif
 
+#include <optional>
 #include <scrydantic/detail/tools.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
@@ -50,6 +51,16 @@ template <typename Context = void> struct BoundTool {
   std::string description{};
   /// Generated JSON Schema of the tool's argument object.
   Json input_schema{};
+  /// Generated JSON Schema of what a successful call returns, or empty when the
+  /// tool returns no value.
+  ///
+  /// bind() sets it to schema_v<T> for a function that returns `T` or
+  /// `Result<T>`, and leaves it empty for one that returns `void` or Status,
+  /// whose `{}` is an acknowledgment rather than a value with a contract. It is
+  /// for a host to publish beside `input_schema`; `invoke` does not read it. A
+  /// tool built by hand, such as one around a bind_handler() handler, may leave
+  /// it empty or supply a schema of its own.
+  std::optional<Json> output_schema{};
   /// Handler that decodes the arguments strictly, calls the C++ function, and
   /// encodes what it returns.
   ToolFunction<Context> invoke{};
@@ -65,6 +76,9 @@ struct ToolDescriptor {
   std::string_view description{};
   /// Generated JSON Schema of the tool's argument object.
   std::string_view input_schema{};
+  /// Generated JSON Schema of what a successful call returns, as
+  /// BoundTool::output_schema holds it, or empty when the tool returns no value.
+  std::string_view output_schema{};
 };
 
 } // namespace scrydantic

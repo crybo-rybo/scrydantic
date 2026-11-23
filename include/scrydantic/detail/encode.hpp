@@ -172,12 +172,13 @@ template <spelling Spelling, typename Number>
   return {};
 }
 
-// Whether every enumerator of Enum has a name that is UTF-8. An identifier is,
-// wherever the ordinary literal encoding is UTF-8.
+// Whether every enumerator of Enum has a JSON name that is UTF-8. An identifier
+// is, wherever the ordinary literal encoding is UTF-8; a scrydantic::name is
+// whatever bytes its literal holds, as a member's key is.
 template <typename Enum>
 inline constexpr bool utf8_names_v =
     std::ranges::all_of(enumerators_v<Enum>, [](const std::meta::info enumerator) {
-      return is_utf8(std::meta::identifier_of(enumerator));
+      return is_utf8(json_name_of(enumerator));
     });
 
 template <typename Enum>
@@ -187,7 +188,7 @@ template <typename Enum>
   }
   template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
     if (value == [:enumerator:]) {
-      output.append(quoted(std::meta::identifier_of(enumerator)));
+      output.append(quoted(json_name_of(enumerator)));
       return {};
     }
   }
