@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <meta>
 #include <optional>
 #include <scrydantic/detail/constraints.hpp>
@@ -10,6 +12,7 @@
 #include <scrydantic/detail/keywords.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
+#include <scrydantic/field_descriptor.hpp>
 #include <span>
 #include <string>
 #include <string_view>
@@ -28,8 +31,6 @@
 // as the "type":"object" that tool APIs require of an input schema, and a schema
 // whose only recursion is its root needs no "$defs" at all.
 namespace scrydantic::detail {
-
-using schema_text = std::optional<std::string_view>;
 
 using schema_keywords = std::vector<schema_keyword>;
 
@@ -174,12 +175,12 @@ consteval void append_map_schema(std::vector<char>& output, const std::meta::inf
   append_typed_schema(output, "object", std::move(keywords));
 }
 
-// The "type" property a tagged alternative's schema gains.
+// The property a tagged alternative's schema gains under its tag key.
 consteval void append_tag_property(std::vector<char>& output,
-                                   const std::string_view tag_text) {
-  append_json_string(output, tag_key);
+                                   const std::meta::info alternative) {
+  append_json_string(output, tag_key_of(alternative));
   append_json_literal(output, ":{\"enum\":[");
-  append_json_string(output, tag_text);
+  append_json_string(output, *tag_of(alternative));
   append_json_literal(output, "],\"type\":\"string\"}");
 }
 
@@ -220,13 +221,24 @@ consteval schema_keywords value_keywords(const std::meta::info member) {
   return keywords;
 }
 
+// The schema of one field: the value of its key in its object's `properties`.
+// fields_v publishes a field's schema from here too, so the two cannot differ.
+consteval void append_field_schema(std::vector<char>& output, const field_layout& field,
+                                   const schema_references& references) {
+  append_schema(output, value_type_of(field.member), member_keywords(field),
+                value_keywords(field.member), references);
+}
+
 // Writes the `properties` members, or with `required_only` the `required` names,
-// merging the tag key into its sorted position when there is one.
-consteval void append_object_keys(std::vector<char>& output, const std::meta::info type,
-                                  const schema_text tag_text, const bool required_only,
+// merging the tag key of a tagged node into its sorted position. The tag is
+// required but of the alternative that an object without it is read as, whose
+// schema keeps the property and leaves its key out of `required`.
+consteval void append_object_keys(std::vector<char>& output, const schema_node node,
+                                  const bool required_only,
                                   const schema_references& references) {
+  const auto key_of_tag = tag_key_of(node.type);
   bool first = true;
-  bool tag_pending = tag_text.has_value();
+  bool tag_pending = node.tagged && !(required_only && is_default_tagged(node.type));
   const auto separate = [&output, &first] {
     if (!first) {
       output.push_back(',');
@@ -237,15 +249,15 @@ consteval void append_object_keys(std::vector<char>& output, const std::meta::in
     if (tag_pending && before) {
       separate();
       if (required_only) {
-        append_json_string(output, tag_key);
+        append_json_string(output, key_of_tag);
       } else {
-        append_tag_property(output, *tag_text);
+        append_tag_property(output, node.type);
       }
       tag_pending = false;
     }
   };
-  for (const auto& field : fields_of(type)) {
-    flush_tag(field.key_view() > tag_key);
+  for (const auto& field : fields_of(node.type)) {
+    flush_tag(field.key_view() > key_of_tag);
     if (required_only && !field.required) {
       continue;
     }
@@ -253,8 +265,7 @@ consteval void append_object_keys(std::vector<char>& output, const std::meta::in
     append_json_string(output, field.key_view());
     if (!required_only) {
       output.push_back(':');
-      append_schema(output, std::meta::type_of(field.member), member_keywords(field),
-                    value_keywords(field.member), references);
+      append_field_schema(output, field, references);
     }
   }
   flush_tag(true);
@@ -267,7 +278,6 @@ consteval void append_object_keys(std::vector<char>& output, const std::meta::in
 consteval void append_object_schema(std::vector<char>& output, const schema_node node,
                                     schema_keywords keywords,
                                     const schema_references& references) {
-  const auto tag_text = node.tagged ? tag_of(node.type) : schema_text{};
   for (auto& keyword : extra_keywords(node.type)) {
     if (!std::ranges::contains(keywords, keyword.key, &schema_keyword::key)) {
       keywords.push_back(std::move(keyword));
@@ -276,12 +286,12 @@ consteval void append_object_schema(std::vector<char>& output, const schema_node
   keywords.push_back({.key = "additionalProperties", .value = "false"});
   keywords.push_back(written_keyword("properties", [&](std::vector<char>& properties) {
     properties.push_back('{');
-    append_object_keys(properties, node.type, tag_text, false, references);
+    append_object_keys(properties, node, false, references);
     properties.push_back('}');
   }));
   keywords.push_back(written_keyword("required", [&](std::vector<char>& required) {
     required.push_back('[');
-    append_object_keys(required, node.type, tag_text, true, references);
+    append_object_keys(required, node, true, references);
     required.push_back(']');
   }));
   append_typed_schema(output, "object", std::move(keywords));
@@ -312,6 +322,10 @@ consteval void append_node(std::vector<char>& output, const schema_node node,
   append_object_schema(output, node, std::move(keywords), references);
 }
 
+// The schema of each alternative, in alternative order: a tagged one's object
+// with its tag, null for a std::monostate, and any other's as its type has it
+// anywhere. An integer and a floating-point alternative overlap, as a JSON
+// integer is valid against both, which "anyOf" allows and decoding settles.
 consteval void append_alternatives(std::vector<char>& output,
                                    const std::meta::info variant,
                                    const schema_references& references) {
@@ -320,8 +334,14 @@ consteval void append_alternatives(std::vector<char>& output,
     if (!first) {
       output.push_back(',');
     }
-    append_node(output, {.type = plain_type(alternative), .tagged = true}, {},
-                references);
+    if (is_tagged_alternative(alternative)) {
+      append_node(output, {.type = plain_type(alternative), .tagged = true}, {},
+                  references);
+    } else if (alternative_kind_of(alternative) == alternative_kind::null) {
+      append_typed_schema(output, "null", {});
+    } else {
+      append_schema(output, alternative, {}, {}, references);
+    }
     first = false;
   }
 }
@@ -433,12 +453,14 @@ consteval std::string_view static_schema(const std::vector<char>& text) {
   return {std::define_static_string(text), text.size()};
 }
 
+// What a schema of `type` refers to rather than writes in place.
+consteval schema_references references_of(const std::meta::info type) {
+  return {.root = root_node(type), .definitions = definitions_of(type)};
+}
+
 // "$defs" is one more keyword of the root's schema, whatever shape the root has.
 consteval std::string_view make_schema(const std::meta::info type) {
-  const schema_references references{
-      .root = root_node(type),
-      .definitions = definitions_of(type),
-  };
+  const auto references = references_of(type);
   schema_keywords keywords{};
   if (!references.definitions.empty()) {
     keywords.push_back(written_keyword("$defs", [&](std::vector<char>& definitions) {
@@ -471,6 +493,42 @@ template <typename Args> consteval std::string_view checked_input_schema() {
     return make_schema(^^Args);
   } else {
     return {};
+  }
+}
+
+// The fields of a reflected object type, as fields_v lists them, in the order
+// of keys_v. Nothing is decided here: the key and `required` are the field's
+// layout, the description is the annotation the schema reads, and the schema is
+// written by the writer that make_schema(^^Type) writes the field with, against
+// that schema's own references. So it is the text under the key in the schema
+// of Type, and where the field's type can contain itself it is, or holds, a
+// "$ref" into that schema. A type that encoding alone accepts has no schema,
+// and its fields have none either.
+template <typename Type> consteval auto object_fields() {
+  constexpr std::string_view problem = keys_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return std::array<FieldDescriptor, 0>{};
+  } else {
+    constexpr auto layouts = field_layouts_v<Type>;
+    const bool has_schema = value_problem(^^Type, value_family::supported).empty();
+    const auto references = has_schema ? references_of(^^Type) : schema_references{};
+    std::array<FieldDescriptor, layouts.size()> fields{};
+    for (std::size_t index = 0; index < layouts.size(); ++index) {
+      const field_layout& layout = layouts[index];
+      std::vector<char> schema{};
+      if (has_schema) {
+        append_field_schema(schema, layout, references);
+      }
+      fields[index] = FieldDescriptor{
+          .key = layout.key_view(),
+          .description =
+              annotated_text(layout.member, ^^description).value_or(std::string_view{}),
+          .required = layout.required,
+          .schema = has_schema ? static_schema(schema) : std::string_view{},
+      };
+    }
+    return fields;
   }
 }
 

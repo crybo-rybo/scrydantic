@@ -1,12 +1,17 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <meta>
+#include <optional>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/constraints.hpp>
+#include <scrydantic/detail/failure.hpp>
+#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/detail/keywords.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
@@ -15,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 // The compile-time model of bound functions and reflected tools: how a parameter
@@ -24,9 +30,18 @@
 // handlers.
 //
 // A binding may give its functions a call context, a type of the host's choosing
-// that a function receives by const reference as its leading parameter. The
-// consteval functions take it as `context`, the reflection of that type, or of
-// `void` when the binding has none.
+// that a function receives by const reference as its leading parameter, and
+// from which the host's suppliers fill in other parameters. The consteval
+// functions take it as `context`, the reflection of that type, or of `void`
+// when the binding has none.
+namespace scrydantic {
+
+// The host's customization point, which tools.hpp declares for its users and
+// documents.
+template <typename Parameter, typename Context> struct supplier;
+
+} // namespace scrydantic
+
 namespace scrydantic::detail {
 
 // ---- Annotated declarations --------------------------------------------------
@@ -112,29 +127,128 @@ consteval std::size_t object_parameter_count(const std::meta::info function) {
   return has_explicit_object(function) ? 1U : 0U;
 }
 
-consteval bool takes_context(const std::meta::info function,
-                             const std::meta::info context) {
-  const auto parameters = std::meta::parameters_of(function);
-  const auto first = object_parameter_count(function);
-  return parameters.size() > first && is_context_parameter(parameters[first], context);
+// The supplier that a binding's context supplies a parameter of `type` through:
+// supplier<Parameter, Context>, with the parameter's type without references
+// and cv-qualifiers.
+consteval std::meta::info supplier_of(const std::meta::info type,
+                                      const std::meta::info context) {
+  // Parenthesized so clang-format, which does not know `^^`, lays it out.
+  return std::meta::substitute((^^supplier),
+                               {plain_type(type), std::meta::dealias(context)});
 }
 
-// The index of the first parameter the model supplies: after the explicit object
-// parameter and the context, when the function has them.
-consteval std::size_t first_value_index(const std::meta::info function,
-                                        const std::meta::info context) {
-  return object_parameter_count(function) +
-         (takes_context(function, context) ? 1U : 0U);
+// Whether the host has defined that supplier. A binding without a context
+// supplies nothing, so no supplier is looked for.
+consteval bool has_supplier(const std::meta::info type, const std::meta::info context) {
+  return has_context(context) && is_complete_class(supplier_of(type, context));
+}
+
+// Whether a call fills the parameter at `index` from the binding's context
+// rather than from the argument object: the leading `const Context&`, which is
+// the context itself, and a parameter whose type has a supplier, wherever it
+// stands. An explicit object parameter is neither.
+consteval bool is_supplied(const std::meta::info function,
+                           const std::meta::info context, const std::size_t index) {
+  const auto parameters = std::meta::parameters_of(function);
+  const auto first = object_parameter_count(function);
+  return index >= first &&
+         ((index == first && is_context_parameter(parameters[index], context)) ||
+          has_supplier(std::meta::type_of(parameters[index]), context));
+}
+
+// The indices, in a function's parameter list, of the parameters after the
+// explicit object parameter that the context supplies, or of those it does not.
+consteval std::vector<std::size_t> parameter_positions(const std::meta::info function,
+                                                       const std::meta::info context,
+                                                       const bool supplied) {
+  std::vector<std::size_t> positions{};
+  const auto count = std::meta::parameters_of(function).size();
+  for (auto index = object_parameter_count(function); index < count; ++index) {
+    if (is_supplied(function, context, index) == supplied) {
+      positions.push_back(index);
+    }
+  }
+  return positions;
+}
+
+// Where the parameters the context supplies stand, in declaration order.
+consteval std::vector<std::size_t>
+supplied_positions_of(const std::meta::info function, const std::meta::info context) {
+  return parameter_positions(function, context, true);
+}
+
+// Where the parameters the model supplies stand, in declaration order.
+consteval std::vector<std::size_t> value_positions_of(const std::meta::info function,
+                                                      const std::meta::info context) {
+  return parameter_positions(function, context, false);
 }
 
 // The parameters the model supplies, in declaration order.
 consteval std::vector<std::meta::info>
 value_parameters_of(const std::meta::info function, const std::meta::info context) {
-  auto parameters = std::meta::parameters_of(function);
-  parameters.erase(parameters.begin(),
-                   parameters.begin() + static_cast<std::ptrdiff_t>(
-                                            first_value_index(function, context)));
-  return parameters;
+  const auto parameters = std::meta::parameters_of(function);
+  std::vector<std::meta::info> values{};
+  for (const auto position : value_positions_of(function, context)) {
+    values.push_back(parameters[position]);
+  }
+  return values;
+}
+
+// What `supply` of a supplier returns when it is called with the context.
+template <typename Supplier, typename Context>
+using supply_result_t = decltype(Supplier::supply(std::declval<const Context&>()));
+
+// What a call passes for a parameter whose supplier returned a Result: the
+// value in it, as an rvalue unless the supplier returned a reference to the
+// Result.
+template <typename Returned> using result_value_t = decltype(*std::declval<Returned>());
+
+// The type that `supply` of a parameter's supplier returns, or the null
+// reflection when the supplier has no static `supply` that takes a
+// `const Context&`.
+consteval std::meta::info supply_result_of(const std::meta::info type,
+                                           const std::meta::info context) {
+  const std::vector arguments{supplier_of(type, context), std::meta::dealias(context)};
+  // Parenthesized so clang-format, which does not know `^^`, lays it out.
+  const auto result = (^^supply_result_t);
+  return std::meta::can_substitute(result, arguments)
+             ? std::meta::dealias(std::meta::substitute(result, arguments))
+             : std::meta::info{};
+}
+
+// Where one parameter of a call gets its value: from the values the context
+// supplied or from the argument object, and which of them, counted in
+// declaration order.
+struct parameter_source {
+  bool supplied{};
+  std::size_t ordinal{};
+};
+
+consteval parameter_source parameter_source_of(const std::meta::info function,
+                                               const std::meta::info context,
+                                               const std::size_t position) {
+  parameter_source source{.supplied = is_supplied(function, context, position)};
+  for (auto index = object_parameter_count(function); index < position; ++index) {
+    if (is_supplied(function, context, index) == source.supplied) {
+      ++source.ordinal;
+    }
+  }
+  return source;
+}
+
+// How many parameters, after an explicit object parameter, a call passes when
+// it passes the first `values` of the function's value parameters: every one
+// that stands before the next value parameter, which the call leaves, with all
+// after it, to its default argument. Every supplied parameter is among those
+// passed, since none may follow a value parameter that a call can leave out
+// (supplied_order_problem).
+consteval std::size_t passed_parameter_count(const std::meta::info function,
+                                             const std::meta::info context,
+                                             const std::size_t values) {
+  const auto positions = value_positions_of(function, context);
+  return (values < positions.size() ? positions[values]
+                                    : std::meta::parameters_of(function).size()) -
+         object_parameter_count(function);
 }
 
 // How a bound function receives its arguments. A lone parameter of plain aggregate
@@ -180,6 +294,51 @@ consteval std::string synthesized_member_list(const std::meta::info function,
   return list;
 }
 
+// What one member of a synthesized argument object carries: the annotations of
+// its parameter, as the constants they are, in declaration order, and after
+// them a defaulted_argument_t when the parameter has a default argument. Every
+// annotation of the parameter is here, not Scrydantic's alone: a library that
+// reads an annotation of its own off a member finds it where it wrote it.
+template <auto... Annotations> struct member_annotations {};
+
+// The member_annotations of each member of a synthesized argument object, in
+// order. None for the other forms, whose generated code reads no parameter's
+// annotations and never leaves an argument to its default: a lone aggregate
+// parameter is the argument object, which every call is given.
+consteval std::vector<std::meta::info>
+synthesized_member_annotations(const std::meta::info function,
+                               const std::meta::info context) {
+  std::vector<std::meta::info> members{};
+  if (arguments_form_of(function, context) == arguments_form::synthesized) {
+    for (const auto parameter : value_parameters_of(function, context)) {
+      std::vector<std::meta::info> carried{};
+      for (const auto annotation : std::meta::annotations_of(parameter)) {
+        carried.push_back(std::meta::constant_of(annotation));
+      }
+      if (std::meta::has_default_argument(parameter)) {
+        carried.push_back(std::meta::reflect_constant(defaulted_argument_t{}));
+      }
+      members.push_back(std::meta::substitute(^^member_annotations, carried));
+    }
+  }
+  return members;
+}
+
+// Which parameters of a function the binding's context supplies: a '1' for each
+// that it does and a '0' for each other, in declaration order. Empty for a
+// binding without a context, which supplies nothing.
+consteval std::string supplied_parameter_marks(const std::meta::info function,
+                                               const std::meta::info context) {
+  std::string marks{};
+  if (has_context(context)) {
+    const auto count = std::meta::parameters_of(function).size();
+    for (std::size_t index = 0; index < count; ++index) {
+      marks.push_back(is_supplied(function, context, index) ? '1' : '0');
+    }
+  }
+  return marks;
+}
+
 // The text of a reflect_constant_string array, without its terminator.
 template <std::meta::info Text>
 inline constexpr std::string_view constant_text_v{[:Text:], sizeof([:Text:]) - 1U};
@@ -187,27 +346,50 @@ inline constexpr std::string_view constant_text_v{[:Text:], sizeof([:Text:]) - 1
 // One function as a binding sees it: the type binding_of() reflects, and the
 // `Binding` that arguments_t and apply() carry.
 //
-// A function's parameter names come from the declarations of it that precede the
-// point of evaluation, so two translation units can see one function
-// differently. Each such fact is a template argument here, a constant string
-// that GCC mangles by its content, so units that see different facts
-// instantiate differently named code, which the linker cannot merge. The code
-// generated for a binding reads these facts from here and never from the
-// function's declarations, so what a specialization's name records is exactly
-// what its code contains. Everything else it reads from the function, such as
-// the parameter types, the return type, and the object parameter, is part of the
+// A function's parameter names, its parameters' annotations, and which of its
+// parameters have a default argument come from the declarations of it that
+// precede the point of evaluation, so two translation units can see one function
+// differently. Each such fact is a template argument here, a constant that GCC
+// mangles by its content, so units that see different facts instantiate
+// differently named code, which the linker cannot merge. The code generated for
+// a binding reads these facts from here and never from the function's
+// declarations, so what a specialization's name records is exactly what its
+// code contains. Everything else it reads from the function, such as the
+// parameter types, the return type, and the object parameter, is part of the
 // function's type and the same in every unit. `Context` is the binding's call
 // context, which decides whether the leading parameter is an argument.
 //
+// `Supplied` is of another sort: which parameters the context supplies, as
+// supplied_parameter_marks writes it, which follows from the supplier
+// specializations that are declared and not from the function's declarations.
+// C++ itself requires a specialization to be declared before the first use
+// that asks for it, in every unit where one occurs, so a well-formed program
+// answers alike everywhere, and the generated code asks again rather than read
+// the answer from here. A program that breaks that rule needs no diagnostic,
+// and its two views of one function would otherwise share a name; recorded
+// here, they do not.
+//
+// The value of a default argument is the one fact that cannot be recorded:
+// reflection does not read it. A call that leaves an argument out is compiled
+// with the default its own unit sees. So two units that each bind one function
+// that is not inline, and each declare it with a different default for one
+// parameter, which C++ allows, are not kept apart here; their bindings differ in
+// nothing that a name can record.
+//
 // Another fact of the parameter list that a later declaration can change is one
-// more template argument here, gathered by bound_function_of(). No entry point
-// spells the arguments: each carries the binding whole.
-template <std::meta::info Function, std::meta::info Context, std::meta::info Members>
+// more template argument here, gathered by bound_function_of(), before the
+// pack. No entry point spells the arguments: each carries the binding whole.
+template <std::meta::info Function, std::meta::info Context, std::meta::info Members,
+          std::meta::info Supplied, typename... Annotations>
 struct bound_function {
   static constexpr std::meta::info function = Function;
   static constexpr std::meta::info context = Context;
   // The synthesized member names, as synthesized_member_list writes them.
   static constexpr std::string_view members = constant_text_v<Members>;
+  // What each synthesized member carries, as synthesized_member_annotations
+  // lists it: a member_annotations for each.
+  static constexpr std::array<std::meta::info, sizeof...(Annotations)> annotations{
+      ^^Annotations...};
 };
 
 // What binding_of() reflects for a function that cannot be bound: the reason,
@@ -239,12 +421,24 @@ struct bound_tool {
 // units see.
 template <typename... Tools> struct tool_set {};
 
-// The argument object synthesized from a parameter list: one required member per
-// value parameter, named as `Binding` records, of the parameter's type without
-// references or cv-qualifiers. The consteval block runs when the specialization
-// is instantiated, which C++26 permits because the aggregate it completes is a
-// member of that same specialization. The names are read one character at a
-// time, for the reason owned_text gives.
+// The argument object synthesized from a parameter list: one member per value
+// parameter, named and annotated as `Binding` records, of the parameter's type
+// without references or cv-qualifiers. A member that carries its parameter's
+// annotations is to the schemas and the codec a member that was written with
+// them, so a parameter's description, key, constraints, and checks mean what a
+// data member's do, by the same code.
+//
+// A member is required, but for one whose parameter has a default argument.
+// That one is a std::optional of the parameter's type marked defaulted_argument_t
+// (model.hpp), which the input may leave out and which is then disengaged, so
+// that the call can leave the argument out in turn (apply_function in
+// binding.hpp). A data_member_spec has no initializer to give the member
+// instead, and no initializer could hold a default that reflection cannot read.
+//
+// The consteval block runs when the specialization is instantiated, which C++26
+// permits because the aggregate it completes is a member of that same
+// specialization. The names are read one character at a time, for the reason
+// owned_text gives.
 template <typename Binding> struct synthesized_arguments {
   struct type;
 
@@ -260,8 +454,20 @@ template <typename Binding> struct synthesized_arguments {
       ++position;
       std::meta::data_member_options options{};
       options.name = name;
-      members.push_back(std::meta::data_member_spec(
-          plain_type(std::meta::type_of(parameter)), options));
+      options.annotations =
+          std::meta::template_arguments_of(Binding::annotations[members.size()]);
+      const bool defaulted = std::ranges::any_of(
+          options.annotations, [](const std::meta::info annotation) {
+            return plain_type(std::meta::type_of(annotation)) ==
+                   (^^defaulted_argument_t);
+          });
+      const auto type = plain_type(std::meta::type_of(parameter));
+      members.push_back(
+          std::meta::data_member_spec(defaulted ? std::meta::substitute(^^std::optional,
+                                                                        {
+                                                                            type})
+                                                : type,
+                                      options));
     }
     std::meta::define_aggregate(^^type, members);
   }
@@ -322,6 +528,20 @@ consteval std::string entity_name(const std::meta::info entity) {
   return own;
 }
 
+// The annotations that decide which keys an object has, on a function, which
+// has none: its arguments are named after its parameters, and an argument
+// aggregate carries these itself.
+consteval std::string key_annotation_problem(const std::meta::info function) {
+  if (has_annotation(function, ^^flatten_t)) {
+    return "carries scrydantic::flatten, which applies to data members";
+  }
+  if (has_annotation(function, ^^rename_all)) {
+    return "carries scrydantic::rename_all, which applies to classes and enums; a "
+           "tool's arguments keep the names of its parameters";
+  }
+  return {};
+}
+
 consteval std::string tool_annotation_problem(const std::meta::info function) {
   if (annotation_count(function, ^^tool) > 1) {
     return "has more than one scrydantic::tool annotation";
@@ -329,16 +549,15 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
   if (annotation_count(function, ^^name) > 1) {
     return "has more than one scrydantic::name annotation";
   }
-  if (has_annotation(function, ^^description) || has_annotation(function, ^^tag) ||
+  if (has_annotation(function, ^^description) || has_class_annotation(function) ||
       has_annotation(function, ^^skip_null_t) ||
-      has_annotation(function, ^^emit_null_t) ||
-      has_annotation(function, ^^ignore_unknown_t)) {
-    return "carries a codec annotation (description, tag, skip_null, emit_null, or "
-           "ignore_unknown), which applies to data members or classes; a tool's "
-           "description is its scrydantic::tool text";
+      has_annotation(function, ^^emit_null_t)) {
+    return "carries a codec annotation (description, tag, tag_key, default_tag, "
+           "skip_null, emit_null, or ignore_unknown), which applies to data members "
+           "or classes; a tool's description is its scrydantic::tool text";
   }
-  if (has_annotation(function, ^^flatten_t)) {
-    return "carries scrydantic::flatten, which applies to data members";
+  if (auto reason = key_annotation_problem(function); !reason.empty()) {
+    return reason;
   }
   for (const auto annotation : std::meta::annotations_of(function)) {
     if (is_constraint(annotation)) {
@@ -441,17 +660,59 @@ consteval std::string parameter_label(const std::meta::info parameter,
              : "parameter " + decimal(index + 1U);
 }
 
-// Checks each parameter's passing convention: the decoded arguments are moved
-// into the call, so a parameter may take a value, a const reference, or an
-// rvalue reference, and the call context may appear only first. Parameters are
-// numbered as declared, counting an explicit object parameter.
+// Why what a supplier returns cannot fill the parameter it supplies; empty when
+// it can. The parameter is initialized from what `supply` returns for the
+// context, or from the value in the Result it returns, so that must convert to
+// the parameter's type, as an argument must: a value fills a parameter taken by
+// value, by const reference, or by rvalue reference, and only a reference
+// fills one taken by non-const lvalue reference.
+consteval std::string supplier_problem(const std::meta::info parameter,
+                                       const std::meta::info context,
+                                       const std::string& label) {
+  const auto declared = std::meta::type_of(parameter);
+  const auto supplier = display(supplier_of(declared, context));
+  const auto result = supply_result_of(declared, context);
+  if (result == std::meta::info{}) {
+    return "has " + label + ", which " + supplier +
+           " supplies, but that supplier has no static supply() that takes a " +
+           display(context_parameter_type(context));
+  }
+  const bool refusable = is_result_type(result);
+  // Parenthesized so clang-format, which does not know `^^`, lays it out.
+  const auto value = (^^result_value_t);
+  const auto passed =
+      refusable ? std::meta::dealias(std::meta::substitute(value, {result})) : result;
+  if (std::meta::is_convertible_type(passed, declared)) {
+    return {};
+  }
+  return "has " + label + " of type " + display(declared) +
+         ", which cannot be initialized from the " +
+         (refusable ? "value of the " : "") + display(result) + " that " + supplier +
+         "::supply() returns";
+}
+
+// Checks each parameter's passing convention. The decoded arguments are moved
+// into the call, so a parameter that takes one may take a value, a const
+// reference, or an rvalue reference. A supplied parameter takes what its
+// supplier returns, and the call context itself may appear only first.
+// Parameters are numbered as declared, counting an explicit object parameter.
 consteval std::string passing_problem(const std::meta::info function,
                                       const std::meta::info context) {
   const auto parameters = std::meta::parameters_of(function);
-  for (std::size_t index = first_value_index(function, context);
-       index < parameters.size(); ++index) {
+  for (std::size_t index = object_parameter_count(function); index < parameters.size();
+       ++index) {
     const auto type = std::meta::dealias(std::meta::type_of(parameters[index]));
     const auto label = parameter_label(parameters[index], index);
+    if (is_supplied(function, context, index)) {
+      // The context fills its own `const Context&` and needs no supplier to.
+      auto reason = has_supplier(type, context)
+                        ? supplier_problem(parameters[index], context, label)
+                        : std::string{};
+      if (!reason.empty()) {
+        return reason;
+      }
+      continue;
+    }
     if (has_context(context) && plain_type(type) == plain_type(context)) {
       return "has " + label + " of type " + display(plain_type(context)) +
              "; the context is only ever the leading parameter, as " +
@@ -470,51 +731,169 @@ consteval std::string passing_problem(const std::meta::info function,
   return {};
 }
 
-// Rejects a Scrydantic annotation on a parameter the model supplies, which no
-// binding reads: an argument object is synthesized from the parameters' types
-// and names alone, the facts that bound_function keys, and annotations, which
-// accumulate across redeclarations, would be one more fact that two translation
-// units can see differently. Unread, a constraint or a check there would be
-// silently lost, so a constrained argument is a member of an argument aggregate.
+// The name of the first annotation of Scrydantic's own that a parameter
+// carries, or empty when it carries none.
+consteval std::string own_annotation_of(const std::meta::info parameter) {
+  for (const auto annotation : std::meta::annotations_of(parameter)) {
+    if (auto own = own_annotation_name(annotation); !own.empty()) {
+      return own;
+    }
+  }
+  return {};
+}
+
+// Why a parameter that is no member of an argument object takes no Scrydantic
+// annotation, as the end of a sentence about one that carries one.
+consteval std::string unannotated_reason(const std::meta::info function,
+                                         const std::meta::info context,
+                                         const std::size_t index) {
+  const auto type = std::meta::type_of(std::meta::parameters_of(function)[index]);
+  if (index < object_parameter_count(function)) {
+    return "an explicit object parameter is the object the function is called on";
+  }
+  if (!is_supplied(function, context, index)) {
+    return "this parameter is the whole argument object, so annotate the members of " +
+           display(plain_type(type));
+  }
+  return has_supplier(type, context) ? "the host supplies this parameter, through " +
+                                           display(supplier_of(type, context))
+                                     : "the call context is the host's to supply";
+}
+
+// Rejects a Scrydantic annotation on a parameter that is no member of an
+// argument object, where nothing would read it: the explicit object parameter,
+// the call context, and a parameter the context supplies, which are not
+// arguments, and a lone aggregate parameter, which is the whole argument object
+// and whose members carry their own. A parameter that becomes a synthesized
+// member takes what a member takes, and arguments_problem holds it to the
+// member's rules.
 consteval std::string parameter_annotation_problem(const std::meta::info function,
                                                    const std::meta::info context) {
   const auto parameters = std::meta::parameters_of(function);
-  for (std::size_t index = first_value_index(function, context);
-       index < parameters.size(); ++index) {
-    for (const auto annotation : std::meta::annotations_of(parameters[index])) {
-      if (std::meta::parent_of(plain_type(std::meta::type_of(annotation))) ==
-          (^^::scrydantic)) {
-        return "has " + parameter_label(parameters[index], index) +
-               " carrying a Scrydantic annotation, which a parameter cannot hold; "
-               "take an argument aggregate and annotate its member";
+  const bool synthesized =
+      arguments_form_of(function, context) == arguments_form::synthesized;
+  for (std::size_t index = 0; index < parameters.size(); ++index) {
+    const bool member = synthesized && index >= object_parameter_count(function) &&
+                        !is_supplied(function, context, index);
+    const auto own = member ? std::string{} : own_annotation_of(parameters[index]);
+    if (!own.empty()) {
+      return "has " + parameter_label(parameters[index], index) + " carrying " + own +
+             ", which applies to an argument; " +
+             unannotated_reason(function, context, index);
+    }
+  }
+  return {};
+}
+
+// A call that leaves an argument to its default passes nothing after it, so a
+// supplied parameter that stands after a defaulted argument could not be
+// filled in such a call, and its own default argument would be used instead.
+// Empty when no supplied parameter stands there. A lone aggregate parameter is
+// always passed, so nothing follows from its default argument.
+consteval std::string supplied_order_problem(const std::meta::info function,
+                                             const std::meta::info context) {
+  if (arguments_form_of(function, context) != arguments_form::synthesized) {
+    return {};
+  }
+  const auto parameters = std::meta::parameters_of(function);
+  std::optional<std::size_t> defaulted{};
+  for (std::size_t index = object_parameter_count(function); index < parameters.size();
+       ++index) {
+    const bool supplied = is_supplied(function, context, index);
+    if (supplied && defaulted) {
+      return "has " + parameter_label(parameters[index], index) +
+             ", which the context supplies, after " +
+             parameter_label(parameters[*defaulted], *defaulted) +
+             ", which has a default argument; a call that leaves an argument to its "
+             "default passes nothing after it, so declare the supplied parameter "
+             "before it";
+    }
+    if (!supplied && !defaulted && std::meta::has_default_argument(parameters[index])) {
+      defaulted = index;
+    }
+  }
+  return {};
+}
+
+// Two parameters under one JSON key, which scrydantic::name can give them,
+// would be two members of the argument object with one key. `positions` are
+// where the value parameters stand in the parameter list.
+consteval std::string
+parameter_keys_problem(const std::vector<std::meta::info>& values,
+                       const std::vector<std::size_t>& positions) {
+  for (std::size_t left = 0; left < values.size(); ++left) {
+    for (std::size_t right = left + 1; right < values.size(); ++right) {
+      const auto key = json_key_of(values[left]);
+      if (key == json_key_of(values[right])) {
+        return "has " + parameter_label(values[left], positions[left]) + " and " +
+               parameter_label(values[right], positions[right]) +
+               ", which both map to the JSON key \"" + owned_text(key) + "\"";
       }
     }
   }
   return {};
 }
 
+// What the rejection of a parameter adds when the codec cannot read its type at
+// all: such a parameter is often one the host meant to supply, and no supplier
+// of the binding's context supplies it either.
+consteval std::string unsupplied_note(const std::meta::info parameter,
+                                      const std::meta::info context) {
+  const auto type = std::meta::type_of(parameter);
+  if (!has_context(context) || kind_of(plain_type(type)) != value_kind::unsupported) {
+    return {};
+  }
+  return ", and " + display(supplier_of(type, context)) +
+         " is not defined, so the context does not supply it";
+}
+
 consteval std::string arguments_problem(const std::meta::info function,
                                         const std::meta::info context) {
   const auto values = value_parameters_of(function, context);
-  const std::size_t first = first_value_index(function, context);
+  const auto positions = value_positions_of(function, context);
   if (arguments_form_of(function, context) == arguments_form::aggregate) {
     const auto reason =
         tool_arguments_problem(plain_type(std::meta::type_of(values.front())));
     return reason.empty()
                ? std::string{}
-               : "has " + parameter_label(values.front(), first) + ": " + reason;
+               : "has " + parameter_label(values.front(), positions.front()) + ": " +
+                     reason;
   }
   for (std::size_t index = 0; index < values.size(); ++index) {
-    const auto label = parameter_label(values[index], first + index);
+    const auto label = parameter_label(values[index], positions[index]);
     if (!std::meta::has_identifier(values[index])) {
       return "has the unnamed " + label +
              "; an argument synthesized from a parameter is named after it";
     }
-    const auto reason =
-        value_problem(std::meta::type_of(values[index]), value_family::supported);
-    if (!reason.empty()) {
-      return "has " + label + ": " + reason;
+    // A parameter is one argument under one key. An argument aggregate can
+    // flatten a member of its own.
+    if (has_annotation(values[index], ^^flatten_t)) {
+      return "has " + label +
+             ": carries scrydantic::flatten, which applies to data members; a "
+             "parameter is one argument under one key";
     }
+    // emit_null undoes a class's skip_null for one member. The argument object
+    // of a parameter list carries no skip_null, so it would undo nothing.
+    if (has_annotation(values[index], ^^emit_null_t)) {
+      return "has " + label +
+             ": carries scrydantic::emit_null, which undoes a class's skip_null for "
+             "one member; a parameter list has no skip_null to undo";
+    }
+    const auto reason = parameter_value_problem(values[index]);
+    if (!reason.empty()) {
+      return "has " + label + ": " + reason + unsupplied_note(values[index], context);
+    }
+    // skip_null says that an argument left out is disengaged, and a default
+    // argument that it is the default, so the annotation would do nothing.
+    if (std::meta::has_default_argument(values[index]) &&
+        has_annotation(values[index], ^^skip_null_t)) {
+      return "has " + label +
+             ": carries scrydantic::skip_null and has a default argument; each says "
+             "what an argument left out is, so keep the default argument alone";
+    }
+  }
+  if (auto reason = parameter_keys_problem(values, positions); !reason.empty()) {
+    return reason;
   }
   // Each parameter passed the check alone, as its own schema's root. In the
   // synthesized object a recursive parameter type is a definition instead, and
@@ -537,9 +916,32 @@ consteval std::string parameters_problem(const std::meta::info function,
     reason = parameter_annotation_problem(function, context);
   }
   if (reason.empty()) {
+    reason = supplied_order_problem(function, context);
+  }
+  if (reason.empty()) {
     reason = arguments_problem(function, context);
   }
   return reason;
+}
+
+// Why apply() cannot call a function of a binding: a supplier of one of its
+// parameters returns a Result, so it may refuse, and apply() returns exactly
+// what the function returns, which has no place for the refusal. Empty when no
+// supplier may refuse.
+consteval std::string refusal_problem(const std::meta::info function,
+                                      const std::meta::info context) {
+  const auto parameters = std::meta::parameters_of(function);
+  for (const auto position : supplied_positions_of(function, context)) {
+    const auto type = std::meta::type_of(parameters[position]);
+    if (has_supplier(type, context) &&
+        is_result_type(supply_result_of(type, context))) {
+      return "has " + parameter_label(parameters[position], position) + ", which " +
+             display(supplier_of(type, context)) +
+             " may refuse to supply, and apply() returns only what the function "
+             "returns; call try_apply(), which returns the refusal";
+    }
+  }
+  return {};
 }
 
 // Why arguments_t and apply() cannot bind an entity, prefixed with its name;
@@ -674,15 +1076,35 @@ consteval std::meta::info constant_text(const std::string_view text) {
       std::meta::reflect_constant_string(owned_text(text)));
 }
 
+// A member function as a walk of its class reflects it. GCC 16 keeps `^^Box::f`,
+// as a caller of apply() writes it, and the `f` that members_of(^^Box) returns
+// apart as template arguments, though they compare equal: each would name a
+// bound_function, and so an argument object, of its own, and code that meets
+// both in one translation unit would read one object through the other's
+// members. Every binding is therefore keyed on the walk's reflection.
+consteval std::meta::info canonical_function(const std::meta::info function) {
+  if (std::meta::is_class_member(function)) {
+    for (const auto member : std::meta::members_of(
+             std::meta::parent_of(function), std::meta::access_context::unchecked())) {
+      if (member == function) {
+        return member;
+      }
+    }
+  }
+  return function;
+}
+
 // The bound_function of a function that has passed function_problem, with the
 // facts the declarations preceding this point give it.
-consteval std::meta::info bound_function_of(const std::meta::info function,
+consteval std::meta::info bound_function_of(const std::meta::info declared,
                                             const std::meta::info context) {
-  return std::meta::substitute(
-      ^^bound_function,
-      {
-          std::meta::reflect_constant(function), std::meta::reflect_constant(context),
-          constant_text(synthesized_member_list(function, context))});
+  const auto function = canonical_function(declared);
+  std::vector arguments{std::meta::reflect_constant(function),
+                        std::meta::reflect_constant(context),
+                        constant_text(synthesized_member_list(function, context)),
+                        constant_text(supplied_parameter_marks(function, context))};
+  arguments.append_range(synthesized_member_annotations(function, context));
+  return std::meta::substitute(^^bound_function, arguments);
 }
 
 // The bound_tool of a function that has passed tool_function_problem, with the
@@ -737,16 +1159,86 @@ consteval std::string_view toolbox_diagnostic() {
   return unsatisfied(display(^^Type), "Toolbox", toolbox_problem(^^Type, ^^Context));
 }
 
-// The type-erased handler that ToolFunction<Context> names in bound_tool.hpp. A
-// trait rather than a conditional type, because a handler type that took a
-// `const void&` could not even be named. Its call operator is const, so a const
-// table of tools can be called, and it calls what it stores as const.
+// The type-erased handler that ToolFunction<Context> names in bound_tool.hpp.
+// `Leading` is what a call passes before the arguments: the `const Context&` of
+// a binding with a context, or nothing.
+//
+// A handler reads its arguments from a parsed view, and that is the form bind()
+// and bind_handler() store: a call with a view decodes the caller's document
+// where it lies, and a call with text parses the text first, which is where
+// text that is not JSON fails. A callable that takes its arguments as `Json`,
+// as a handler written by hand may, is stored as it is instead: text goes to it
+// untouched and unchecked, and a view is written out for it as its canonical
+// text, once per call. A handler holds one form or the other, never both, so
+// each call tests which. Both call operators are const, so a const table of
+// tools can be called, and they call what they store as const.
+template <typename... Leading> class tool_handler {
+  using view_function =
+      std::move_only_function<Result<Json>(Leading..., const JsonView&) const>;
+  using text_function = std::move_only_function<Result<Json>(Leading..., Json) const>;
+
+public:
+  tool_handler() noexcept = default;
+  tool_handler(std::nullptr_t) noexcept {}
+
+  // A callable that can be called either way is stored as one that reads a
+  // view. The handler itself is such a callable, so it is excluded: copying
+  // one is the deleted copy, not a handler wrapped in a handler.
+  template <typename Handler>
+    requires(!std::same_as<std::remove_cvref_t<Handler>, tool_handler> &&
+             std::constructible_from<view_function, Handler>)
+  tool_handler(Handler&& handler) : view_{std::forward<Handler>(handler)} {}
+
+  template <typename Handler>
+    requires(!std::same_as<std::remove_cvref_t<Handler>, tool_handler> &&
+             !std::constructible_from<view_function, Handler> &&
+             std::constructible_from<text_function, Handler>)
+  tool_handler(Handler&& handler) : text_{std::forward<Handler>(handler)} {}
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return static_cast<bool>(view_) || static_cast<bool>(text_);
+  }
+
+  [[nodiscard]] friend bool operator==(const tool_handler& handler,
+                                       std::nullptr_t) noexcept {
+    return !handler;
+  }
+
+  [[nodiscard]] Result<Json> operator()(Leading... leading,
+                                        const JsonView& arguments) const {
+    if (view_) {
+      return view_(leading..., arguments);
+    }
+    return text_(leading..., arguments.to_json());
+  }
+
+  // Text that is not JSON is read once more to describe it, which only a
+  // failure pays for.
+  [[nodiscard]] Result<Json> operator()(Leading... leading, Json arguments) const {
+    if (text_) {
+      return text_(leading..., std::move(arguments));
+    }
+    const auto view = JsonView::parse(std::string_view{arguments.text});
+    if (!view) {
+      return std::unexpected(invalid_json_error("tool arguments are not valid JSON",
+                                                describe_invalid_json(arguments.text)));
+    }
+    return view_(leading..., *view);
+  }
+
+private:
+  view_function view_{};
+  text_function text_{};
+};
+
+// Names the tool_handler of a context. A trait rather than a conditional type,
+// because a `const void&` could not even be named.
 template <typename Context> struct tool_function {
-  using type = std::move_only_function<Result<Json>(const Context&, Json) const>;
+  using type = tool_handler<const Context&>;
 };
 
 template <> struct tool_function<void> {
-  using type = std::move_only_function<Result<Json>(Json) const>;
+  using type = tool_handler<>;
 };
 
 } // namespace scrydantic::detail

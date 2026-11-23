@@ -30,7 +30,8 @@
 /// Reflected tools: functions, namespaces, and toolbox classes annotated with
 /// scrydantic::tool become tool contracts (name, description, generated input
 /// and output schemas) and handlers that decode their arguments strictly, call
-/// the C++ function, and encode what it returns. <scrydantic/bound_tool.hpp>,
+/// the C++ function, and check and encode what it returns.
+/// <scrydantic/bound_tool.hpp>,
 /// which this header includes, declares what a binding produces: BoundTool, its
 /// ToolFunction handler, and ToolDescriptor.
 ///
@@ -38,26 +39,78 @@
 /// a tool function or handler receives by const reference as its leading
 /// parameter, such as the identity of the call being serviced. `Context` names
 /// it; `void`, the default, means the tools take none, and then a leading
-/// parameter of any type is an argument the model supplies.
+/// parameter of any type is an argument the model supplies. A specialization
+/// of scrydantic::supplier lets the context supply a parameter of another type
+/// too, in any position.
 ///
 /// Tool discovery reads the declarations that precede the call in the calling
 /// translation unit: a namespace is open, so the tools bound are the ones declared
-/// in it before the call, and a function's name, description, and parameter names
-/// are the ones its declarations so far give it. Two translation units that see
-/// different declarations each bind what they see. The `Tools` template parameter
-/// of each entry point records that view; leave it defaulted, or, in a library
-/// that wraps these entry points, compute the same default on the wrapper with
+/// in it before the call, and a function's name and description, and its
+/// parameters' names, annotations, and default arguments, are the ones its
+/// declarations so far give it. Two translation units that see different
+/// declarations each bind what they see. The `Tools` template parameter of each
+/// entry point records that view; leave it defaulted, or, in a library that
+/// wraps these entry points, compute the same default on the wrapper with
 /// tools_of() or toolbox_tools_of() and forward it.
 ///
 /// The steps a tool binding is made of are here on their own, for a library that
 /// binds functions by rules of its own: arguments_t is the argument object of any
 /// function, apply() calls the function with one and returns what it returns, and
 /// annotated_functions_of() finds the functions that carry the library's
-/// annotation. These read a function's parameter names from the declarations so
-/// far in the same way, and record them in their `Binding` template parameter;
-/// leave it defaulted, or, on a wrapper, compute the same default with
-/// binding_of() and forward it.
+/// annotation. These read a function's parameters from the declarations so far
+/// in the same way, and record what they read in their `Binding` template
+/// parameter; leave it defaulted, or, on a wrapper, compute the same default
+/// with binding_of() and forward it.
 namespace scrydantic {
+
+/// Supplies one parameter of a bound function from the binding's call context.
+///
+/// Specialize it to give the functions of a binding with the context `Context`
+/// what they need from the host, one piece at a time, without making the
+/// context a bag that every function depends on whole:
+///
+///     template <> struct scrydantic::supplier<Database, Session> {
+///       static const Database& supply(const Session& session) {
+///         return session.database();
+///       }
+///     };
+///
+///     [[= scrydantic::tool{"Export the report"}]]
+///     Report export_report(std::string name, const Database& db);
+///
+/// A parameter whose type, without reference and cv-qualifiers, has a supplier
+/// for the binding's context is filled in by the host, wherever it stands in
+/// the parameter list. It is no member of the argument object and appears in no
+/// schema, a default argument of its own is never used, and it takes no
+/// Scrydantic annotation. The primary template is declared and not defined: a
+/// parameter of any other type is an argument, and one that the codec cannot
+/// read fails to compile as before. The leading `const Context&` is the one
+/// parameter supplied without a supplier, as the context itself. A binding
+/// without a context supplies nothing.
+///
+/// `supply` is a static member function called with the `const Context&` of the
+/// call. What it returns initializes the parameter, as an argument would: a
+/// reference is passed on as it is, and a value is held until the function
+/// returns and passed as an rvalue, so a value fills a parameter taken by
+/// value, by const reference, or by rvalue reference, and only a reference
+/// fills one taken by non-const lvalue reference. A supplier that cannot fill a
+/// parameter of its type is a compile-time error.
+///
+/// `supply` may instead return a Result of the value, and then a failed Result
+/// refuses the call, as a tool that returns one does: the call ends with that
+/// Error, unchanged, and the function does not run. A Result holds no reference;
+/// one of a `std::reference_wrapper` fills a reference parameter. The suppliers
+/// of one call run in the order of their parameters, after a tool's arguments
+/// have decoded, and none runs after one that refused.
+///
+/// Whether a parameter is supplied follows from the specializations that are
+/// declared where the function is bound. C++ requires a specialization to be
+/// declared before the first use that looks for it, in every translation unit
+/// that has one, with no diagnostic required: declare a supplier next to its
+/// parameter type or its context type, so that every binding sees it.
+/// @tparam Parameter Type of the parameter, without reference and cv-qualifiers.
+/// @tparam Context Call context of the binding.
+template <typename Parameter, typename Context> struct supplier;
 
 /// Callables accepted for a particular reflected argument aggregate.
 ///
@@ -117,9 +170,10 @@ annotated_functions_of(const std::meta::info scope, const std::meta::info annota
 ///
 /// This is the default of their `Binding` parameter. A library that wraps them
 /// computes the same default on its own entry point and forwards it, so the
-/// parameter names are the ones its caller's translation unit sees. A function
-/// whose parameters cannot form an argument object yields a binding that records
-/// why, which arguments_t and apply() report.
+/// parameters' names, annotations, and default arguments are the ones its
+/// caller's translation unit sees. A function whose parameters cannot form an
+/// argument object yields a binding that records why, which arguments_t and
+/// apply() report.
 /// @param function Reflection of a function, which needs no annotation.
 /// @param context Reflection of the call context type, or of `void` for none.
 /// @return Reflection of the binding type.
@@ -139,20 +193,39 @@ consteval std::meta::info binding_of(const std::meta::info function,
 /// a tool's.
 ///
 /// The function needs no scrydantic::tool annotation; what it is named and what
-/// becomes of its result are the caller's to decide. Its parameters, after an
-/// explicit object parameter and an optional leading `const Context&`, are either
+/// becomes of its result are the caller's to decide. Its parameters, without an
+/// explicit object parameter, an optional leading `const Context&`, and those
+/// that the context supplies through a scrydantic::supplier, are either
 /// nothing, which gives an object without members that decodes from `{}`; one
 /// plain aggregate, which is the object itself; or any other list of named
-/// parameters of supported types, which gives an aggregate with one required
-/// member per parameter, named after it. The type satisfies ToolArguments, so
+/// parameters of supported types, which gives an aggregate with one member per
+/// parameter, named after it. The type satisfies ToolArguments, so
 /// input_schema_v is its schema, decode() reads it, and keys_v lists its keys.
 /// A function that breaks these rules fails to compile with its name and the
 /// reason, the text arguments_diagnostic() returns.
+///
+/// A parameter that becomes a member takes the annotations a data member
+/// takes, but for flatten and emit_null, and the member carries them, another
+/// library's included: a description, a name, a constraint, or a check on a
+/// parameter means what it means on a member. No other parameter takes a
+/// Scrydantic annotation.
+///
+/// The member has the parameter's type, without references and cv-qualifiers,
+/// and is required. A parameter with a default argument is the exception: its
+/// member is a `std::optional` of that type, which decoding leaves disengaged
+/// when the input leaves the member out and engages when the input gives it.
+/// The input may leave it out but may not give `null` for it, unless the
+/// parameter's own type is a `std::optional`; the schema is the parameter
+/// type's, with no `default`, since the value of a default argument cannot be
+/// read. Default arguments are the last parameters', and a call can leave out
+/// only its last arguments, so an input that gives a later one of these members
+/// without an earlier one does not decode. A lone aggregate parameter is the
+/// whole object, which is always given, so its default argument is never used.
 /// @tparam Function Reflection of a free function, a static member function, or
 /// a non-static member function.
 /// @tparam Context Call context the function may take first, or void for none.
 /// @tparam Binding Leave defaulted: the parameters of `Function` as the
-/// declarations before this point name them. See binding_of().
+/// declarations before this point give them. See binding_of().
 template <std::meta::info Function, typename Context = void,
           typename Binding = typename[:binding_of(Function, ^^Context):]>
 using arguments_t = detail::function_arguments_t<Binding>;
@@ -164,6 +237,12 @@ using arguments_t = detail::function_arguments_t<Binding>;
 /// one member per parameter, each moved into its parameter. Nothing is asked of
 /// the return type: `void`, a reference, a Result, and a type that Scrydantic
 /// cannot encode all pass through as they are.
+///
+/// A member that stands for a parameter with a default argument is passed while
+/// it is engaged. The call ends before the first such member that is
+/// disengaged, which leaves that parameter and every one after it to its
+/// default argument. decode() produces no object that engages a member after a
+/// disengaged one; in one built by hand, such a member is not passed.
 /// @tparam Function Reflection of a free function or a static member function.
 /// @tparam Context Leave defaulted, or void: this overload has no call context.
 /// @tparam Binding Leave defaulted, as for arguments_t, or forward the one the
@@ -181,7 +260,11 @@ decltype(auto) apply(arguments_t<Function, Context, Binding>&& arguments) {
 /// Calls a function of a binding that has a call context.
 ///
 /// The context goes to a function that takes a leading `const Context&`, and is
-/// left out for one that does not, so a wrapper calls both the same way.
+/// left out for one that does not, so a wrapper calls both the same way. The
+/// parameters that the context supplies through a scrydantic::supplier are
+/// filled in from it, each in its place among the arguments. A supplier that
+/// returns a Result may refuse, which this return type cannot say, so a
+/// function with such a parameter does not compile here: call try_apply().
 /// Otherwise this is apply(arguments).
 /// @tparam Function Reflection of a free function or a static member function.
 /// @tparam Context Call context type, which is not void. It is always named,
@@ -252,6 +335,67 @@ decltype(auto) apply(Object& object, const std::type_identity_t<Context>& contex
                                                  arguments);
 }
 
+/// Calls a function as apply(context, arguments) does, and returns a supplier's
+/// refusal instead of calling it.
+///
+/// apply() returns exactly what the function returns, so it has no place for
+/// the Error of a supplier that refuses, and does not compile for a function
+/// with a parameter whose supplier returns a Result. This returns a Result
+/// instead: failed with that Error, unchanged, when a supplier refused, in
+/// which case the function was not called, and otherwise holding what the
+/// function returned, moved into it. A function that returns `void` gives a
+/// Status, one that returns a Result gives a Result of that Result, so the two
+/// failures stay apart, and one that returns an lvalue reference gives a Result
+/// of a `std::reference_wrapper`, since a Result holds no reference. A function
+/// with no supplier that may refuse is called the same way and always succeeds,
+/// so a wrapper can call every function through this.
+/// @tparam Function Reflection of a free function or a static member function.
+/// @tparam Context Call context type, which is not void. It is always named,
+/// never deduced from `context`.
+/// @tparam Binding Leave defaulted, as for arguments_t, or forward the one the
+/// argument object was named with.
+/// @param context Call context that the suppliers read and a leading
+/// `const Context&` receives.
+/// @param arguments Argument object to consume.
+/// @return What the function returned, or the Error of the supplier that
+/// refused.
+template <std::meta::info Function, typename Context,
+          typename Binding = typename[:binding_of(Function, ^^Context):]>
+  requires(!std::is_void_v<Context>)
+[[nodiscard]] auto try_apply(const std::type_identity_t<Context>& context,
+                             arguments_t<Function, Context, Binding>&& arguments) {
+  return detail::try_apply_binding<Binding, Context>(static_cast<void*>(nullptr),
+                                                     context, arguments);
+}
+
+/// Calls a non-static member function on an object as apply(object, context,
+/// arguments) does, and returns a supplier's refusal instead of calling it.
+///
+/// This is try_apply(context, arguments) with the object of apply(object,
+/// arguments).
+/// @tparam Function Reflection of the function.
+/// @tparam Context Call context type, which is not void. It is always named,
+/// never deduced from `context`.
+/// @tparam Binding Leave defaulted, as for arguments_t, or forward the one the
+/// argument object was named with.
+/// @tparam Object Class of the object, `const` for a const object.
+/// @param object Object to call the function on.
+/// @param context Call context that the suppliers read and a leading
+/// `const Context&` receives.
+/// @param arguments Argument object to consume.
+/// @return What the function returned, or the Error of the supplier that
+/// refused.
+template <
+    std::meta::info Function, typename Context,
+    typename Binding = typename[:binding_of(Function, (^^Context)):], typename Object>
+  requires(!std::is_void_v<Context>)
+[[nodiscard]] auto try_apply(Object& object,
+                             const std::type_identity_t<Context>& context,
+                             arguments_t<Function, Context, Binding>&& arguments) {
+  return detail::try_apply_binding<Binding, Context>(std::addressof(object), context,
+                                                     arguments);
+}
+
 /// Reflects the tools bind<^^Entity, Context>() binds: the tool functions a
 /// namespace declares before the point of evaluation, or the one function.
 ///
@@ -292,12 +436,13 @@ consteval std::meta::info toolbox_tools_of(const std::meta::info type,
 
 /// Binds a callable whose arguments are a reflected aggregate.
 ///
-/// The returned handler decodes its JSON input strictly into `Args`, invokes the
-/// callable as const with it, preceded by the context when the callable accepts
-/// one, and encodes the typed return. State that calls change therefore lives
-/// outside the callable, as ToolHandlerFor describes. The callable may return a
-/// supported value, a Result of one, `void`, or Status; the last two answer `{}`
-/// on success. The argument schema is input_schema_v<Args>.
+/// The returned handler decodes its JSON input, a view or text as ToolFunction
+/// describes, strictly into `Args`, invokes the callable as const with it,
+/// preceded by the context when the callable accepts one, and checks and encodes
+/// the typed return. State that calls change therefore lives outside the
+/// callable, as ToolHandlerFor describes. The callable may return a supported
+/// value, a Result of one, `void`, or Status; the last two answer `{}` on
+/// success. The argument schema is input_schema_v<Args>.
 ///
 /// What comes back is the bare handler, which has nowhere to carry a schema. A
 /// host that builds a BoundTool around it sets `input_schema` from
@@ -338,19 +483,23 @@ template <typename Args, typename Context = void, typename Handler>
 /// `[[= scrydantic::tool{"description"}]]`; `bind<^^npc_tools>()` binds every
 /// function so declared directly in that namespace, in declaration order. A tool
 /// is named after the function unless a scrydantic::name annotation overrides it.
-/// Its parameters, after an optional leading `const Context&`, are either nothing
+/// Its parameters, without an optional leading `const Context&` and those that
+/// the context supplies through a scrydantic::supplier, are either nothing
 /// (the tool takes `{}`), one plain aggregate (the argument object, as for
 /// bind_handler()), or any other list of named parameters of supported types,
-/// which is synthesized into an argument object with one required member per
-/// parameter. It returns what a bind_handler() callable may return: a function
-/// that returns `T` or `Result<T>` gives its tool the output schema schema_v<T>,
-/// and one that returns `void` or Status gives it none. A function that breaks
-/// these rules fails to compile with its name and the reason.
+/// which is synthesized into an argument object with one member per parameter,
+/// annotated as the parameter is, and required unless the parameter has a
+/// default argument, which a call that leaves the member out then uses:
+/// arguments_t has the rules. It returns what a bind_handler() callable may
+/// return: a function that returns `T` or `Result<T>` gives its tool the output
+/// schema schema_v<T>, and one that returns `void` or Status gives it none. A
+/// function that breaks these rules fails to compile with its name and the
+/// reason.
 /// @tparam Entity Reflection of a tool function, a static member function, or a
 /// namespace.
 /// @tparam Context Call context the tools may take first, or void for none.
 /// @tparam Tools Leave defaulted: the tools `Entity` holds at the call site, each
-/// with the name, description, and parameter names seen there.
+/// with the name, description, and parameters seen there.
 /// @return The bound tools, in declaration order.
 template <std::meta::info Entity, typename Context = void,
           typename Tools = typename[:tools_of(Entity, ^^Context):]>
@@ -513,11 +662,23 @@ public:
   [[nodiscard]] Result<Json> invoke(const std::string_view name, Json arguments) const
     requires std::is_void_v<Context>
   {
-    const BoundTool<Context>* const tool = find(name);
-    if (tool == nullptr) {
-      return std::unexpected(unknown_tool(name));
-    }
-    return tool->invoke(std::move(arguments));
+    return call(name, std::move(arguments));
+  }
+
+  /// Calls the tool named `name` with arguments the host has already parsed.
+  ///
+  /// The view may show any part of a larger document, such as the member of a
+  /// request that holds the arguments; the tool decodes it in place, as
+  /// ToolFunction describes. Otherwise this is invoke(name, arguments) with the
+  /// arguments as text.
+  /// @param name Tool name the model called.
+  /// @param arguments View of the JSON argument object the model supplied.
+  /// @return What the tool returned, or the unknown-tool error.
+  [[nodiscard]] Result<Json> invoke(const std::string_view name,
+                                    const JsonView& arguments) const
+    requires std::is_void_v<Context>
+  {
+    return call(name, arguments);
   }
 
   /// Calls the tool named `name` with the call context and `arguments`.
@@ -533,11 +694,24 @@ public:
                                     Json arguments) const
     requires(!std::is_void_v<Context>)
   {
-    const BoundTool<Context>* const tool = find(name);
-    if (tool == nullptr) {
-      return std::unexpected(unknown_tool(name));
-    }
-    return tool->invoke(context, std::move(arguments));
+    return call(name, context, std::move(arguments));
+  }
+
+  /// Calls the tool named `name` with the call context and arguments the host
+  /// has already parsed.
+  ///
+  /// This is invoke(name, context, arguments) with the arguments as the view
+  /// that invoke(name, view) takes.
+  /// @param name Tool name the model called.
+  /// @param context Call context passed through to the tool.
+  /// @param arguments View of the JSON argument object the model supplied.
+  /// @return What the tool returned, or the unknown-tool error.
+  [[nodiscard]] Result<Json> invoke(const std::string_view name,
+                                    const detail::context_argument_t<Context>& context,
+                                    const JsonView& arguments) const
+    requires(!std::is_void_v<Context>)
+  {
+    return call(name, context, arguments);
   }
 
   /// Lists the tools, for publishing them to a model, or to call one directly.
@@ -555,6 +729,19 @@ public:
   }
 
 private:
+  // What every invoke() does. `arguments` are what the tool's handler is called
+  // with: the context, when the set has one, and the argument object as text
+  // or as a view.
+  template <typename... Arguments>
+  [[nodiscard]] Result<Json> call(const std::string_view name,
+                                  Arguments&&... arguments) const {
+    const BoundTool<Context>* const tool = find(name);
+    if (tool == nullptr) {
+      return std::unexpected(unknown_tool(name));
+    }
+    return tool->invoke(std::forward<Arguments>(arguments)...);
+  }
+
   // Why the set holds no tool named `name`, listing the ones it does.
   [[nodiscard]] Error unknown_tool(const std::string_view name) const {
     std::vector<std::string_view> names(tools_.size());

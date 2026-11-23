@@ -12,7 +12,9 @@
 #include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/schema.hpp>
+#include <scrydantic/detail/validate.hpp>
 #include <scrydantic/error.hpp>
+#include <scrydantic/field_descriptor.hpp>
 #include <scrydantic/json.hpp>
 #include <string_view>
 #include <type_traits>
@@ -28,8 +30,8 @@ namespace scrydantic {
 /// non-character integers, finite floats, strings, scoped enums, `Json`, one
 /// optional layer, vectors except `vector<bool>`, fixed arrays, `std::map` and
 /// `std::unordered_map` keyed by `std::string`, `std::indirect`, plain aggregates
-/// of supported members, and tagged variants of such aggregates, each alternative
-/// carrying a distinct scrydantic::tag. A `Json` is any JSON value: its schema is
+/// of supported members, and variants whose alternatives a JSON value's kind
+/// tells apart. A `Json` is any JSON value: its schema is
 /// the empty schema `{}`, which accepts every value, decoding captures the
 /// canonical text of whatever value sits at its position, `null` included, and
 /// encoding checks that text and splices it, so a document can carry an opaque
@@ -46,6 +48,21 @@ namespace scrydantic {
 /// annotations must apply to its type and admit a value, in this family and in
 /// the others. Reflected entry points report the member path and the reason a
 /// type falls outside this family.
+///
+/// A variant holds at most one alternative of each JSON kind: null
+/// (`std::monostate`), boolean, integer, number (`float`, `double`), string
+/// (`std::string` or a scoped enum), array, and object (an aggregate or a map).
+/// An integer and a floating-point alternative may stand together: a JSON
+/// integer within the integer alternative's range is that alternative, and any
+/// other number the floating-point one. Several aggregates may stand together
+/// when each carries a distinct scrydantic::tag, which their objects are told
+/// apart by; a variant of such aggregates alone is the tagged union. A variant's
+/// schema is the `anyOf` of its alternatives' schemas, in alternative order.
+/// Encoding writes the alternative held, and decoding reads the one that the
+/// value's kind selects, so the issues of a value are that alternative's own. A
+/// `Json`, a `std::optional`, a `std::indirect`, and another variant have no one
+/// kind and are no alternative, and a `std::optional` holds no variant with a
+/// `std::monostate`, since null would then be both.
 template <typename Type>
 concept SupportedValue =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::supported)
@@ -109,8 +126,9 @@ inline constexpr std::string_view input_schema_v = detail::checked_input_schema<
 /// neither holds exactly loses digits; encode_verbatim() keeps a payload's own
 /// text. The returned text is canonical within the current Scrydantic version but
 /// is not a versioned archival format. The value is the program's own, so its
-/// constraint annotations and validators are not checked. A type outside
-/// Encodable fails to compile with the offending member path and the reason.
+/// constraint annotations and validators are not checked; validate() checks
+/// them. A type outside Encodable fails to compile with the offending member
+/// path and the reason.
 /// @tparam Type Value from the Encodable family.
 /// @param value Value to encode without modifying it.
 /// @return Canonical JSON, or an Error whose `message` names the path of a
@@ -237,15 +255,70 @@ template <typename Type>
   return decode<Type>(std::string_view{json.text}, options);
 }
 
+/// Checks a value the program built against the constraints and validators of
+/// its type.
+///
+/// Decoding checks them on what it reads, and nothing checks a value that was
+/// filled some other way: from a database row, from a configuration file, or by
+/// the program's own code. This checks `value` against every constraint
+/// annotation and validator that decoding it would have checked. It walks the
+/// value as decoding walks its JSON, through `std::optional`, `std::indirect`,
+/// vectors, arrays, maps, variants, nested aggregates, and flattened members,
+/// and reports each issue with the kind (IssueKind::violated_constraint or
+/// IssueKind::failed_check), the path, and the reason that decoding would give
+/// it, in the same order: a map's entries in key order, whatever order the map
+/// iterates in. A member's validators run once it meets its constraints, and a
+/// class's once every member of the object is valid. It stops past max_issues,
+/// as decoding does.
+///
+/// Two things differ from a decode of the same value's JSON, and both follow
+/// from there being no JSON:
+/// - Every member is checked. Decoding leaves a member that its input lacks at
+///   its default, unchecked; here a default is a value like any other. A
+///   disengaged `std::optional` has no value to check.
+/// - A `float` or `double` is checked once, as the value it is. Decoding checks
+///   a number twice, as its text spelled it and as converted, and has a reason
+///   of its own for one that only the conversion carries past a bound; a value
+///   past a bound is reported here with the bound's plain reason.
+///
+/// Only constraints and validators are checked. `pattern` is not, as decoding
+/// does not check it. What encode() refuses is left to encode(), and none of it
+/// is an issue here: a number that is not finite, an enumerator value that is
+/// not declared, a string that is not UTF-8, an invalid `Json`, a valueless
+/// variant or `std::indirect`, and whatever nests more than max_json_depth
+/// arrays and objects deep, which is not walked. A NaN meets no `range` and no
+/// `multiple_of`, though, and is reported where it stands under one, as an
+/// infinity is that is past a bound or under a `multiple_of`.
+///
+/// The function only reads `value`, so it takes what encode() takes. A type with
+/// no constraint and no validator anywhere in it is known at compile time to be
+/// valid, and the call does nothing. A type outside Encodable fails to compile
+/// with the offending member path and the reason.
+/// @tparam Type Value from the Encodable family.
+/// @param value Value to check without modifying it.
+/// @return Success, or an Error that lists every violation as decode() lists
+/// them: in `issues`, and as one `<path> <reason>` line each in `message` and
+/// `model_message`, such as `$.v must be at most 10`.
+template <typename Type> [[nodiscard]] Status validate(const Type& value) {
+  constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return {};
+  } else {
+    return detail::validate<std::remove_cvref_t<Type>>(value);
+  }
+}
+
 /// The JSON keys of a reflected object type, in the order encode() writes them.
 ///
 /// Each key is the member's scrydantic::name annotation or else its identifier,
 /// the key that encoding, decoding, schemas, and failure paths use. The keys are
 /// in lexical order, which is also the order JsonView::key_at() visits a parsed
 /// object in. Every declared member is listed, also one that decoding treats as
-/// optional. A tagged alternative also carries its tag under `"type"` when it is
-/// encoded in a variant; that key is not a member, so it is not listed. A type
-/// that is not an Encodable plain aggregate fails to compile with the reason.
+/// optional. A tagged alternative also carries its tag under its tag key,
+/// `"type"` or the one its scrydantic::tag_key names, when it is encoded in a
+/// variant; that key is not a member, so it is not listed. A type that is not an
+/// Encodable plain aggregate fails to compile with the reason.
 ///
 /// Usage: `for (const std::string_view key : scrydantic::keys_v<Request>)`, or
 /// `template for` to visit the keys at compile time.
@@ -253,15 +326,82 @@ template <typename Type>
 template <typename Type>
 inline constexpr auto keys_v = detail::object_keys<std::remove_cvref_t<Type>>();
 
+/// The fields of a reflected object type, in the order of keys_v<Type>: for
+/// each, its key, its description, whether it is required, and its schema.
+///
+/// `fields_v<Type>[index]` describes the field under `keys_v<Type>[index]`, as
+/// the codec and the schema of `Type` already treat it, so a program that
+/// prints help for an object, lists a function's parameters, or renders a form
+/// states no rule of its own. `required` accounts for default member
+/// initializers and scrydantic::skip_null, and a parameter with a default
+/// argument is not required in the argument object of its function
+/// (arguments_t). A field that a scrydantic::flatten member contributes is
+/// listed as the object's own. A tagged alternative's tag is not a member, so
+/// it is not listed.
+///
+/// `schema` is the text that schema_v<Type> holds under the field's key, with
+/// the member's constraints, description, title, default, and custom keywords.
+/// Where the member's type can contain itself, that text is or holds a `$ref`,
+/// which resolves against schema_v<Type>, not on its own. A type that is
+/// Encodable but not a SupportedValue has no schema, and the `schema` of each
+/// of its fields is empty. A type that is not an Encodable plain aggregate
+/// fails to compile with the reason, as for keys_v.
+///
+/// Usage: `for (const scrydantic::FieldDescriptor& field : fields_v<Request>)`.
+/// @tparam Type Plain aggregate from the Encodable family.
+template <typename Type>
+inline constexpr auto fields_v = detail::object_fields<std::remove_cvref_t<Type>>();
+
+/// The reflection of the data member behind each field, in the order of
+/// keys_v<Type> and fields_v<Type>.
+///
+/// With it a library splices a member's type or reads annotations of its own
+/// off the member, without restating how a member gets its key. A reflection
+/// exists at compile time only, so this is for `consteval` code and
+/// `template for`:
+///
+/// ```cpp
+/// template for (constexpr std::meta::info member : field_members_v<Request>) {
+///   using Member = typename[:std::meta::type_of(member):];
+/// }
+/// ```
+///
+/// A field that a scrydantic::flatten member contributes has the member of the
+/// flattened class that declares it, so `std::meta::parent_of` may be a class
+/// other than `Type`. In an argument object the member of a parameter with a
+/// default argument is a `std::optional` of the parameter's type. A type that
+/// is not an Encodable plain aggregate fails to compile with the reason.
+/// @tparam Type Plain aggregate from the Encodable family.
+template <typename Type>
+inline constexpr auto field_members_v =
+    detail::object_field_members<std::remove_cvref_t<Type>>();
+
+/// The JSON names of a scoped enum's enumerators, in declaration order.
+///
+/// Each is the string that encoding writes for the enumerator, that decoding
+/// accepts, and that the schema lists under `enum`: its scrydantic::name
+/// annotation, or else its identifier, as the enum's scrydantic::rename_all
+/// spells it. A type that is not an Encodable enum fails to compile with the
+/// reason.
+///
+/// Usage: `for (const std::string_view name : scrydantic::enumerators_v<Unit>)`.
+/// @tparam Enum Scoped enum from the Encodable family.
+template <typename Enum>
+inline constexpr auto enumerators_v =
+    detail::enumerator_json_names<std::remove_cvref_t<Enum>>();
+
 /// The tags of a tagged variant's alternatives, in alternative order.
 ///
 /// `tags_v<Variant>[index]` is the scrydantic::tag of
 /// `std::variant_alternative_t<index, Variant>`: the value that the encoded
-/// object carries under `"type"`, and that decoding selects the alternative by.
+/// object carries under the variant's tag key, `"type"` or the one a
+/// scrydantic::tag_key names, and that decoding selects the alternative by.
 /// A host that receives the tag apart from the object, such as the event name
-/// of a server-sent event, can match it here before it decodes. A type that is
-/// not an Encodable variant fails to compile with the reason.
-/// @tparam Variant std::variant from the Encodable family.
+/// of a server-sent event, can match it here before it decodes. The list pairs
+/// a tag with every alternative, so a variant with an alternative that carries
+/// none, which a JSON kind selects instead, has no `tags_v`. A type that is not
+/// an Encodable variant of tagged aggregates fails to compile with the reason.
+/// @tparam Variant std::variant of tagged aggregates from the Encodable family.
 template <typename Variant>
 inline constexpr auto tags_v = detail::variant_tags<std::remove_cvref_t<Variant>>();
 

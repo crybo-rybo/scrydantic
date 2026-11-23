@@ -21,6 +21,12 @@ namespace scrydantic {
 /// already. Where the type is a `std::string` or a `Json`, a string is taken as
 /// it is, whatever its text spells.
 ///
+/// A `std::variant` with a string alternative (a `std::string` or an enum) does
+/// the same: a string is that alternative, whatever its text spells. A variant
+/// without one takes a string for the value it spells, under the option for
+/// that value's kind, and reads the value as the alternative of its kind: with
+/// coerce_scalars, `"5"` decodes into a `std::variant<int, bool>` as the `int`.
+///
 /// The options state what a consumer tolerates, not what a producer should send,
 /// so they change no generated schema, as scrydantic::ignore_unknown changes none.
 struct DecodeOptions {

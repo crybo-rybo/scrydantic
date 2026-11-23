@@ -103,7 +103,7 @@ consteval bool append_default_number(std::string& output, const Float value) {
 
 template <typename Enum>
 consteval bool append_default_enumerator(std::string& output, const Enum value) {
-  template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
+  template for (constexpr std::meta::info enumerator : declared_enumerators_v<Enum>) {
     if (value == [:enumerator:]) {
       const auto name = json_name_of(enumerator);
       append_json_string(output, name);
@@ -149,26 +149,27 @@ consteval bool append_default_object(std::string& output, const Type& value,
     }
     first = false;
   };
+  constexpr std::string_view key_of_tag = tag_key_of(^^Type);
   bool tag_pending = Tagged;
   const auto write_tag = [&] {
     if (tag_pending) {
       separate();
-      append_json_string(output, tag_key);
+      append_json_string(output, key_of_tag);
       output.push_back(':');
       append_json_string(output, tag_of(^^Type).value_or(""));
       tag_pending = false;
     }
   };
-  if (Tagged && !is_utf8(tag_of(^^Type).value_or(""))) {
+  if (Tagged && !(is_utf8(tag_of(^^Type).value_or("")) && is_utf8(key_of_tag))) {
     return false;
   }
-  template for (constexpr field_layout field : fields_v<Type>) {
+  template for (constexpr field_layout field : field_layouts_v<Type>) {
     constexpr std::meta::info member = field.member;
     constexpr std::string_view key = field.key_view();
     if (!is_utf8(key)) {
       return false;
     }
-    if (key > tag_key) {
+    if (key > key_of_tag) {
       write_tag();
     }
     const auto& owner = declaring_object<field.path, field.depth>(value);
@@ -190,14 +191,23 @@ consteval bool append_default_object(std::string& output, const Type& value,
   return true;
 }
 
-// The object of the alternative a variant holds, with its tag.
+// The alternative a variant holds, as write_variant() writes it: a tagged one
+// as its object with the tag, a std::monostate as null, and any other as its
+// type's value.
 template <typename Variant>
 consteval bool append_default_variant(std::string& output, const Variant& value,
                                       const std::size_t depth) {
   template for (constexpr std::meta::info alternative : alternatives_v<Variant>) {
     using Alternative = [:alternative:];
     if (const auto* const held = std::get_if<Alternative>(&value)) {
-      return append_default_object<Alternative, true>(output, *held, depth);
+      if constexpr (is_tagged_alternative(alternative)) {
+        return append_default_object<Alternative, true>(output, *held, depth);
+      } else if constexpr (std::same_as<Alternative, std::monostate>) {
+        append_json_literal(output, "null");
+        return true;
+      } else {
+        return append_default(output, *held, depth);
+      }
     }
   }
   // Left valueless by an exception.

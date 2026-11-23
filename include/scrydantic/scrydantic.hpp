@@ -10,6 +10,7 @@
 #include <scrydantic/decode_options.hpp>
 #include <scrydantic/diagnostics.hpp>
 #include <scrydantic/error.hpp>
+#include <scrydantic/field_descriptor.hpp>
 #include <scrydantic/json.hpp>
 #include <scrydantic/tools.hpp>
 #include <scrydantic/version.hpp>

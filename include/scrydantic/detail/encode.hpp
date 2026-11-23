@@ -176,17 +176,16 @@ template <spelling Spelling, typename Number>
 // is, wherever the ordinary literal encoding is UTF-8; a scrydantic::name is
 // whatever bytes its literal holds, as a member's key is.
 template <typename Enum>
-inline constexpr bool utf8_names_v =
-    std::ranges::all_of(enumerators_v<Enum>, [](const std::meta::info enumerator) {
-      return is_utf8(json_name_of(enumerator));
-    });
+inline constexpr bool utf8_names_v = std::ranges::all_of(
+    declared_enumerators_v<Enum>,
+    [](const std::meta::info enumerator) { return is_utf8(json_name_of(enumerator)); });
 
 template <typename Enum>
 [[nodiscard]] encode_result<void> write_enum(std::string& output, const Enum value) {
   if constexpr (!utf8_names_v<Enum>) {
     return not_utf8();
   }
-  template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
+  template for (constexpr std::meta::info enumerator : declared_enumerators_v<Enum>) {
     if (value == [:enumerator:]) {
       output.append(quoted(json_name_of(enumerator)));
       return {};
@@ -303,19 +302,20 @@ template <spelling Spelling, typename Map>
   return {};
 }
 
-// Whether the keys of Type's members are UTF-8, and its tag too when Tagged. A
-// scrydantic::name or scrydantic::tag can hold any bytes.
+// Whether the keys of Type's members are UTF-8, and its tag and tag key too
+// when Tagged. A scrydantic::name, tag, or tag_key can hold any bytes.
 template <typename Type, bool Tagged>
 inline constexpr bool utf8_keys_v =
-    (!Tagged || is_utf8(tag_of(^^Type).value_or(""))) &&
-    std::ranges::all_of(fields_v<Type>, [](const field_layout& field) {
+    (!Tagged ||
+     (is_utf8(tag_of(^^Type).value_or("")) && is_utf8(tag_key_of(^^Type)))) &&
+    std::ranges::all_of(field_layouts_v<Type>, [](const field_layout& field) {
       return is_utf8(field.key_view());
     });
 
-// Tagged is true when the object is a variant alternative, whose tag member joins
-// its members at its lexical position: before the first key that sorts after it,
-// or last. A field that a flattened member declares is written at its own key's
-// position like any other, from where it is stored.
+// Tagged is true when the object is a tagged variant alternative, whose tag
+// member joins its members at its lexical position: before the first key that
+// sorts after it, or last. A field that a flattened member declares is written
+// at its own key's position like any other, from where it is stored.
 template <typename Type, bool Tagged, spelling Spelling>
 [[nodiscard]] encode_result<void> write_object(std::string& output, const Type& value,
                                                const std::size_t depth) {
@@ -344,10 +344,10 @@ template <typename Type, bool Tagged, spelling Spelling>
       }
     }
   };
-  template for (constexpr field_layout field : fields_v<Type>) {
+  template for (constexpr field_layout field : field_layouts_v<Type>) {
     constexpr std::meta::info member = field.member;
     constexpr std::string_view key = field.key_view();
-    if constexpr (Tagged && key > tag_key) {
+    if constexpr (Tagged && key > tag_key_of(^^Type)) {
       write_tag();
     }
     const auto& owner = declaring_object<field.path, field.depth>(value);
@@ -373,6 +373,10 @@ template <typename Type, bool Tagged, spelling Spelling>
   return {};
 }
 
+// A variant is written as the alternative it holds: a tagged one as its object
+// with the tag, a std::monostate as null, and any other as its type is written
+// anywhere. Nothing marks which alternative it was but the tag and the value's
+// own kind, which is what the checks make enough to read it back by.
 template <spelling Spelling, typename Variant>
 [[nodiscard]] encode_result<void>
 write_variant(std::string& output, const Variant& value, const std::size_t depth) {
@@ -380,8 +384,16 @@ write_variant(std::string& output, const Variant& value, const std::size_t depth
     return encode_fail("is a variant left valueless by an exception");
   }
   return std::visit(
-      [&output, depth]<typename Alternative>(const Alternative& alternative) {
-        return write_object<Alternative, true, Spelling>(output, alternative, depth);
+      [&output, depth]<typename Alternative>(
+          const Alternative& alternative) -> encode_result<void> {
+        if constexpr (is_tagged_alternative(^^Alternative)) {
+          return write_object<Alternative, true, Spelling>(output, alternative, depth);
+        } else if constexpr (std::same_as<Alternative, std::monostate>) {
+          output.append("null");
+          return {};
+        } else {
+          return write_value<Alternative, Spelling>(output, alternative, depth);
+        }
       },
       value);
 }

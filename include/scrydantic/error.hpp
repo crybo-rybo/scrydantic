@@ -24,19 +24,22 @@ enum class IssueKind : std::uint8_t {
   wrong_type,
   /// A number outside the range of its integer or floating-point type.
   out_of_range,
-  /// A required object member is absent.
+  /// A required object member is absent. So is an argument that the input left
+  /// to its parameter's default while giving a later one, which no call can do.
   missing_member,
   /// An object holds a member its schema does not declare. The issue is at the
   /// object, and its reason names the member.
   unknown_member,
   /// A string that names none of an enumeration's declared enumerators.
   unknown_enumerator,
-  /// A tagged variant's object has no `type` member, so no alternative was
-  /// chosen and none of its other members were checked.
+  /// A tagged variant's object has no member under the tag key, `type` or the
+  /// one a scrydantic::tag_key names, and no alternative carries
+  /// scrydantic::default_tag, so no alternative was chosen and none of its
+  /// other members were checked.
   missing_tag,
-  /// A tagged variant's `type` member is not a string naming one of its
-  /// declared tags, so no alternative was chosen and none of its other members
-  /// were checked.
+  /// A tagged variant's member under the tag key is not a string naming one of
+  /// its declared tags, so no alternative was chosen and none of its other
+  /// members were checked.
   unknown_tag,
   /// An array whose length is not its fixed-size type's.
   wrong_size,

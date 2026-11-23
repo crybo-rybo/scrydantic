@@ -251,7 +251,7 @@ namespace rejected_functions {
 
 inline std::int32_t deref(const std::int32_t* pointer) { return *pointer; }
 inline std::int32_t unnamed(std::int32_t, std::int32_t) { return 0; }
-inline std::int32_t bounded([[= scrydantic::range{.max = 9}]] std::int32_t level) {
+inline std::int32_t bounded([[= scrydantic::length{.max = 9}]] std::int32_t level) {
   return level;
 }
 inline std::string late(std::string note, const Session&) { return note; }
@@ -285,9 +285,8 @@ static_assert(scrydantic::arguments_diagnostic<^^rejected_functions::unnamed>() 
               "synthesized from a parameter is named after it");
 static_assert(scrydantic::arguments_diagnostic<^^rejected_functions::bounded>() ==
               "scrydantic::apply<^^rejected_functions::bounded>(): "
-              "rejected_functions::bounded has parameter `level` carrying a Scrydantic "
-              "annotation, which a parameter cannot hold; take an argument aggregate "
-              "and annotate its member");
+              "rejected_functions::bounded has parameter `level`: carries "
+              "scrydantic::length, which applies to std::string members, not to int");
 static_assert(scrydantic::arguments_diagnostic<^^rejected_functions::fill>() ==
               "scrydantic::apply<^^rejected_functions::fill>(): "
               "rejected_functions::fill has parameter `total` of type int&, which the "
@@ -797,4 +796,34 @@ TEST_CASE("a library binds every function that carries its own annotation") {
   CHECK(added[0].call(*nothing) == R"(["bolt","nut"])");
   CHECK(added[1].call(*seven) == "item 7");
   CHECK(added[1].call(*nothing) == "bad request: $.id is a required member");
+}
+
+namespace shared_member {
+
+struct Scaler {
+  int factor{3};
+
+  [[= scrydantic::tool{"Scale a value"}]] int scale(int value,
+                                                    std::string label) const {
+    return label.empty() ? 0 : value * factor;
+  }
+};
+
+} // namespace shared_member
+
+// The member function is reflected two ways here: by name for apply(), and by
+// the walk of its class for bind(). Both must name one argument object.
+TEST_CASE("a member function is applied by hand and bound as a tool in one unit") {
+  using shared_member::Scaler;
+
+  Scaler scaler{};
+  scrydantic::arguments_t<^^Scaler::scale> arguments{.value = 2, .label = "x"};
+  CHECK(scrydantic::apply<^^Scaler::scale>(scaler, std::move(arguments)) == 6);
+
+  const auto tools = scrydantic::bind(std::make_shared<Scaler>());
+  REQUIRE(tools.size() == 1);
+  const auto result =
+      tools[0].invoke(scrydantic::Json{.text = R"({"value":4,"label":"x"})"});
+  REQUIRE(result);
+  CHECK(result->text == "12");
 }

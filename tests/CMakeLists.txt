@@ -143,18 +143,29 @@ add_executable(
   codec/coercion_tests.cpp
   codec/constraint_tests.cpp
   codec/enumerator_name_tests.cpp
+  codec/field_metadata_tests.cpp
   codec/flatten_tests.cpp
   codec/json_schema_tests.cpp
+  codec/kind_variant_tests.cpp
   codec/map_tests.cpp
   codec/number_spelling_tests.cpp
+  codec/rename_all_tests.cpp
   codec/schema_default_tests.cpp
   codec/schema_keyword_tests.cpp
+  codec/tag_key_tests.cpp
+  codec/validate_tests.cpp
   codec/validator_tests.cpp
+  tools/default_argument_tests.cpp
   tools/function_binding_tests.cpp
   tools/json_tool_tests.cpp
   tools/output_schema_tests.cpp
+  tools/parameter_annotation_tests.cpp
+  tools/result_validation_tests.cpp
+  tools/supplied_parameter_tests.cpp
+  tools/throwing_tool_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
+  tools/view_call_tests.cpp
 )
 target_link_libraries(
   scrydantic_tests
@@ -182,9 +193,9 @@ if(SCRYDANTIC_BUILD_BENCHMARKS)
 endif()
 
 # A binding must generate code from the declarations its own translation unit
-# sees (a namespace's tools, a function's parameter names and annotations),
-# however the linker orders the units, so the same program is linked in both
-# orders.
+# sees (a namespace's tools, a function's parameter names, annotations, and
+# default arguments), however the linker orders the units, so the same program
+# is linked in both orders.
 foreach(SCRYDANTIC_LINK_ORDER IN ITEMS a_then_b b_then_a)
   if(SCRYDANTIC_LINK_ORDER STREQUAL "a_then_b")
     set(SCRYDANTIC_MULTI_TU_UNITS tools_a.cpp tools_b.cpp)
@@ -256,6 +267,66 @@ scrydantic_add_compile_fail_test(
   "Arguments::shape: std::variant<Circle, Square> has the alternative Circle without a scrydantic::tag annotation"
 )
 scrydantic_add_compile_fail_test(
+  variant-untagged-aggregates
+  variant_untagged_aggregates.cpp
+  "has the alternative Item without a scrydantic::tag annotation beside Other, another JSON object; alternatives that are objects are told apart by their tags"
+)
+scrydantic_add_compile_fail_test(
+  variant-string-and-enum
+  variant_string_and_enum.cpp
+  "and Mode that share the JSON kind string; the kind of a JSON value selects its alternative, and only aggregates that each carry a scrydantic::tag can share one"
+)
+scrydantic_add_compile_fail_test(
+  variant-two-arrays
+  variant_two_arrays.cpp
+  "has alternatives std::vector<int> and std::array<int, 2> that share the JSON kind array"
+)
+scrydantic_add_compile_fail_test(
+  variant-two-integers
+  variant_two_integers.cpp
+  "does not satisfy scrydantic::Encodable: Counter::value: std::variant<int, long int> has alternatives int and long int that share the JSON kind integer"
+)
+scrydantic_add_compile_fail_test(
+  variant-map-and-aggregate
+  variant_map_and_aggregate.cpp
+  "double> that share the JSON kind object"
+)
+scrydantic_add_compile_fail_test(
+  variant-json-alternative
+  variant_json_alternative.cpp
+  "has the alternative scrydantic::Json, which holds a value of any JSON kind, so no kind selects it; a scrydantic::Json in the variant's place holds what the variant would"
+)
+scrydantic_add_compile_fail_test(
+  variant-optional-alternative
+  variant_optional_alternative.cpp
+  "has the alternative std::optional<int>, which is null or its value, so it has no one JSON kind; std::monostate is the alternative that is null"
+)
+scrydantic_add_compile_fail_test(
+  variant-nested-variant
+  variant_nested_variant.cpp
+  "has the alternative std::variant<int, bool>, which is a variant itself, so it has no one JSON kind; list its alternatives in this variant"
+)
+scrydantic_add_compile_fail_test(
+  variant-indirect-alternative
+  variant_indirect_alternative.cpp
+  "has the alternative std::indirect<Item>, which is a std::indirect, which a variant does not see through; an aggregate alternative can hold it as a member"
+)
+scrydantic_add_compile_fail_test(
+  variant-qualified-alternative
+  variant_qualified_alternative.cpp
+  "has the alternative const int, which is cv-qualified; an alternative is a plain value type"
+)
+scrydantic_add_compile_fail_test(
+  optional-monostate-variant
+  optional_monostate_variant.cpp
+  "holds a variant with a std::monostate alternative, so null would be both the empty optional and that alternative; keep one of the two"
+)
+scrydantic_add_compile_fail_test(
+  tags-of-kind-variant
+  tags_of_kind_variant.cpp
+  "std::variant<int, Circle> has the alternative int, which carries no tag, so it does not have a tag for every alternative"
+)
+scrydantic_add_compile_fail_test(
   duplicate-key
   duplicate_key.cpp
   "does not satisfy scrydantic::Encodable: Limits has members limit and max_tokens that both map to the JSON key"
@@ -309,6 +380,91 @@ scrydantic_add_compile_fail_test(
   annotated-enumerator
   annotated_enumerator.cpp
   "does not satisfy scrydantic::SupportedValue: Gauge::level: Level::high carries scrydantic::description, which does not apply to enumerators; an enumerator takes only scrydantic::name"
+)
+scrydantic_add_compile_fail_test(
+  renamed-duplicate-key
+  renamed_duplicate_key.cpp
+  "does not satisfy scrydantic::Encodable: Limits has members max_tokens and maxTokens that both map to the JSON key \"maxTokens\""
+)
+scrydantic_add_compile_fail_test(
+  renamed-duplicate-enumerator-name
+  renamed_duplicate_enumerator_name.cpp
+  "does not satisfy scrydantic::Encodable: Level has enumerators Low and low that both map to the JSON string \"low\""
+)
+scrydantic_add_compile_fail_test(
+  renamed-tag-key
+  renamed_tag_key.cpp
+  "Post::attachment<Image>.type_: has the JSON key \"type\", which carries the variant's tag"
+)
+scrydantic_add_compile_fail_test(
+  member-on-tag-key
+  member_on_tag_key.cpp
+  "Dialog::request<FormRequest>.mode: has the JSON key \"mode\", which carries the variant's tag"
+)
+scrydantic_add_compile_fail_test(
+  variant-mixed-tag-keys
+  variant_mixed_tag_keys.cpp
+  "Dialog::request: std::variant<FormRequest, UrlRequest> has alternatives FormRequest and UrlRequest that carry their tags under the keys \"mode\" and \"type\"; the tagged alternatives of one variant name one scrydantic::tag_key"
+)
+scrydantic_add_compile_fail_test(
+  variant-two-default-tags
+  variant_two_default_tags.cpp
+  "Dialog::request: std::variant<FormRequest, UrlRequest> has alternatives FormRequest and UrlRequest that both carry scrydantic::default_tag; an object without the tag is one alternative"
+)
+scrydantic_add_compile_fail_test(
+  tag-key-without-tag
+  tag_key_without_tag.cpp
+  "does not satisfy scrydantic::SupportedValue: FormRequest carries scrydantic::tag_key without a scrydantic::tag, whose key it names"
+)
+scrydantic_add_compile_fail_test(
+  default-tag-without-tag
+  default_tag_without_tag.cpp
+  "Dialog::request<FormRequest>: FormRequest carries scrydantic::default_tag without a scrydantic::tag, which it makes the tag of an object that has none"
+)
+scrydantic_add_compile_fail_test(
+  two-tag-keys
+  two_tag_keys.cpp
+  "does not satisfy scrydantic::SupportedValue: FormRequest has more than one scrydantic::tag_key annotation"
+)
+scrydantic_add_compile_fail_test(
+  empty-tag-key
+  empty_tag_key.cpp
+  "scrydantic::tag_key must not be empty"
+)
+scrydantic_add_compile_fail_test(
+  tag-key-member
+  tag_key_member.cpp
+  "Drawing::shape: carries scrydantic::tag, tag_key, default_tag, or ignore_unknown, which apply to class types"
+)
+scrydantic_add_compile_fail_test(
+  tag-key-tool
+  tag_key_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries a codec annotation (description, tag, tag_key, default_tag, skip_null, emit_null, or ignore_unknown), which applies to data members or classes"
+)
+scrydantic_add_compile_fail_test(
+  two-rename-all
+  two_rename_all.cpp
+  "does not satisfy scrydantic::SupportedValue: Limits has more than one scrydantic::rename_all annotation"
+)
+scrydantic_add_compile_fail_test(
+  two-rename-all-enum
+  two_rename_all_enum.cpp
+  "does not satisfy scrydantic::Decodable: Gauge::level: Level has more than one scrydantic::rename_all annotation"
+)
+scrydantic_add_compile_fail_test(
+  rename-all-member
+  rename_all_member.cpp
+  "Limits::max_tokens: carries scrydantic::rename_all, which applies to classes and enums; scrydantic::name gives one member its key"
+)
+scrydantic_add_compile_fail_test(
+  rename-all-enumerator
+  rename_all_enumerator.cpp
+  "Gauge::level: Level::high_water carries scrydantic::rename_all, which does not apply to enumerators; an enumerator takes only scrydantic::name"
+)
+scrydantic_add_compile_fail_test(
+  rename-all-tool
+  rename_all_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::rename_all, which applies to classes and enums; a tool's arguments keep the names of its parameters"
 )
 scrydantic_add_compile_fail_test(
   endless-recursion
@@ -521,9 +677,54 @@ scrydantic_add_compile_fail_test(
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::keyword, which applies to data members and classes"
 )
 scrydantic_add_compile_fail_test(
-  annotated-parameter
-  annotated_parameter.cpp
-  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level` carrying a Scrydantic annotation, which a parameter cannot hold; take an argument aggregate and annotate its member"
+  emit-null-parameter
+  emit_null_parameter.cpp
+  "scrydantic::bind<^^listing_tools>(): listing_tools::tagged has parameter `tag`: carries scrydantic::emit_null, which undoes a class's skip_null for one member; a parameter list has no skip_null to undo"
+)
+scrydantic_add_compile_fail_test(
+  parameter-misapplied-constraint
+  parameter_misapplied_constraint.cpp
+  "scrydantic::bind<^^catalog>(): catalog::search has parameter `limit`: carries scrydantic::length, which applies to std::string members, not to int"
+)
+scrydantic_add_compile_fail_test(
+  parameter-duplicate-constraint
+  parameter_duplicate_constraint.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level`: has more than one scrydantic::range annotation"
+)
+scrydantic_add_compile_fail_test(
+  parameter-crossed-range
+  parameter_crossed_range.cpp
+  "scrydantic::apply<^^volume_tools::set_volume>(): volume_tools::set_volume has parameter `level`: carries a scrydantic::range whose min, 10, exceeds its max, 1"
+)
+scrydantic_add_compile_fail_test(
+  parameter-duplicate-key
+  parameter_duplicate_key.cpp
+  "scrydantic::bind<^^range_tools>(): range_tools::span has parameter `from` and parameter `until`, which both map to the JSON key \"from\""
+)
+scrydantic_add_compile_fail_test(
+  defaulted-skip-null-parameter
+  defaulted_skip_null_parameter.cpp
+  "scrydantic::bind<^^listing_tools>(): listing_tools::tagged has parameter `tag`: carries scrydantic::skip_null and has a default argument; each says what an argument left out is, so keep the default argument alone"
+)
+scrydantic_add_compile_fail_test(
+  flattened-parameter
+  flattened_parameter.cpp
+  "scrydantic::bind<^^catalog>(): catalog::search has parameter `page`: carries scrydantic::flatten, which applies to data members; a parameter is one argument under one key"
+)
+scrydantic_add_compile_fail_test(
+  annotated-argument-object
+  annotated_argument_object.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `volume` carrying scrydantic::description, which applies to an argument; this parameter is the whole argument object, so annotate the members of Volume"
+)
+scrydantic_add_compile_fail_test(
+  annotated-context-parameter
+  annotated_context_parameter.cpp
+  "scrydantic::bind<^^greeting_tools>(): greeting_tools::greet has parameter `session` carrying scrydantic::description, which applies to an argument; the call context is the host's to supply"
+)
+scrydantic_add_compile_fail_test(
+  annotated-object-parameter
+  annotated_object_parameter.cpp
+  "Lamp does not satisfy scrydantic::Toolbox: Lamp::dim has parameter `self` carrying scrydantic::name, which applies to an argument; an explicit object parameter is the object the function is called on"
 )
 scrydantic_add_compile_fail_test(
   wrapped-function-parameter
@@ -539,6 +740,36 @@ scrydantic_add_compile_fail_test(
   apply-without-object
   apply_without_object.cpp
   "scrydantic::apply<^^Lamp::dim>(): Lamp::dim is a non-static member function; pass the object to call it on, as apply(object, arguments)"
+)
+scrydantic_add_compile_fail_test(
+  annotated-supplied-parameter
+  annotated_supplied_parameter.cpp
+  "scrydantic::bind<^^report_tools>(): report_tools::export_report has parameter `db` carrying scrydantic::description, which applies to an argument; the host supplies this parameter, through scrydantic::supplier<Database, Session>"
+)
+scrydantic_add_compile_fail_test(
+  supplied-reference-parameter
+  supplied_reference_parameter.cpp
+  "scrydantic::bind<^^clock_tools>(): clock_tools::wind has parameter `clock` of type Clock&, which cannot be initialized from the Clock that scrydantic::supplier<Clock, Session>::supply() returns"
+)
+scrydantic_add_compile_fail_test(
+  supplier-signature
+  supplier_signature.cpp
+  "scrydantic::bind<^^report_tools>(): report_tools::export_report has parameter `db`, which scrydantic::supplier<Database, Session> supplies, but that supplier has no static supply() that takes a const Session&"
+)
+scrydantic_add_compile_fail_test(
+  supplied-after-default
+  supplied_after_default.cpp
+  "scrydantic::bind<^^clock_tools>(): clock_tools::alarms has parameter `clock`, which the context supplies, after parameter `limit`, which has a default argument; a call that leaves an argument to its default passes nothing after it, so declare the supplied parameter before it"
+)
+scrydantic_add_compile_fail_test(
+  apply-refusing-supplier
+  apply_refusing_supplier.cpp
+  "scrydantic::apply<^^reports::purge>(): reports::purge has parameter `admin`, which scrydantic::supplier<Admin, Session> may refuse to supply, and apply() returns only what the function returns; call try_apply(), which returns the refusal"
+)
+scrydantic_add_compile_fail_test(
+  unsupplied-parameter
+  unsupplied_parameter.cpp
+  "scrydantic::bind<^^report_tools>(): report_tools::export_report has parameter `db`: const Database& is not a supported reflected value, and scrydantic::supplier<Database, Session> is not defined, so the context does not supply it"
 )
 scrydantic_add_compile_fail_test(
   mutable-handler
@@ -559,6 +790,31 @@ scrydantic_add_compile_fail_test(
   keys-of-endless-recursion
   keys_of_endless_recursion.cpp
   "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)
+scrydantic_add_compile_fail_test(
+  fields-of-non-object
+  fields_of_non_object.cpp
+  "std::variant<Circle> is not a plain aggregate, so it has no JSON object keys"
+)
+scrydantic_add_compile_fail_test(
+  fields-of-endless-recursion
+  fields_of_endless_recursion.cpp
+  "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)
+scrydantic_add_compile_fail_test(
+  field-members-of-non-object
+  field_members_of_non_object.cpp
+  "std::vector<Point> is not a plain aggregate, so it has no JSON object keys"
+)
+scrydantic_add_compile_fail_test(
+  enumerators-of-non-enum
+  enumerators_of_non_enum.cpp
+  "Palette is not an enum, so it has no enumerator names"
+)
+scrydantic_add_compile_fail_test(
+  enumerators-of-unscoped-enum
+  enumerators_of_unscoped_enum.cpp
+  "Color does not satisfy scrydantic::Encodable: Color is an unscoped enum; reflected enums are enum class"
 )
 scrydantic_add_compile_fail_test(
   constrained-map
@@ -584,4 +840,9 @@ scrydantic_add_compile_fail_test(
   map-tool-arguments
   map_tool_arguments.cpp
   "int> is a map, whose keys are data; tool arguments are a plain aggregate, whose members name the arguments"
+)
+scrydantic_add_compile_fail_test(
+  validate-unsupported
+  validate_unsupported.cpp
+  "Derived does not satisfy scrydantic::Encodable: Derived has a base class"
 )

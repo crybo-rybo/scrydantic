@@ -15,6 +15,10 @@ namespace echo_tools {
 std::int32_t echo(std::int32_t value) { return value; }
 // The same for twice, which each unit binds by hand, without a tool annotation.
 std::int32_t twice(std::int32_t value) { return 2 * value; }
+// Each unit declares capped with its own range on the parameter.
+std::int32_t capped(std::int32_t value) { return value; }
+// Unit A alone declares padded with a default argument, 3, for `pad`.
+std::int32_t padded(std::int32_t count, std::int32_t pad) { return count + pad; }
 } // namespace echo_tools
 
 namespace {
@@ -61,6 +65,56 @@ names_of(const std::vector<scrydantic::BoundTool<>>& tools) {
          !bind("{\"" + other + "\":7}").result;
 }
 
+// Whether a binding of capped, a tool or one made by hand, is capped as one
+// unit declared it: `cap` is in the schema, a call at the cap goes through, and
+// one past it does not.
+[[nodiscard]] bool is_capped(const std::vector<scrydantic::BoundTool<>>& tools,
+                             HandBound (*const bind)(std::string_view),
+                             const std::int32_t cap) {
+  const auto arguments = [](const std::int32_t count) {
+    return "{\"count\":" + std::to_string(count) + "}";
+  };
+  const auto expected_schema =
+      R"({"additionalProperties":false,"properties":{"count":{"maximum":)" +
+      std::to_string(cap) +
+      R"(,"minimum":-2147483648,"type":"integer"}},"required":["count"],"type":"object"})";
+  if (tools.size() != 1 || tools.front().input_schema.text != expected_schema ||
+      bind(arguments(cap)).schema != expected_schema) {
+    return false;
+  }
+  const auto& invoke = tools.front().invoke;
+  const auto within = invoke(scrydantic::Json{.text = arguments(cap)});
+  const auto past = invoke(scrydantic::Json{.text = arguments(cap + 1)});
+  return within && within->text == std::to_string(cap) && !past &&
+         bind(arguments(cap)).result == cap && !bind(arguments(cap + 1)).result;
+}
+
+// Whether a binding of padded, a tool or one made by hand, is as one unit
+// declared it: `pad` is required unless that unit gave it a default argument,
+// and a call that leaves it out goes through with that default, or not at all.
+[[nodiscard]] bool is_padded(const std::vector<scrydantic::BoundTool<>>& tools,
+                             HandBound (*const bind)(std::string_view),
+                             const bool defaulted) {
+  const std::string integer =
+      R"({"maximum":2147483647,"minimum":-2147483648,"type":"integer"})";
+  const auto expected_schema =
+      R"({"additionalProperties":false,"properties":{"count":)" + integer +
+      R"(,"pad":)" + integer + R"(},"required":["count")" +
+      (defaulted ? "" : R"(,"pad")") + R"(],"type":"object"})";
+  if (tools.size() != 1 || tools.front().input_schema.text != expected_schema ||
+      bind("{}").schema != expected_schema) {
+    return false;
+  }
+  const auto& invoke = tools.front().invoke;
+  const auto both = invoke(scrydantic::Json{.text = R"({"count":1,"pad":1})"});
+  const auto one = invoke(scrydantic::Json{.text = R"({"count":1})"});
+  if (!both || both->text != "2" || bind(R"({"count":1,"pad":1})").result != 2) {
+    return false;
+  }
+  const auto by_hand = bind(R"({"count":1})").result;
+  return defaulted ? one && one->text == "4" && by_hand == 4 : !one && !by_hand;
+}
+
 } // namespace
 
 int main() {
@@ -74,5 +128,9 @@ int main() {
   failures += is_twice(twice_from_b, "quantity", "count") ? 0 : 1;
   failures += is_twice(wrapped_twice_from_a, "count", "quantity") ? 0 : 1;
   failures += is_twice(wrapped_twice_from_b, "quantity", "count") ? 0 : 1;
+  failures += is_capped(bind_capped_from_a(), wrapped_capped_from_a, 9) ? 0 : 1;
+  failures += is_capped(bind_capped_from_b(), wrapped_capped_from_b, 99) ? 0 : 1;
+  failures += is_padded(bind_padded_from_a(), wrapped_padded_from_a, true) ? 0 : 1;
+  failures += is_padded(bind_padded_from_b(), wrapped_padded_from_b, false) ? 0 : 1;
   return failures == 0 ? 0 : 1;
 }

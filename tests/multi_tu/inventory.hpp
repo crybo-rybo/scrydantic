@@ -18,6 +18,17 @@ namespace inventory_tools {}
 [[nodiscard]] std::vector<scrydantic::BoundTool<>> bind_echo_from_a();
 [[nodiscard]] std::vector<scrydantic::BoundTool<>> bind_echo_from_b();
 
+// Each unit declares echo_tools::capped with one name, one description, and one
+// parameter name, and its own range on the parameter: the annotations are all
+// that the two units see differently.
+[[nodiscard]] std::vector<scrydantic::BoundTool<>> bind_capped_from_a();
+[[nodiscard]] std::vector<scrydantic::BoundTool<>> bind_capped_from_b();
+
+// Each unit declares echo_tools::padded with the same parameters, and unit A
+// alone gives the second a default argument, so only A may leave it out.
+[[nodiscard]] std::vector<scrydantic::BoundTool<>> bind_padded_from_a();
+[[nodiscard]] std::vector<scrydantic::BoundTool<>> bind_padded_from_b();
+
 // Each unit also declares echo_tools::twice, which is no tool, with its own
 // parameter name, and binds it by hand: the schema of its argument object as
 // that unit sees it, and what a call with `arguments` returned, or nothing when
@@ -47,3 +58,7 @@ template <std::meta::info Function,
 // Through bind_by_hand().
 [[nodiscard]] HandBound wrapped_twice_from_a(std::string_view arguments);
 [[nodiscard]] HandBound wrapped_twice_from_b(std::string_view arguments);
+[[nodiscard]] HandBound wrapped_capped_from_a(std::string_view arguments);
+[[nodiscard]] HandBound wrapped_capped_from_b(std::string_view arguments);
+[[nodiscard]] HandBound wrapped_padded_from_a(std::string_view arguments);
+[[nodiscard]] HandBound wrapped_padded_from_b(std::string_view arguments);

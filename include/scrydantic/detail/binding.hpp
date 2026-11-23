@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -9,12 +10,15 @@
 #include <optional>
 #include <scrydantic/bound_tool.hpp>
 #include <scrydantic/codec.hpp>
+#include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
+#include <scrydantic/detail/failure.hpp>
 #include <scrydantic/detail/json_string.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <scrydantic/detail/tools.hpp>
+#include <scrydantic/detail/validate.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
@@ -25,13 +29,31 @@
 
 // Turns reflected tool declarations and typed handlers into bound tools: a
 // generated schema plus a handler that decodes the arguments strictly, calls the
-// C++ function, and encodes what it returns. The call itself, of any function
-// with its decoded argument object, is what apply() publishes.
+// C++ function, and checks and encodes what it returns. The call itself, of any
+// function with its decoded argument object, is what apply() publishes.
 //
 // This is the implementation of tools.hpp. It builds the public types that
 // bound_tool.hpp declares: ToolFunction, BoundTool, and ToolDescriptor.
 namespace scrydantic::detail {
 
+// Checks the value a tool returned against the constraints and validators of
+// its own type, as validate() checks a value. The tool's output schema states
+// those constraints to whoever reads it, and encoding checks none of them, so
+// without this a tool could answer with what its schema forbids. A value that
+// fails is the tool's fault and the host's to hear of: invalid_result_error().
+template <typename Value> [[nodiscard]] Status check_result(const Value& value) {
+  decode_report report{};
+  if (!validate_value(value, decode_cursor{report}, 0)) {
+    return std::unexpected(invalid_result_error(report));
+  }
+  return {};
+}
+
+// Every handler checks its result before it encodes it, with no way to turn
+// that off, since it costs nothing where there is nothing to check: for a result
+// type with no constraint and no validator anywhere in it, which is most of
+// them, the check is not generated, and the handler is the code it was without
+// one. For any other type the walk is a small part of the encode that follows.
 template <typename Return>
   requires(handler_result_problem<std::remove_cvref_t<Return>>({}).empty() &&
            !is_acknowledgment(^^Return))
@@ -43,8 +65,18 @@ template <typename Return>
     if (!result) {
       return std::unexpected(std::forward<Return>(result).error());
     }
+    if constexpr (has_checks_v<Value>) {
+      if (auto valid = check_result<Value>(*result); !valid) {
+        return std::unexpected(std::move(valid.error()));
+      }
+    }
     return encode_value<Value>(*result);
   } else {
+    if constexpr (has_checks_v<ResultType>) {
+      if (auto valid = check_result<ResultType>(result); !valid) {
+        return std::unexpected(std::move(valid.error()));
+      }
+    }
     return encode_value<ResultType>(result);
   }
 }
@@ -80,17 +112,21 @@ using context_argument_t =
     std::conditional_t<std::is_void_v<Context>, no_context, Context>;
 
 // Wraps the shared body of a handler, which takes the context argument and the
-// input, into the ToolFunction of `Context`.
+// input, into the ToolFunction of `Context`. The input is the parsed argument
+// object: a ToolFunction parses the text of a call that passes text, so the body
+// reads a view either way.
 template <typename Context, typename Body>
 [[nodiscard]] ToolFunction<Context> tool_function_of(Body body) {
   if constexpr (std::is_void_v<Context>) {
-    return ToolFunction<Context>{[body = std::move(body)](Json input) -> Result<Json> {
-      return body(no_context{}, std::move(input));
-    }};
+    return ToolFunction<Context>{
+        [body = std::move(body)](const JsonView& input) -> Result<Json> {
+          return body(no_context{}, input);
+        }};
   } else {
     return ToolFunction<Context>{
-        [body = std::move(body)](const Context& context, Json input) -> Result<Json> {
-          return body(context, std::move(input));
+        [body = std::move(body)](const Context& context,
+                                 const JsonView& input) -> Result<Json> {
+          return body(context, input);
         }};
   }
 }
@@ -104,8 +140,8 @@ template <typename Args, typename Context, typename Handler>
   return tool_function_of<Context>(
       [callable = Callable{std::forward<Handler>(handler)}](
           [[maybe_unused]] const context_argument_t<Context>& context,
-          const Json& input) -> Result<Json> {
-        auto arguments = decode_arguments<Args>(input);
+          const JsonView& input) -> Result<Json> {
+        auto arguments = detail::decode<Args>(input);
         if (!arguments) {
           return std::unexpected(std::move(arguments.error()));
         }
@@ -125,9 +161,67 @@ template <typename Args, typename Context, typename Handler>
 // The call helpers below are keyed on the function and the context alone, or on
 // those and the argument object: their code depends only on the function's type
 // and the context type, which are the same in every translation unit, and on
-// `Args`, whose identity already carries the function's parameter names. Only
-// the templates keyed on a bound_function or a bound_tool read facts that can
-// differ between units.
+// `Args`, whose identity already carries the function's parameter names, their
+// annotations, and which of them have a default argument. Only the templates
+// keyed on a bound_function or a bound_tool read facts that can differ between
+// units. A call with fewer values than the function has parameters is made only
+// for an `Args` that marks the rest as defaulted, so only by a unit that sees
+// those default arguments. Which parameters the context supplies is asked of
+// the supplier specializations here as it was when the function was bound,
+// and C++ requires the answers to agree (bound_function in tools.hpp).
+
+// What the context supplies for the parameter at `Position`: what the
+// parameter's supplier returns for the context, as it returns it, or, for the
+// leading `const Context&` that no supplier fills, the context itself.
+template <std::meta::info Function, typename Context, std::size_t Position>
+decltype(auto) supply_parameter(const Context& context) {
+  constexpr auto type =
+      std::meta::type_of(std::meta::parameters_of(Function)[Position]);
+  if constexpr (has_supplier(type, ^^Context)) {
+    return supplier<typename[:plain_type(type):], Context>::supply(context);
+  } else {
+    return (context);
+  }
+}
+
+// Fills in the parameters of a function that the context supplies, one after
+// another in declaration order, and then calls `use` with them all, which makes
+// the call and returns a `Return`. Each is held here until `use` has returned,
+// and is passed on as the reference its supplier returned, or as an rvalue of
+// the value it returned, or of the value in the Result it returned.
+//
+// A supplier that returns a failed Result ends this there, with its Error as
+// the `Return`, unchanged: no later supplier runs, and neither does `use`, so
+// the function is not called. That needs a `Return` that an Error converts to,
+// which is why apply(), whose `Return` is the function's own, takes no supplier
+// that may refuse (refusal_problem in tools.hpp).
+//
+// A function with nothing to supply comes straight to the call of `use`.
+template <std::meta::info Function, typename Context, typename Return,
+          std::size_t Next = 0, typename Use, typename... Supplied>
+Return supply_then([[maybe_unused]] const context_argument_t<Context>& context,
+                   Use&& use, Supplied&&... supplied) {
+  if constexpr (Next == supplied_positions_of(Function, ^^Context).size()) {
+    return std::forward<Use>(use)(std::forward<Supplied>(supplied)...);
+  } else {
+    decltype(auto) value =
+        supply_parameter<Function, Context,
+                         supplied_positions_of(Function, ^^Context)[Next]>(context);
+    using Value = decltype(value);
+    if constexpr (is_result_type(^^Value)) {
+      if (!value) {
+        return std::unexpected(std::forward<Value>(value).error());
+      }
+      return supply_then<Function, Context, Return, Next + 1>(
+          context, std::forward<Use>(use), std::forward<Supplied>(supplied)...,
+          *std::forward<Value>(value));
+    } else {
+      return supply_then<Function, Context, Return, Next + 1>(
+          context, std::forward<Use>(use), std::forward<Supplied>(supplied)...,
+          std::forward<Value>(value));
+    }
+  }
+}
 
 // Calls a function, on `object` when it is a non-static member function.
 template <std::meta::info Function, typename Object, typename... Values>
@@ -140,42 +234,107 @@ decltype(auto) call_on_object([[maybe_unused]] Object* object, Values&&... value
   }
 }
 
-// Calls a function with its value arguments, preceded by the context when it
-// takes one. This is a function template rather than a generic lambda because
-// GCC 16 instantiates both branches of an if constexpr on an enclosing template
-// parameter inside a generic lambda.
-template <std::meta::info Function, typename Context, typename Object,
-          typename... Values>
-decltype(auto)
-call_function(Object* object,
-              [[maybe_unused]] const context_argument_t<Context>& context,
-              Values&&... values) {
-  if constexpr (takes_context(Function, ^^Context)) {
-    return call_on_object<Function>(object, context, std::forward<Values>(values)...);
+// How many members of a synthesized argument object every call passes: those
+// before its first defaulted argument. A function's default arguments are its
+// last parameters', so every member from there on is one.
+consteval std::size_t required_argument_count(const std::meta::info arguments) {
+  const auto members = data_members_of(plain_type(arguments));
+  return static_cast<std::size_t>(std::ranges::find_if(members, is_defaulted_argument) -
+                                  members.begin());
+}
+
+// What a synthesized member holds for its parameter, to move into the call: the
+// member, or the value in a defaulted argument's std::optional, which the caller
+// has found engaged.
+template <std::meta::info Member, typename Args>
+[[nodiscard]] constexpr auto& held_argument(Args& arguments) noexcept {
+  if constexpr (is_defaulted_argument(Member)) {
+    return *arguments.[:Member:];
   } else {
-    return call_on_object<Function>(object, std::forward<Values>(values)...);
+    return arguments.[:Member:];
   }
 }
 
+// What a call passes for the parameter at `Position`: the supplied value in its
+// turn, as supply_then passes it on, or what the argument object holds for the
+// parameter, moved into the call, which is the whole object or the synthesized
+// member in its turn. This is a function template rather than a generic lambda
+// because GCC 16 instantiates both branches of an if constexpr on an enclosing
+// template parameter inside a generic lambda.
+template <std::meta::info Function, typename Context, std::size_t Position,
+          typename Args, typename... Supplied>
+[[nodiscard]] constexpr decltype(auto)
+call_argument([[maybe_unused]] Args& arguments,
+              [[maybe_unused]] Supplied&&... supplied) noexcept {
+  constexpr auto source = parameter_source_of(Function, ^^Context, Position);
+  if constexpr (source.supplied) {
+    return std::forward<Supplied...[source.ordinal]>(supplied...[source.ordinal]);
+  } else if constexpr (arguments_form_of(Function, ^^Context) ==
+                       arguments_form::aggregate) {
+    return std::move(arguments);
+  } else {
+    return std::move(
+        held_argument<declared_members_v<Args>[source.ordinal]>(arguments));
+  }
+}
+
+// Calls a function with the first `Count` of its value arguments, which leaves
+// each value parameter after them to its default argument, and with the values
+// the context supplied, each parameter in its declared place.
+template <std::meta::info Function, typename Context, std::size_t Count,
+          typename Object, typename Args, typename... Supplied>
+decltype(auto) call_with_leading(Object* object, [[maybe_unused]] Args& arguments,
+                                 [[maybe_unused]] Supplied&&... supplied) {
+  constexpr std::size_t first = object_parameter_count(Function);
+  return [&]<std::size_t... Index>(std::index_sequence<Index...>) -> decltype(auto) {
+    return call_on_object<Function>(
+        object, call_argument<Function, Context, first + Index>(
+                    arguments, std::forward<Supplied>(supplied)...)...);
+  }(std::make_index_sequence<passed_parameter_count(Function, ^^Context, Count)>{});
+}
+
+// Calls a function with as many members of its synthesized argument object as
+// were given: the first `Count`, which the caller has found given, and each
+// defaulted argument after them until one that was left out. A call cannot
+// pass an argument after one it leaves out, so the members after that one are
+// not passed; decoding admits no argument object that gives one of them
+// (leaves_out_the_rest in decode.hpp). Each count is a call of its own, since
+// the default arguments are the function's and no value here.
+template <std::meta::info Function, typename Context, std::size_t Count,
+          typename Object, typename Args, typename... Supplied>
+decltype(auto) call_with_given(Object* object, Args& arguments,
+                               Supplied&&... supplied) {
+  static constexpr auto members = declared_members_v<Args>;
+  if constexpr (Count < members.size()) {
+    if (arguments.[:members[Count]:].has_value()) {
+      return call_with_given<Function, Context, Count + 1>(
+          object, arguments, std::forward<Supplied>(supplied)...);
+    }
+  }
+  return call_with_leading<Function, Context, Count>(
+      object, arguments, std::forward<Supplied>(supplied)...);
+}
+
 // Spreads a decoded argument object over the function's parameter list: nothing,
-// the whole object, or one synthesized member per parameter. It returns exactly
-// what the function returns. This is the one call behind apply() and behind a
-// bound tool's handler.
-template <std::meta::info Function, typename Context, typename Object, typename Args>
-decltype(auto) apply_function(Object* object,
-                              const context_argument_t<Context>& context,
-                              [[maybe_unused]] Args& arguments) {
+// the whole object, or one synthesized member per parameter, with `supplied`,
+// the values supply_then filled in, in the places of the parameters the context
+// supplies. It returns exactly what the function returns. This is the one call
+// behind apply(), try_apply(), and a bound tool's handler. A function without a
+// default argument is called once, with every member, as call_with_given comes
+// to at that count.
+template <std::meta::info Function, typename Context, typename Object, typename Args,
+          typename... Supplied>
+decltype(auto) apply_function(Object* object, Args& arguments, Supplied&&... supplied) {
   constexpr auto form = arguments_form_of(Function, ^^Context);
   if constexpr (form == arguments_form::none) {
-    return call_function<Function, Context>(object, context);
+    return call_with_leading<Function, Context, 0>(object, arguments,
+                                                   std::forward<Supplied>(supplied)...);
   } else if constexpr (form == arguments_form::aggregate) {
-    return call_function<Function, Context>(object, context, std::move(arguments));
+    return call_with_leading<Function, Context, 1>(object, arguments,
+                                                   std::forward<Supplied>(supplied)...);
   } else {
-    static constexpr auto members = declared_members_v<Args>;
-    return [&]<std::size_t... Index>(std::index_sequence<Index...>) -> decltype(auto) {
-      return call_function<Function, Context>(
-          object, context, std::move(arguments.[:members[Index]:])...);
-    }(std::make_index_sequence<members.size()>{});
+    return call_with_given<Function, Context, required_argument_count(^^Args)>(
+        object, arguments, std::forward<Supplied>(supplied)...);
   }
 }
 
@@ -197,6 +356,20 @@ consteval std::string_view object_diagnostic() {
   return {};
 }
 
+// Why apply() cannot call a bound function for which a supplier may refuse;
+// empty when none may, and for an unbound function.
+template <typename Binding> consteval std::string_view refusal_diagnostic() {
+  if constexpr (is_bound_v<Binding>) {
+    const auto function = Binding::function;
+    const auto reason = refusal_problem(function, Binding::context);
+    if (!reason.empty()) {
+      return static_string(call_diagnostic("scrydantic::apply", function,
+                                           entity_name(function) + " " + reason));
+    }
+  }
+  return {};
+}
+
 // What every apply() overload does. `object` is null, as a `void*`, for a call
 // on no object, and `context` is a no_context for a binding without one. A
 // binding that cannot be called is skipped, so it fails with its one diagnostic.
@@ -205,8 +378,56 @@ decltype(auto) apply_binding(Object* object, const context_argument_t<Context>& 
                              Args& arguments) {
   constexpr std::string_view problem = object_diagnostic<Binding, Object>();
   static_assert(problem.empty(), problem);
+  constexpr std::string_view refusal = refusal_diagnostic<Binding>();
+  static_assert(refusal.empty(), refusal);
+  if constexpr (is_bound_v<Binding> && problem.empty() && refusal.empty()) {
+    using Return = typename[:std::meta::return_type_of(Binding::function):];
+    return supply_then<Binding::function, Context, Return>(
+        context, [&](auto&&... supplied) -> Return {
+          return apply_function<Binding::function, Context>(
+              object, arguments, std::forward<decltype(supplied)>(supplied)...);
+        });
+  }
+}
+
+// What try_apply() holds of what a function returns, since a Result holds no
+// reference: the reference_wrapper of an lvalue reference, and the object an
+// rvalue reference refers to.
+template <typename Return>
+using held_return_t =
+    std::conditional_t<std::is_lvalue_reference_v<Return>,
+                       std::reference_wrapper<std::remove_reference_t<Return>>,
+                       std::remove_reference_t<Return>>;
+
+// Makes a call and holds what it returned in `Applied`, the Result that
+// try_apply() returns. This is a function template rather than a generic
+// lambda for the reason call_argument gives.
+template <typename Applied, typename Call>
+[[nodiscard]] Applied hold_result(Call&& call) {
+  if constexpr (std::is_void_v<decltype(std::forward<Call>(call)())>) {
+    std::forward<Call>(call)();
+    return {};
+  } else {
+    return Applied{std::in_place, std::forward<Call>(call)()};
+  }
+}
+
+// What every try_apply() overload does: apply_binding, with a Result to return
+// a supplier's refusal in.
+template <typename Binding, typename Context, typename Object, typename Args>
+auto try_apply_binding(Object* object, const Context& context, Args& arguments) {
+  constexpr std::string_view problem = object_diagnostic<Binding, Object>();
+  static_assert(problem.empty(), problem);
   if constexpr (is_bound_v<Binding> && problem.empty()) {
-    return apply_function<Binding::function, Context>(object, context, arguments);
+    using Return = typename[:std::meta::return_type_of(Binding::function):];
+    using Applied = Result<held_return_t<Return>>;
+    return supply_then<Binding::function, Context, Applied>(
+        context, [&](auto&&... supplied) -> Applied {
+          return hold_result<Applied>([&]() -> decltype(auto) {
+            return apply_function<Binding::function, Context>(
+                object, arguments, std::forward<decltype(supplied)>(supplied)...);
+          });
+        });
   }
 }
 
@@ -215,6 +436,10 @@ decltype(auto) apply_binding(Object* object, const context_argument_t<Context>& 
 // as any handler bound to it. The handler is called as const but reaches the
 // toolbox through the pointer, so a tool member function that is not const still
 // changes the toolbox: that state is the toolbox's own, not the handler's.
+//
+// The arguments decode before anything is supplied, so a call that the model
+// got wrong fails without a supplier having run, which may cost the host
+// something or ask something of its user.
 template <typename Tool, typename Context, typename Object>
 [[nodiscard]] ToolFunction<Context>
 make_function_handler(std::shared_ptr<Object> object) {
@@ -222,15 +447,19 @@ make_function_handler(std::shared_ptr<Object> object) {
   using Args = function_arguments_t<Binding>;
   return tool_function_of<Context>(
       [object = std::move(object)](const context_argument_t<Context>& context,
-                                   const Json& input) -> Result<Json> {
-        auto arguments = decode_arguments<Args>(input);
+                                   const JsonView& input) -> Result<Json> {
+        auto arguments = detail::decode<Args>(input);
         if (!arguments) {
           return std::unexpected(std::move(arguments.error()));
         }
-        return run_tool([&]() -> decltype(auto) {
-          return apply_function<Binding::function, Context>(object.get(), context,
-                                                            *arguments);
-        });
+        return supply_then<Binding::function, Context, Result<Json>>(
+            context, [&](auto&&... supplied) -> Result<Json> {
+              return run_tool([&]() -> decltype(auto) {
+                return apply_function<Binding::function, Context>(
+                    object.get(), *arguments,
+                    std::forward<decltype(supplied)>(supplied)...);
+              });
+            });
       });
 }
 

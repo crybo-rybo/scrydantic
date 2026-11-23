@@ -145,7 +145,7 @@ struct Channel {
 
 namespace louder_tools {
 
-// The result is the handler's own value, so its constraints are not checked.
+// The result is a Channel too, so it is held to a Channel's constraints.
 [[= scrydantic::tool{"Raise a channel's level by one"}]] inline mixer_tools::Channel
     louder(mixer_tools::Channel channel) {
   ++channel.level;
@@ -187,7 +187,8 @@ inline scrydantic::Status has_room(const Booking& booking) {
 
 namespace described_tools {
 
-// A description on a parameter would be lost as surely as a constraint.
+// A lone aggregate parameter is the whole argument object, so a description on
+// it would describe no member, and be lost.
 [[= scrydantic::tool{"Move one tile west"}]] inline Position
     step_west([[= scrydantic::description{"Where to start"}]] Position from) {
   return Position{.x = from.x - 1, .y = from.y};
@@ -334,8 +335,9 @@ static_assert(
 
 static_assert(scrydantic::tools_diagnostic<^^described_tools>() ==
               "scrydantic::bind<^^described_tools>(): described_tools::step_west has "
-              "parameter `from` carrying a Scrydantic annotation, which a parameter "
-              "cannot hold; take an argument aggregate and annotate its member");
+              "parameter `from` carrying scrydantic::description, which applies to an "
+              "argument; this parameter is the whole argument object, so annotate the "
+              "members of {anonymous}::Position");
 
 TEST_CASE("a namespace binds its tools in declaration order") {
   auto tools = scrydantic::bind<^^grid_tools>();
@@ -784,13 +786,21 @@ TEST_CASE("a tool's argument constraints are in its schema and checked on each c
                                        "$.to.name must have at most 8 characters");
 }
 
-TEST_CASE("a tool checks its arguments' constraints but not its result's") {
+TEST_CASE("a tool checks its arguments' constraints, and its result's") {
   auto tools = scrydantic::bind<^^louder_tools>();
   REQUIRE(tools.size() == 1);
 
-  const auto louder = tools[0].invoke(json(R"({"level":11,"name":"bass"})"));
+  const auto louder = tools[0].invoke(json(R"({"level":10,"name":"bass"})"));
   REQUIRE(louder);
-  CHECK(louder->text == R"({"level":12,"name":"bass"})");
+  CHECK(louder->text == R"({"level":11,"name":"bass"})");
+
+  // The loudest level the tool takes is one that it cannot raise: the fault is
+  // the tool's, so the host is told and the model is not.
+  const auto too_loud = tools[0].invoke(json(R"({"level":11,"name":"bass"})"));
+  REQUIRE_FALSE(too_loud);
+  CHECK(too_loud.error().message == "result $.level must be at most 11");
+  CHECK(too_loud.error().model_message.empty());
+  CHECK(too_loud.error().issues.empty());
 
   const auto loudest = tools[0].invoke(json(R"({"level":12,"name":"bass"})"));
   REQUIRE_FALSE(loudest);
