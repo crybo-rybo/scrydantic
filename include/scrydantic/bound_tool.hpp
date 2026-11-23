@@ -33,11 +33,15 @@ namespace scrydantic {
 /// kinds. Arguments that fail to decode, including a validator's rejection, list
 /// their issues in `issues` and describe them in `model_message`. A refusal is the
 /// Error the tool returned, unchanged; one from tool_error() has empty `issues` and
-/// the tool's text for the model in `model_message`. A result that cannot be JSON,
-/// such as a string holding invalid UTF-8 or a NaN, is a host-side failure with
-/// empty `issues` and `model_message` and the reason in `message`. A tool that
-/// returns an Error with issues of its own, or with no model text, therefore reads
-/// as the first or the last kind.
+/// the tool's text for the model in `model_message`. A result that the tool
+/// should not have returned is a host-side failure, with empty `issues` and
+/// `model_message` and the reason in `message`. That is a result that misses a
+/// constraint or fails a validator of its own type, which the handler checks as
+/// validate() does before it encodes: `message` is then one line per issue, such
+/// as `result $.v must be at most 10`. And it is a result that cannot be JSON,
+/// such as a string holding invalid UTF-8 or a NaN. A tool that returns an Error
+/// with issues of its own, or with no model text, therefore reads as the first or
+/// the last kind.
 /// @tparam Context Call context passed to every invocation, or void for none.
 template <typename Context = void>
 using ToolFunction = typename detail::tool_function<Context>::type;
@@ -62,7 +66,7 @@ template <typename Context = void> struct BoundTool {
   /// it empty or supply a schema of its own.
   std::optional<Json> output_schema{};
   /// Handler that decodes the arguments strictly, calls the C++ function, and
-  /// encodes what it returns.
+  /// checks and encodes what it returns.
   ToolFunction<Context> invoke{};
 };
 

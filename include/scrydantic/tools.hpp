@@ -30,7 +30,8 @@
 /// Reflected tools: functions, namespaces, and toolbox classes annotated with
 /// scrydantic::tool become tool contracts (name, description, generated input
 /// and output schemas) and handlers that decode their arguments strictly, call
-/// the C++ function, and encode what it returns. <scrydantic/bound_tool.hpp>,
+/// the C++ function, and check and encode what it returns.
+/// <scrydantic/bound_tool.hpp>,
 /// which this header includes, declares what a binding produces: BoundTool, its
 /// ToolFunction handler, and ToolDescriptor.
 ///
@@ -294,7 +295,8 @@ consteval std::meta::info toolbox_tools_of(const std::meta::info type,
 ///
 /// The returned handler decodes its JSON input strictly into `Args`, invokes the
 /// callable as const with it, preceded by the context when the callable accepts
-/// one, and encodes the typed return. State that calls change therefore lives
+/// one, and checks and encodes the typed return, as ToolFunction describes. State
+/// that calls change therefore lives
 /// outside the callable, as ToolHandlerFor describes. The callable may return a
 /// supported value, a Result of one, `void`, or Status; the last two answer `{}`
 /// on success. The argument schema is input_schema_v<Args>.

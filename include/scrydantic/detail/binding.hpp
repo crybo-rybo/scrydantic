@@ -9,12 +9,15 @@
 #include <optional>
 #include <scrydantic/bound_tool.hpp>
 #include <scrydantic/codec.hpp>
+#include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
+#include <scrydantic/detail/failure.hpp>
 #include <scrydantic/detail/json_string.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
 #include <scrydantic/detail/tools.hpp>
+#include <scrydantic/detail/validate.hpp>
 #include <scrydantic/error.hpp>
 #include <scrydantic/json.hpp>
 #include <string>
@@ -25,13 +28,31 @@
 
 // Turns reflected tool declarations and typed handlers into bound tools: a
 // generated schema plus a handler that decodes the arguments strictly, calls the
-// C++ function, and encodes what it returns. The call itself, of any function
-// with its decoded argument object, is what apply() publishes.
+// C++ function, and checks and encodes what it returns. The call itself, of any
+// function with its decoded argument object, is what apply() publishes.
 //
 // This is the implementation of tools.hpp. It builds the public types that
 // bound_tool.hpp declares: ToolFunction, BoundTool, and ToolDescriptor.
 namespace scrydantic::detail {
 
+// Checks the value a tool returned against the constraints and validators of
+// its own type, as validate() checks a value. The tool's output schema states
+// those constraints to whoever reads it, and encoding checks none of them, so
+// without this a tool could answer with what its schema forbids. A value that
+// fails is the tool's fault and the host's to hear of: invalid_result_error().
+template <typename Value> [[nodiscard]] Status check_result(const Value& value) {
+  decode_report report{};
+  if (!validate_value(value, decode_cursor{report}, 0)) {
+    return std::unexpected(invalid_result_error(report));
+  }
+  return {};
+}
+
+// Every handler checks its result before it encodes it, with no way to turn
+// that off, since it costs nothing where there is nothing to check: for a result
+// type with no constraint and no validator anywhere in it, which is most of
+// them, the check is not generated, and the handler is the code it was without
+// one. For any other type the walk is a small part of the encode that follows.
 template <typename Return>
   requires(handler_result_problem<std::remove_cvref_t<Return>>({}).empty() &&
            !is_acknowledgment(^^Return))
@@ -43,8 +64,18 @@ template <typename Return>
     if (!result) {
       return std::unexpected(std::forward<Return>(result).error());
     }
+    if constexpr (has_checks_v<Value>) {
+      if (auto valid = check_result<Value>(*result); !valid) {
+        return std::unexpected(std::move(valid.error()));
+      }
+    }
     return encode_value<Value>(*result);
   } else {
+    if constexpr (has_checks_v<ResultType>) {
+      if (auto valid = check_result<ResultType>(result); !valid) {
+        return std::unexpected(std::move(valid.error()));
+      }
+    }
     return encode_value<ResultType>(result);
   }
 }

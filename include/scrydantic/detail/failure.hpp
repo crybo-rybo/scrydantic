@@ -322,6 +322,38 @@ template <typename Reason>
   };
 }
 
+// A tool's result that misses a constraint of its own type or fails one of its
+// validators, as `report` lists. The result is the tool's, and the fault its
+// code's, so the model has no part in it and is told nothing: like a result that
+// cannot be encoded, this is a host-only diagnostic, with no model_message and
+// no issues. The host is given the lines a decode failure gives it, each with
+// the validator's own message where it gave one, and each says that its path is
+// a path in the result: `result $.v must be at most 10`.
+//
+// The lines are built here and not by issue_lines() with a subject to put
+// before each. Every decode instantiates issue_lines() and decode_error(), and
+// GCC 16 chooses what to inline across a whole translation unit, so a change to
+// either gave the encoder other code in a unit that checks no result. As they
+// stand, decoding and encoding compile to the instructions they compiled to
+// before results were checked.
+[[nodiscard]] inline Error invalid_result_error(const decode_report& report) {
+  std::string message{};
+  for (std::size_t index = 0; index < report.issues.size(); ++index) {
+    const auto host = std::ranges::find(report.host_reasons, index,
+                                        &std::pair<std::size_t, std::string>::first);
+    message.append(index == 0 ? "result " : "\nresult ");
+    message.append(located(json_path(report.issues[index].path),
+                           host == report.host_reasons.end()
+                               ? std::string_view{report.issues[index].reason}
+                               : std::string_view{host->second}));
+  }
+  if (report.stopped) {
+    message.append("\nfurther issues past the first " + std::to_string(max_issues) +
+                   " were not reported");
+  }
+  return Error{.message = std::move(message)};
+}
+
 // Text that is not JSON: one issue at the root. `verdict` names the input as the
 // operation that read it calls it, such as `tool arguments are not valid JSON`,
 // and `description` is describe_invalid_json()'s, such as `expected ':' at line
