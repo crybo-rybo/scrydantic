@@ -14,6 +14,7 @@
 #include <scrydantic/detail/schema.hpp>
 #include <scrydantic/detail/validate.hpp>
 #include <scrydantic/error.hpp>
+#include <scrydantic/field_descriptor.hpp>
 #include <scrydantic/json.hpp>
 #include <string_view>
 #include <type_traits>
@@ -323,6 +324,70 @@ template <typename Type> [[nodiscard]] Status validate(const Type& value) {
 /// @tparam Type Plain aggregate from the Encodable family.
 template <typename Type>
 inline constexpr auto keys_v = detail::object_keys<std::remove_cvref_t<Type>>();
+
+/// The fields of a reflected object type, in the order of keys_v<Type>: for
+/// each, its key, its description, whether it is required, and its schema.
+///
+/// `fields_v<Type>[index]` describes the field under `keys_v<Type>[index]`, as
+/// the codec and the schema of `Type` already treat it, so a program that
+/// prints help for an object, lists a function's parameters, or renders a form
+/// states no rule of its own. `required` accounts for default member
+/// initializers and scrydantic::skip_null, and a parameter with a default
+/// argument is not required in the argument object of its function
+/// (arguments_t). A field that a scrydantic::flatten member contributes is
+/// listed as the object's own. A tagged alternative's tag is not a member, so
+/// it is not listed.
+///
+/// `schema` is the text that schema_v<Type> holds under the field's key, with
+/// the member's constraints, description, title, default, and custom keywords.
+/// Where the member's type can contain itself, that text is or holds a `$ref`,
+/// which resolves against schema_v<Type>, not on its own. A type that is
+/// Encodable but not a SupportedValue has no schema, and the `schema` of each
+/// of its fields is empty. A type that is not an Encodable plain aggregate
+/// fails to compile with the reason, as for keys_v.
+///
+/// Usage: `for (const scrydantic::FieldDescriptor& field : fields_v<Request>)`.
+/// @tparam Type Plain aggregate from the Encodable family.
+template <typename Type>
+inline constexpr auto fields_v = detail::object_fields<std::remove_cvref_t<Type>>();
+
+/// The reflection of the data member behind each field, in the order of
+/// keys_v<Type> and fields_v<Type>.
+///
+/// With it a library splices a member's type or reads annotations of its own
+/// off the member, without restating how a member gets its key. A reflection
+/// exists at compile time only, so this is for `consteval` code and
+/// `template for`:
+///
+/// ```cpp
+/// template for (constexpr std::meta::info member : field_members_v<Request>) {
+///   using Member = typename[:std::meta::type_of(member):];
+/// }
+/// ```
+///
+/// A field that a scrydantic::flatten member contributes has the member of the
+/// flattened class that declares it, so `std::meta::parent_of` may be a class
+/// other than `Type`. In an argument object the member of a parameter with a
+/// default argument is a `std::optional` of the parameter's type. A type that
+/// is not an Encodable plain aggregate fails to compile with the reason.
+/// @tparam Type Plain aggregate from the Encodable family.
+template <typename Type>
+inline constexpr auto field_members_v =
+    detail::object_field_members<std::remove_cvref_t<Type>>();
+
+/// The JSON names of a scoped enum's enumerators, in declaration order.
+///
+/// Each is the string that encoding writes for the enumerator, that decoding
+/// accepts, and that the schema lists under `enum`: its scrydantic::name
+/// annotation, or else its identifier, as the enum's scrydantic::rename_all
+/// spells it. A type that is not an Encodable enum fails to compile with the
+/// reason.
+///
+/// Usage: `for (const std::string_view name : scrydantic::enumerators_v<Unit>)`.
+/// @tparam Enum Scoped enum from the Encodable family.
+template <typename Enum>
+inline constexpr auto enumerators_v =
+    detail::enumerator_json_names<std::remove_cvref_t<Enum>>();
 
 /// The tags of a tagged variant's alternatives, in alternative order.
 ///

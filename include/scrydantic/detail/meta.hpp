@@ -922,6 +922,25 @@ template <typename Type> consteval auto object_keys() {
   }
 }
 
+// The data member behind each of those keys, as field_members_v lists them: the
+// member that declares the field, which for a field of a flattened member is a
+// member of the flattened class.
+template <typename Type> consteval auto object_field_members() {
+  constexpr std::string_view problem = keys_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return std::array<std::meta::info, 0>{};
+  } else {
+    constexpr auto fields = field_layouts_v<Type>;
+    std::array<std::meta::info, fields.size()> members{};
+    // Written through an iterator: an empty std::array's operator[] is not
+    // constexpr in libstdc++, which a function that returns a reflection has to
+    // be, so indexing would not compile for a class without members.
+    std::ranges::transform(fields, members.begin(), &field_layout::member);
+    return members;
+  }
+}
+
 // tags_v pairs a tag with every alternative, by index, so it is defined for a
 // variant whose every alternative carries one.
 template <typename Type> consteval std::string_view tags_diagnostic() {
@@ -955,6 +974,32 @@ template <typename Type> consteval auto variant_tags() {
       tags[index] = *tag_of(alternatives[index]);
     }
     return tags;
+  }
+}
+
+// enumerators_v checks an enum as encode() does, which is where an unscoped
+// enum and two enumerators of one name are refused.
+template <typename Type> consteval std::string_view enumerators_diagnostic() {
+  if constexpr (kind_of(^^Type) != value_kind::enumeration) {
+    return static_string(display(^^Type) +
+                         " is not an enum, so it has no enumerator names");
+  } else {
+    return encodable_diagnostic<Type>();
+  }
+}
+
+template <typename Type> consteval auto enumerator_json_names() {
+  constexpr std::string_view problem = enumerators_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return std::array<std::string_view, 0>{};
+  } else {
+    constexpr auto enumerators = declared_enumerators_v<Type>;
+    std::array<std::string_view, enumerators.size()> names{};
+    for (std::size_t index = 0; index < enumerators.size(); ++index) {
+      names[index] = json_name_of(enumerators[index]);
+    }
+    return names;
   }
 }
 

@@ -185,6 +185,7 @@ set(
   include/scrydantic/detail/schema.hpp
   include/scrydantic/detail/tools.hpp
   include/scrydantic/detail/validate.hpp
+  include/scrydantic/field_descriptor.hpp
   include/scrydantic/scrydantic.hpp
   include/scrydantic/tools.hpp
 )
