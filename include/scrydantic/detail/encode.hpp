@@ -176,17 +176,16 @@ template <spelling Spelling, typename Number>
 // is, wherever the ordinary literal encoding is UTF-8; a scrydantic::name is
 // whatever bytes its literal holds, as a member's key is.
 template <typename Enum>
-inline constexpr bool utf8_names_v =
-    std::ranges::all_of(enumerators_v<Enum>, [](const std::meta::info enumerator) {
-      return is_utf8(json_name_of(enumerator));
-    });
+inline constexpr bool utf8_names_v = std::ranges::all_of(
+    declared_enumerators_v<Enum>,
+    [](const std::meta::info enumerator) { return is_utf8(json_name_of(enumerator)); });
 
 template <typename Enum>
 [[nodiscard]] encode_result<void> write_enum(std::string& output, const Enum value) {
   if constexpr (!utf8_names_v<Enum>) {
     return not_utf8();
   }
-  template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
+  template for (constexpr std::meta::info enumerator : declared_enumerators_v<Enum>) {
     if (value == [:enumerator:]) {
       output.append(quoted(json_name_of(enumerator)));
       return {};
@@ -303,12 +302,13 @@ template <spelling Spelling, typename Map>
   return {};
 }
 
-// Whether the keys of Type's members are UTF-8, and its tag too when Tagged. A
-// scrydantic::name or scrydantic::tag can hold any bytes.
+// Whether the keys of Type's members are UTF-8, and its tag and tag key too
+// when Tagged. A scrydantic::name, tag, or tag_key can hold any bytes.
 template <typename Type, bool Tagged>
 inline constexpr bool utf8_keys_v =
-    (!Tagged || is_utf8(tag_of(^^Type).value_or(""))) &&
-    std::ranges::all_of(fields_v<Type>, [](const field_layout& field) {
+    (!Tagged ||
+     (is_utf8(tag_of(^^Type).value_or("")) && is_utf8(tag_key_of(^^Type)))) &&
+    std::ranges::all_of(field_layouts_v<Type>, [](const field_layout& field) {
       return is_utf8(field.key_view());
     });
 
@@ -344,10 +344,10 @@ template <typename Type, bool Tagged, spelling Spelling>
       }
     }
   };
-  template for (constexpr field_layout field : fields_v<Type>) {
+  template for (constexpr field_layout field : field_layouts_v<Type>) {
     constexpr std::meta::info member = field.member;
     constexpr std::string_view key = field.key_view();
-    if constexpr (Tagged && key > tag_key) {
+    if constexpr (Tagged && key > tag_key_of(^^Type)) {
       write_tag();
     }
     const auto& owner = declaring_object<field.path, field.depth>(value);

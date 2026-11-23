@@ -474,6 +474,22 @@ private:
     if (annotation_count(type, ^^tag) > 1) {
       return problem(path, type, "has more than one scrydantic::tag annotation");
     }
+    if (annotation_count(type, ^^tag_key) > 1) {
+      return problem(path, type, "has more than one scrydantic::tag_key annotation");
+    }
+    // Each says something of the class's tag, so without one it says nothing.
+    if (!has_annotation(type, ^^tag)) {
+      if (has_annotation(type, ^^tag_key)) {
+        return problem(path, type,
+                       "carries scrydantic::tag_key without a scrydantic::tag, "
+                       "whose key it names");
+      }
+      if (has_annotation(type, ^^default_tag_t)) {
+        return problem(path, type,
+                       "carries scrydantic::default_tag without a scrydantic::tag, "
+                       "which it makes the tag of an object that has none");
+      }
+    }
     if (annotation_count(type, ^^rename_all) > 1) {
       return problem(path, type, "has more than one scrydantic::rename_all annotation");
     }
@@ -595,9 +611,9 @@ private:
     if (skip && emit) {
       return at_path(here, "carries both skip_null and emit_null");
     }
-    if (has_annotation(member, ^^tag) || has_annotation(member, ^^ignore_unknown_t)) {
-      return at_path(here, "carries scrydantic::tag or ignore_unknown, which "
-                           "apply to class types");
+    if (has_class_annotation(member)) {
+      return at_path(here, "carries scrydantic::tag, tag_key, default_tag, or "
+                           "ignore_unknown, which apply to class types");
     }
     if (has_annotation(member, ^^rename_all)) {
       return at_path(here, "carries scrydantic::rename_all, which applies to "
@@ -664,7 +680,8 @@ private:
   // of two kinds share no value: an integer and a floating-point alternative
   // divide the numbers by the integer's range. Those of one kind share every
   // value of it, but for two tagged aggregates, which share the objects of a
-  // tag that both carry.
+  // tag that both carry. The tag is read under one key, so the two must name
+  // the same one, and an object without that key can be only one of them.
   static consteval std::string shared_value_problem(const std::meta::info left,
                                                     const std::meta::info right) {
     const auto kind = alternative_kind_of(left);
@@ -673,6 +690,18 @@ private:
     }
     const auto both = display(left) + " and " + display(right);
     if (is_tagged_alternative(left) && is_tagged_alternative(right)) {
+      if (tag_key_of(left) != tag_key_of(right)) {
+        return "has alternatives " + both + " that carry their tags under the keys \"" +
+               owned_text(tag_key_of(left)) + "\" and \"" +
+               owned_text(tag_key_of(right)) +
+               "\"; the tagged alternatives of one variant name one "
+               "scrydantic::tag_key";
+      }
+      if (is_default_tagged(left) && is_default_tagged(right)) {
+        return "has alternatives " + both +
+               " that both carry scrydantic::default_tag; an object without the "
+               "tag is one alternative";
+      }
       return *tag_of(left) == *tag_of(right)
                  ? "has alternatives " + both + " that share the tag \"" +
                        owned_text(*tag_of(left)) + "\""
@@ -740,10 +769,12 @@ private:
     if (!is_tagged_alternative(alternative)) {
       return {};
     }
+    const auto key = tag_key_of(alternative);
     for (const auto& field : keyed_fields(plain_type(alternative))) {
-      if (json_key_of(field.member) == tag_key) {
+      if (json_key_of(field.member) == key) {
         return at_path(field_path(here, plain_type(alternative), field),
-                       "has the JSON key \"type\", which carries the variant's tag");
+                       "has the JSON key \"" + owned_text(key) +
+                           "\", which carries the variant's tag");
       }
     }
     return {};
@@ -913,12 +944,31 @@ template <typename Type> consteval auto object_keys() {
   if constexpr (!problem.empty()) {
     return std::array<std::string_view, 0>{};
   } else {
-    constexpr auto fields = fields_v<Type>;
+    constexpr auto fields = field_layouts_v<Type>;
     std::array<std::string_view, fields.size()> keys{};
     for (std::size_t index = 0; index < fields.size(); ++index) {
       keys[index] = fields[index].key_view();
     }
     return keys;
+  }
+}
+
+// The data member behind each of those keys, as field_members_v lists them: the
+// member that declares the field, which for a field of a flattened member is a
+// member of the flattened class.
+template <typename Type> consteval auto object_field_members() {
+  constexpr std::string_view problem = keys_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return std::array<std::meta::info, 0>{};
+  } else {
+    constexpr auto fields = field_layouts_v<Type>;
+    std::array<std::meta::info, fields.size()> members{};
+    // Written through an iterator: an empty std::array's operator[] is not
+    // constexpr in libstdc++, which a function that returns a reflection has to
+    // be, so indexing would not compile for a class without members.
+    std::ranges::transform(fields, members.begin(), &field_layout::member);
+    return members;
   }
 }
 
@@ -955,6 +1005,32 @@ template <typename Type> consteval auto variant_tags() {
       tags[index] = *tag_of(alternatives[index]);
     }
     return tags;
+  }
+}
+
+// enumerators_v checks an enum as encode() does, which is where an unscoped
+// enum and two enumerators of one name are refused.
+template <typename Type> consteval std::string_view enumerators_diagnostic() {
+  if constexpr (kind_of(^^Type) != value_kind::enumeration) {
+    return static_string(display(^^Type) +
+                         " is not an enum, so it has no enumerator names");
+  } else {
+    return encodable_diagnostic<Type>();
+  }
+}
+
+template <typename Type> consteval auto enumerator_json_names() {
+  constexpr std::string_view problem = enumerators_diagnostic<Type>();
+  static_assert(problem.empty(), problem);
+  if constexpr (!problem.empty()) {
+    return std::array<std::string_view, 0>{};
+  } else {
+    constexpr auto enumerators = declared_enumerators_v<Type>;
+    std::array<std::string_view, enumerators.size()> names{};
+    for (std::size_t index = 0; index < enumerators.size(); ++index) {
+      names[index] = json_name_of(enumerators[index]);
+    }
+    return names;
   }
 }
 

@@ -369,12 +369,13 @@ struct rename_all {
 ///
 /// A reflected `std::variant<A, B, ...>` of aggregates is a tagged union: each
 /// alternative is a plain aggregate with exactly one tag, the tags are distinct,
-/// and the encoded object carries its alternative's tag under the key `"type"`.
-/// An alternative may therefore not declare a member whose final key is
-/// `"type"`. The tagged aggregates may stand beside alternatives of other JSON
-/// kinds, as in `std::variant<std::string, Circle, Square>`, and a variant's
-/// only aggregate needs no tag: without one it is written as the plain object
-/// it is. Outside a variant the tag has no effect. Usage:
+/// and the encoded object carries its alternative's tag under the key `"type"`,
+/// or under the key that a scrydantic::tag_key names. An alternative may
+/// therefore not declare a member whose final key is that key. The tagged
+/// aggregates may stand beside alternatives of other JSON kinds, as in
+/// `std::variant<std::string, Circle, Square>`, and a variant's only aggregate
+/// needs no tag: without one it is written as the plain object it is. Outside a
+/// variant the tag has no effect. Usage:
 /// `struct [[= scrydantic::tag{"text"}]] TextBlock { std::string text; };`.
 /// @tparam Size Character-array extent including the null terminator.
 template <std::size_t Size> struct tag : detail::fixed_text<Size> {
@@ -386,6 +387,48 @@ template <std::size_t Size> struct tag : detail::fixed_text<Size> {
 /// Deduces a tag extent from a string literal.
 /// @param value Discriminator text whose extent is deduced.
 template <std::size_t Size> tag(const char (&value)[Size]) -> tag<Size>;
+
+/// Names the key that a tagged variant alternative carries its scrydantic::tag
+/// under, in place of `"type"`.
+///
+/// Applies to a class that carries a scrydantic::tag. The key is the one the
+/// schema's tag property, the encoded object, decoding, and the paths of the
+/// `missing_tag` and `unknown_tag` issues all use, and no member of the
+/// alternative may have it as its final key. The tagged alternatives of one
+/// variant name the same key, where one that names none names `"type"`; a
+/// variant that mixes two keys is a compile-time error that names the two
+/// alternatives. The compiler also rejects a tag_key on a class without a tag,
+/// and two on one class. Outside a variant the key has no effect, as the tag has
+/// none. Usage:
+/// `struct [[= scrydantic::tag{"form"}, = scrydantic::tag_key{"mode"}]]
+/// FormRequest { std::string message; };`, which a variant writes as
+/// `{"message":"...","mode":"form"}`.
+/// @tparam Size Character-array extent including the null terminator.
+template <std::size_t Size> struct tag_key : detail::fixed_text<Size> {
+  static_assert(Size > 1, "scrydantic::tag_key must not be empty");
+
+  using detail::fixed_text<Size>::fixed_text;
+};
+
+/// Deduces a tag key extent from a string literal.
+/// @param value Key text whose extent is deduced.
+template <std::size_t Size> tag_key(const char (&value)[Size]) -> tag_key<Size>;
+
+/// Type of the default_tag annotation.
+struct default_tag_t {};
+
+/// Makes a tagged variant alternative the one that an object without the tag is.
+///
+/// Applies to a class that carries a scrydantic::tag, and to at most one
+/// alternative of a variant. Decoding reads an object that lacks the variant's
+/// tag key as this alternative, where it would otherwise report `missing_tag`;
+/// an object that has the key with a value that is no alternative's tag is
+/// still `unknown_tag`. Encoding writes the tag all the same, and the
+/// alternative's schema keeps the tag property but does not list it as
+/// required. It suits a format that gained its discriminator after the fact,
+/// where an object without one is of the kind there was before. Outside a
+/// variant it has no effect.
+inline constexpr default_tag_t default_tag{};
 
 /// Declares a function as a model-callable tool and supplies its description.
 ///

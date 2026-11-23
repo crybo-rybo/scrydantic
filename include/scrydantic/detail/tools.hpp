@@ -549,13 +549,12 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
   if (annotation_count(function, ^^name) > 1) {
     return "has more than one scrydantic::name annotation";
   }
-  if (has_annotation(function, ^^description) || has_annotation(function, ^^tag) ||
+  if (has_annotation(function, ^^description) || has_class_annotation(function) ||
       has_annotation(function, ^^skip_null_t) ||
-      has_annotation(function, ^^emit_null_t) ||
-      has_annotation(function, ^^ignore_unknown_t)) {
-    return "carries a codec annotation (description, tag, skip_null, emit_null, or "
-           "ignore_unknown), which applies to data members or classes; a tool's "
-           "description is its scrydantic::tool text";
+      has_annotation(function, ^^emit_null_t)) {
+    return "carries a codec annotation (description, tag, tag_key, default_tag, "
+           "skip_null, emit_null, or ignore_unknown), which applies to data members "
+           "or classes; a tool's description is its scrydantic::tool text";
   }
   if (auto reason = key_annotation_problem(function); !reason.empty()) {
     return reason;

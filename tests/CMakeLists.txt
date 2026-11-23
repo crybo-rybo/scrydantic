@@ -143,6 +143,7 @@ add_executable(
   codec/coercion_tests.cpp
   codec/constraint_tests.cpp
   codec/enumerator_name_tests.cpp
+  codec/field_metadata_tests.cpp
   codec/flatten_tests.cpp
   codec/json_schema_tests.cpp
   codec/kind_variant_tests.cpp
@@ -151,6 +152,7 @@ add_executable(
   codec/rename_all_tests.cpp
   codec/schema_default_tests.cpp
   codec/schema_keyword_tests.cpp
+  codec/tag_key_tests.cpp
   codec/validate_tests.cpp
   codec/validator_tests.cpp
   tools/default_argument_tests.cpp
@@ -393,6 +395,51 @@ scrydantic_add_compile_fail_test(
   renamed-tag-key
   renamed_tag_key.cpp
   "Post::attachment<Image>.type_: has the JSON key \"type\", which carries the variant's tag"
+)
+scrydantic_add_compile_fail_test(
+  member-on-tag-key
+  member_on_tag_key.cpp
+  "Dialog::request<FormRequest>.mode: has the JSON key \"mode\", which carries the variant's tag"
+)
+scrydantic_add_compile_fail_test(
+  variant-mixed-tag-keys
+  variant_mixed_tag_keys.cpp
+  "Dialog::request: std::variant<FormRequest, UrlRequest> has alternatives FormRequest and UrlRequest that carry their tags under the keys \"mode\" and \"type\"; the tagged alternatives of one variant name one scrydantic::tag_key"
+)
+scrydantic_add_compile_fail_test(
+  variant-two-default-tags
+  variant_two_default_tags.cpp
+  "Dialog::request: std::variant<FormRequest, UrlRequest> has alternatives FormRequest and UrlRequest that both carry scrydantic::default_tag; an object without the tag is one alternative"
+)
+scrydantic_add_compile_fail_test(
+  tag-key-without-tag
+  tag_key_without_tag.cpp
+  "does not satisfy scrydantic::SupportedValue: FormRequest carries scrydantic::tag_key without a scrydantic::tag, whose key it names"
+)
+scrydantic_add_compile_fail_test(
+  default-tag-without-tag
+  default_tag_without_tag.cpp
+  "Dialog::request<FormRequest>: FormRequest carries scrydantic::default_tag without a scrydantic::tag, which it makes the tag of an object that has none"
+)
+scrydantic_add_compile_fail_test(
+  two-tag-keys
+  two_tag_keys.cpp
+  "does not satisfy scrydantic::SupportedValue: FormRequest has more than one scrydantic::tag_key annotation"
+)
+scrydantic_add_compile_fail_test(
+  empty-tag-key
+  empty_tag_key.cpp
+  "scrydantic::tag_key must not be empty"
+)
+scrydantic_add_compile_fail_test(
+  tag-key-member
+  tag_key_member.cpp
+  "Drawing::shape: carries scrydantic::tag, tag_key, default_tag, or ignore_unknown, which apply to class types"
+)
+scrydantic_add_compile_fail_test(
+  tag-key-tool
+  tag_key_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries a codec annotation (description, tag, tag_key, default_tag, skip_null, emit_null, or ignore_unknown), which applies to data members or classes"
 )
 scrydantic_add_compile_fail_test(
   two-rename-all
@@ -743,6 +790,31 @@ scrydantic_add_compile_fail_test(
   keys-of-endless-recursion
   keys_of_endless_recursion.cpp
   "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)
+scrydantic_add_compile_fail_test(
+  fields-of-non-object
+  fields_of_non_object.cpp
+  "std::variant<Circle> is not a plain aggregate, so it has no JSON object keys"
+)
+scrydantic_add_compile_fail_test(
+  fields-of-endless-recursion
+  fields_of_endless_recursion.cpp
+  "does not satisfy scrydantic::Encodable: Node::next: Node contains itself through no std::optional, std::vector, or variant, so every value of it is infinite or cyclic and cannot be JSON"
+)
+scrydantic_add_compile_fail_test(
+  field-members-of-non-object
+  field_members_of_non_object.cpp
+  "std::vector<Point> is not a plain aggregate, so it has no JSON object keys"
+)
+scrydantic_add_compile_fail_test(
+  enumerators-of-non-enum
+  enumerators_of_non_enum.cpp
+  "Palette is not an enum, so it has no enumerator names"
+)
+scrydantic_add_compile_fail_test(
+  enumerators-of-unscoped-enum
+  enumerators_of_unscoped_enum.cpp
+  "Color does not satisfy scrydantic::Encodable: Color is an unscoped enum; reflected enums are enum class"
 )
 scrydantic_add_compile_fail_test(
   constrained-map
