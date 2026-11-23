@@ -10,8 +10,8 @@
 #include <cstdint>
 #include <expected>
 #include <limits>
+#include <map>
 #include <memory>
-#include <meta>
 #include <optional>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/codec.hpp>
@@ -795,4 +795,21 @@ TEST_CASE("text inside text adds to the same nesting limit") {
   CHECK(levels_of(*within) == 128);
   CHECK(rejection<Tree>(chained(127), structures) ==
         Lines{"wrong_type $.kids[0].kids must be an array"});
+}
+
+TEST_CASE("coerce_structures reads a map from a string that spells an object") {
+  using Counts = std::map<std::string, int>;
+  const scrydantic::DecodeOptions options{.coerce_structures = true};
+
+  const auto counts = scrydantic::decode<Counts>(R"("{\"a\":1,\"b\":2}")", options);
+  REQUIRE(counts);
+  CHECK(*counts == Counts{{"a", 1}, {"b", 2}});
+
+  const auto inner = scrydantic::decode<Counts>(R"("{\"a\":\"x\"}")", options);
+  REQUIRE_FALSE(inner);
+  CHECK(inner.error().model_message == "$.a must be an integer");
+
+  const auto strict = scrydantic::decode<Counts>(R"("{\"a\":1}")");
+  REQUIRE_FALSE(strict);
+  CHECK(strict.error().model_message == "$ must be an object");
 }

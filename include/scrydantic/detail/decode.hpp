@@ -766,10 +766,12 @@ template <typename Array>
 // equality of its own, such as one that ignores case; the later entry then
 // replaces the earlier one's value, as the later of two equal keys does.
 template <typename Map>
-[[nodiscard]] decode_result<Map> read_map(const json_node view,
-                                          const decode_cursor& here) {
+[[nodiscard]] decode_result<Map> read_map(json_node view, const decode_cursor& here) {
   if (view.kind() != JsonKind::object) {
-    return here.fail(IssueKind::wrong_type, "must be an object");
+    view = spelled_structure(view, here, JsonKind::object);
+    if (!view) {
+      return here.fail(IssueKind::wrong_type, "must be an object");
+    }
   }
   Map values{};
   const std::size_t size = view.size();
