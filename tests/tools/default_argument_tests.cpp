@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -11,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -119,6 +121,30 @@ inline std::int32_t balance = 0;
 inline std::int32_t& deposit(std::int32_t amount = 1) { return balance += amount; }
 
 } // namespace ledger
+
+// The examples of the guide's Parameters paragraph.
+namespace guide {
+
+struct Book {
+  std::string title{};
+};
+
+namespace catalog {
+[[= scrydantic::tool{"Search the catalog"}]] inline std::vector<Book>
+    search([[= scrydantic::description{"Title or author"}]] std::string query,
+           [[= scrydantic::range{.min = 1, .max = 50}]] std::int32_t limit = 10) {
+  return std::vector<Book>(static_cast<std::size_t>(limit), Book{.title = query});
+}
+} // namespace catalog
+
+namespace clocks {
+[[= scrydantic::tool{"Format a time"}]] inline std::string
+    format(std::int64_t seconds, std::string zone = "UTC", bool with_date = false) {
+  return std::to_string(seconds) + " " + zone + (with_date ? " with date" : "");
+}
+} // namespace clocks
+
+} // namespace guide
 
 namespace {
 
@@ -394,4 +420,29 @@ TEST_CASE("apply() returns what the function returns, with or without a default"
   CHECK(ledger::balance == 1);
   CHECK(scrydantic::apply<^^ledger::deposit>(Arguments{.amount = 4}) == 5);
   CHECK(ledger::balance == 5);
+}
+
+TEST_CASE("the guide's parameter examples say what the code does") {
+  const auto found = scrydantic::bind<^^guide::catalog>();
+  REQUIRE(found.size() == 1);
+  CHECK(found[0].input_schema.text ==
+        R"({"additionalProperties":false,)"
+        R"("properties":{"limit":{"maximum":50,"minimum":1,"type":"integer"},)"
+        R"("query":{"description":"Title or author","type":"string"}},)"
+        R"("required":["query"],"type":"object"})");
+  const auto ten = found[0].invoke(json(R"({"query":"dune"})"));
+  REQUIRE(ten.has_value());
+  CHECK(scrydantic::JsonView::parse(ten->text)->size() == 10);
+  CHECK(model_message(found[0].invoke(json(R"({"query":"dune","limit":99})"))) ==
+        "$.limit must be at most 50");
+  CHECK(model_message(found[0].invoke(json(R"({"query":"dune","limit":null})"))) ==
+        "$.limit must be an integer");
+
+  const auto clocks = scrydantic::bind<^^guide::clocks>();
+  REQUIRE(clocks.size() == 1);
+  const auto& format = clocks[0].invoke;
+  CHECK(format(json(R"({"seconds":0})"))->text == R"("0 UTC")");
+  CHECK(format(json(R"({"seconds":0,"zone":"CET"})"))->text == R"("0 CET")");
+  CHECK(model_message(format(json(R"({"seconds":0,"with_date":true})"))) ==
+        "$.zone is required when \"with_date\" is given");
 }
