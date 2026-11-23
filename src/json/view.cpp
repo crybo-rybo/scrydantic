@@ -38,8 +38,10 @@ Result<JsonView> JsonView::parse(const std::string_view text) {
     return std::unexpected(
         Error{.message = message, .model_message = std::move(message)});
   }
-  return JsonView{std::shared_ptr<const void>{
-      std::make_shared<const detail::json::Value>(std::move(*document))}};
+  // The view shares the whole document and points at its root value.
+  auto owner = std::make_shared<const detail::json::Document>(std::move(*document));
+  const detail::json::Value* const root = owner.get();
+  return JsonView{std::shared_ptr<const void>{std::move(owner), root}};
 }
 
 Result<JsonView> JsonView::parse(const Json& json) {
@@ -83,21 +85,23 @@ std::size_t JsonView::size() const noexcept {
 
 std::optional<JsonView> JsonView::at(const std::size_t index) const noexcept {
   const auto* value = node(value_.get());
-  const auto* elements = value == nullptr ? nullptr : value->array();
-  if (elements == nullptr || index >= elements->size()) {
+  // No elements unless the value is an array.
+  const auto elements = value == nullptr ? detail::json::Array{} : value->elements();
+  if (index >= elements.size()) {
     return std::nullopt;
   }
-  return JsonView{std::shared_ptr<const void>{value_, &(*elements)[index]}};
+  return JsonView{std::shared_ptr<const void>{value_, &elements[index]}};
 }
 
 std::optional<std::string_view>
 JsonView::key_at(const std::size_t index) const noexcept {
   const auto* value = node(value_.get());
-  const auto* members = value == nullptr ? nullptr : value->object();
-  if (members == nullptr || index >= members->size()) {
+  // No members unless the value is an object.
+  const auto members = value == nullptr ? detail::json::Object{} : value->members();
+  if (index >= members.size()) {
     return std::nullopt;
   }
-  return std::string_view{(*members)[index].first};
+  return members[index].key;
 }
 
 std::optional<JsonView> JsonView::find(const std::string_view name) const noexcept {
@@ -168,11 +172,15 @@ json_node json_node::find(const std::string_view name) const noexcept {
 Json json_node::to_json() const { return Json{.text = json::write(*node(value_))}; }
 
 json_node json_node::at(const std::size_t index) const noexcept {
-  return json_node{&(*node(value_)->array())[index]};
+  return json_node{&node(value_)->elements()[index]};
 }
 
 std::string_view json_node::key_at(const std::size_t index) const noexcept {
-  return (*node(value_)->object())[index].first;
+  return node(value_)->members()[index].key;
+}
+
+json_node json_node::value_at(const std::size_t index) const noexcept {
+  return json_node{&node(value_)->members()[index].value};
 }
 
 } // namespace detail

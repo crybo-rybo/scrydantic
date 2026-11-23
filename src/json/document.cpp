@@ -7,30 +7,92 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
-#include <iterator>
 #include <limits>
+#include <memory>
+#include <new>
 #include <optional>
 #include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/json.hpp>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <variant>
+#include <vector>
 
 namespace scrydantic::detail::json {
 
 // The parser's only way to give a Value content.
 class Builder {
 public:
-  template <class T> [[nodiscard]] static Value make(T data) {
-    return Value{Value::Data{std::in_place_type<T>, std::move(data)}};
+  [[nodiscard]] static Value make(std::nullptr_t) noexcept { return {}; }
+
+  [[nodiscard]] static Value make(const bool data) noexcept {
+    return {JsonKind::boolean, 0, {.boolean = data}};
+  }
+
+  [[nodiscard]] static Value make(const std::int64_t data) noexcept {
+    return {JsonKind::signed_integer, 0, {.signed_integer = data}};
+  }
+
+  [[nodiscard]] static Value make(const std::uint64_t data) noexcept {
+    return {JsonKind::unsigned_integer, 0, {.unsigned_integer = data}};
+  }
+
+  [[nodiscard]] static Value make(const double data) noexcept {
+    return {JsonKind::number, 0, {.number = data}};
+  }
+
+  [[nodiscard]] static Value make(const std::string_view data) noexcept {
+    Value::Payload payload{};
+    payload.text = data.data();
+    return {JsonKind::string, data.size(), payload};
+  }
+
+  [[nodiscard]] static Value make(const Array data) noexcept {
+    return {JsonKind::array, data.size(), {.elements = data.data()}};
+  }
+
+  [[nodiscard]] static Value make(const Object data) noexcept {
+    return {JsonKind::object, data.size(), {.members = data.data()}};
   }
 };
+
+void* Arena::take(const std::size_t bytes, const std::align_val_t alignment) {
+  // A chunk's bytes start aligned for anything, so an offset into them that is
+  // a multiple of an alignment is aligned for it.
+  const auto multiple = static_cast<std::size_t>(alignment);
+  std::size_t start = (used_ + multiple - 1U) & ~(multiple - 1U);
+  if (start > capacity_ || bytes > capacity_ - start) {
+    add_chunk(bytes);
+    start = 0;
+  }
+  used_ = start + bytes;
+  return base_ + start;
+}
+
+void Arena::add_chunk(const std::size_t bytes) {
+  const std::size_t size = std::max(next_chunk_, bytes);
+  next_chunk_ = std::min(size * 2U, max_chunk);
+  void* const memory = ::operator new(sizeof(Chunk) + size);
+  chunks_ = ::new (memory) Chunk{.next = chunks_};
+  base_ = static_cast<char*>(memory) + sizeof(Chunk);
+  used_ = 0;
+  capacity_ = size;
+}
+
+void Arena::release() noexcept {
+  while (chunks_ != nullptr) {
+    Chunk* const next = chunks_->next;
+    ::operator delete(chunks_);
+    chunks_ = next;
+  }
+}
 
 namespace {
 
@@ -94,6 +156,40 @@ constexpr std::uint64_t byte_highs = 0x8080808080808080U;
   return (word & byte_highs) == 0 && !word_needs_escape(word);
 }
 
+// The first chunk of the arena of a document parsed from `size` bytes of text.
+// A document's values and text take from about once to three times the size of
+// its text, so most documents fit in the first chunk and the one after it.
+[[nodiscard]] std::size_t first_chunk_for(const std::size_t size) noexcept {
+  constexpr std::size_t smallest = 256;
+  constexpr std::size_t largest = std::size_t{1} << 16U;
+  return std::clamp(size, smallest, largest);
+}
+
+// A copy of [first, last) in `arena`.
+[[nodiscard]] std::string_view stored_text(Arena& arena, const char* const first,
+                                           const char* const last) {
+  const auto size = static_cast<std::size_t>(last - first);
+  if (size == 0) {
+    // Not a null view: an empty string is a string.
+    return std::string_view{""};
+  }
+  auto* const stored = arena.allocate<char>(size);
+  std::memcpy(stored, first, size);
+  return {stored, size};
+}
+
+// A copy of `values` in `arena`: the contents of a finished container.
+template <class T>
+[[nodiscard]] std::span<const T> stored_contents(Arena& arena,
+                                                 const std::span<const T> values) {
+  if (values.empty()) {
+    return {};
+  }
+  auto* const stored = arena.allocate<T>(values.size());
+  std::uninitialized_copy_n(values.data(), values.size(), stored);
+  return {stored, values.size()};
+}
+
 void append_utf8(std::string& output, const std::uint32_t code_point) {
   const auto byte = [](const std::uint32_t value) { return static_cast<char>(value); };
   if (code_point < 0x80U) {
@@ -134,31 +230,74 @@ void append_utf8(std::string& output, const std::uint32_t code_point) {
   }
 }
 
-// Sorts an object's members by key and keeps the last of each run of equal
-// keys. The stable sort leaves duplicates in document order, so the last of a
-// run is the last occurrence.
-void canonicalize_members(Object& members) {
-  const auto out_of_order = [](const Member& left, const Member& right) {
-    return !(left.first < right.first);
-  };
-  if (std::ranges::adjacent_find(members, out_of_order) == members.end()) {
-    return;
+// Whether `members` are in key order with no key twice, as an object's are.
+[[nodiscard]] bool in_key_order(const std::span<const Member> members) noexcept {
+  return std::ranges::adjacent_find(members,
+                                    [](const Member& left, const Member& right) {
+                                      return !(left.key < right.key);
+                                    }) == members.end();
+}
+
+// Stores in `arena` the object of `members`, which are in document order:
+// sorted by key, keeping the last of each run of equal keys. Members already in
+// order are copied as they are. Otherwise their positions are sorted, in
+// `order`, rather than the members themselves, and equal keys by position, so
+// the last of a run is the last occurrence.
+[[nodiscard]] Object stored_object(Arena& arena, const std::span<const Member> members,
+                                   std::vector<std::size_t>& order) {
+  if (in_key_order(members)) {
+    return stored_contents(arena, members);
   }
-  std::ranges::stable_sort(members, [](const Member& left, const Member& right) {
-    return left.first < right.first;
+  order.resize(members.size());
+  for (std::size_t position = 0; position < order.size(); ++position) {
+    order[position] = position;
+  }
+  std::ranges::sort(order, [members](const std::size_t left, const std::size_t right) {
+    const auto compared = members[left].key <=> members[right].key;
+    return std::is_eq(compared) ? left < right : std::is_lt(compared);
   });
-  auto kept = members.begin();
-  for (auto member = members.begin(); member != members.end(); ++member) {
-    const auto next = std::next(member);
-    if (next != members.end() && next->first == member->first) {
-      continue;
+  // Room for every member; the few that an equal key replaces go unused.
+  auto* const stored = arena.allocate<Member>(members.size());
+  std::size_t kept = 0;
+  for (std::size_t index = 0; index < order.size(); ++index) {
+    const Member& member = members[order[index]];
+    const bool replaced =
+        index + 1 < order.size() && members[order[index + 1]].key == member.key;
+    if (!replaced) {
+      std::construct_at(stored + kept, member);
+      ++kept;
     }
-    if (kept != member) {
-      *kept = std::move(*member);
-    }
-    ++kept;
   }
-  members.erase(kept, members.end());
+  return {stored, kept};
+}
+
+// What the parser keeps while it reads, and the validator has no use for.
+struct Workspace {
+  explicit Workspace(Arena& document_arena) noexcept : arena{&document_arena} {}
+
+  // Where finished strings and containers go.
+  Arena* arena;
+  // The elements and the members of every container still open, each
+  // container's above its parent's, so that a finished container is stored in
+  // one piece of exactly its size.
+  std::vector<Value> values{};
+  std::vector<Member> members{};
+  // stored_object()'s positions.
+  std::vector<std::size_t> order{};
+  // The text of a string that has an escape, while it is read.
+  std::string text{};
+};
+
+// The capacity a workspace's stack starts with: enough for most documents, so
+// that a small one, such as a tool's arguments, grows it once and not at each
+// power of two on the way.
+constexpr std::size_t initial_stack = 16;
+
+template <class T> void push(std::vector<T>& stack, const T& value) {
+  if (stack.capacity() == 0) {
+    stack.reserve(initial_stack);
+  }
+  stack.push_back(value);
 }
 
 // One recursive-descent reader for both the parser and the validator, so the
@@ -169,14 +308,20 @@ void canonicalize_members(Object& members) {
 template <bool Build> class Reader {
 public:
   using Out = std::conditional_t<Build, Value, Discard>;
-  using Text = std::conditional_t<Build, std::string, Discard>;
-  using Elements = std::conditional_t<Build, Array, Discard>;
-  using Members = std::conditional_t<Build, Object, Discard>;
+  using Text = std::conditional_t<Build, std::string_view, Discard>;
+  using Work = std::conditional_t<Build, Workspace, Discard>;
 
-  // `depth` arrays and objects are already open around the text.
+  // The validator. `depth` arrays and objects are already open around the text.
   explicit Reader(const std::string_view text, const std::size_t depth = 0) noexcept
+    requires(!Build)
       : begin_(text.data()), cursor_(text.data()), end_(text.data() + text.size()),
         depth_(depth) {}
+
+  // The parser, whose values point into `arena`.
+  Reader(const std::string_view text, Arena& arena) noexcept
+    requires Build
+      : begin_(text.data()), cursor_(text.data()), end_(text.data() + text.size()),
+        work_(arena) {}
 
   [[nodiscard]] bool document(Out& out) {
     skip_whitespace();
@@ -229,9 +374,28 @@ private:
     }
   }
 
-  template <class T> static void emit(Out& out, T&& data) {
+  template <class T> static void emit(Out& out, const T data) {
     if constexpr (Build) {
-      out = Builder::make<std::remove_cvref_t<T>>(std::forward<T>(data));
+      out = Builder::make(data);
+    }
+  }
+
+  // How many elements of the arrays still open the workspace holds, which is
+  // where those of an array opened now start; open_members() is the same for
+  // objects.
+  [[nodiscard]] std::size_t open_values() const noexcept {
+    if constexpr (Build) {
+      return work_.values.size();
+    } else {
+      return 0;
+    }
+  }
+
+  [[nodiscard]] std::size_t open_members() const noexcept {
+    if constexpr (Build) {
+      return work_.members.size();
+    } else {
+      return 0;
     }
   }
 
@@ -311,7 +475,7 @@ private:
     if (!enter()) {
       return false;
     }
-    Elements elements{};
+    [[maybe_unused]] const std::size_t first = open_values();
     skip_whitespace();
     bool closed = next_is(']');
     if (closed) {
@@ -323,15 +487,19 @@ private:
         return false;
       }
       if constexpr (Build) {
-        elements.push_back(std::move(element));
+        push(work_.values, element);
       }
     }
     --depth_;
-    emit(out, std::move(elements));
+    if constexpr (Build) {
+      const std::span<const Value> elements{work_.values};
+      emit(out, stored_contents(*work_.arena, elements.subspan(first)));
+      work_.values.resize(first);
+    }
     return true;
   }
 
-  [[nodiscard]] bool member(Members& members) {
+  [[nodiscard]] bool member() {
     skip_whitespace();
     Text key{};
     if (!next_is('"')) {
@@ -350,7 +518,7 @@ private:
       return false;
     }
     if constexpr (Build) {
-      members.emplace_back(std::move(key), std::move(element));
+      push(work_.members, Member{.key = key, .value = element});
     }
     return true;
   }
@@ -359,22 +527,23 @@ private:
     if (!enter()) {
       return false;
     }
-    Members members{};
+    [[maybe_unused]] const std::size_t first = open_members();
     skip_whitespace();
     bool closed = next_is('}');
     if (closed) {
       ++cursor_;
     }
     while (!closed) {
-      if (!member(members) || !separator('}', closed)) {
+      if (!member() || !separator('}', closed)) {
         return false;
       }
     }
     --depth_;
     if constexpr (Build) {
-      canonicalize_members(members);
+      const std::span<const Member> members{work_.members};
+      emit(out, stored_object(*work_.arena, members.subspan(first), work_.order));
+      work_.members.resize(first);
     }
-    emit(out, std::move(members));
     return true;
   }
 
@@ -383,20 +552,19 @@ private:
     if (!read_string(text)) {
       return false;
     }
-    emit(out, std::move(text));
+    emit(out, text);
     return true;
   }
 
-  // Reads a string token, the cursor on its opening quote. Runs of bytes that
-  // need no decoding are copied whole.
+  // Reads a string token, the cursor on its opening quote. A string with no
+  // escape, as most are, is copied from the input to the arena in one piece.
+  // One with an escape is first put together in the workspace, the runs of
+  // bytes between its escapes copied whole.
   [[nodiscard]] bool read_string(Text& text) {
     const char* const quote = cursor_++;
+    // The bytes since the opening quote or the last escape.
     const char* run = cursor_;
-    const auto flush = [&] {
-      if constexpr (Build) {
-        text.append(run, cursor_);
-      }
-    };
+    bool escaped = false;
     while (cursor_ != end_) {
       if (remaining() >= word_size && word_is_plain(load_word(cursor_))) {
         cursor_ += word_size;
@@ -404,13 +572,13 @@ private:
       }
       const auto byte = static_cast<unsigned char>(*cursor_);
       if (byte == '"') {
-        flush();
+        finish_text(text, run, escaped);
         ++cursor_;
         return true;
       }
       if (byte == '\\') {
-        flush();
-        if (!escape(text)) {
+        keep_run(run, escaped);
+        if (!escape()) {
           return fail_inside(quote);
         }
         run = cursor_;
@@ -426,6 +594,40 @@ private:
       }
     }
     return fail(Fault::unterminated_string, quote);
+  }
+
+  // Before an escape is read: adds the run that it ends to the text in the
+  // workspace, which a string's first escape starts over.
+  void keep_run(const char* const run, bool& escaped) {
+    if constexpr (Build) {
+      if (!escaped) {
+        work_.text.clear();
+        escaped = true;
+      }
+      work_.text.append(run, cursor_);
+    } else {
+      static_cast<void>(run);
+      static_cast<void>(escaped);
+    }
+  }
+
+  // At a string's closing quote: stores its text in the arena. That is its
+  // last run alone when it had no escape, and otherwise what the workspace
+  // holds of it and then that run.
+  void finish_text(Text& text, const char* const run, const bool escaped) {
+    if constexpr (Build) {
+      if (!escaped) {
+        text = stored_text(*work_.arena, run, cursor_);
+        return;
+      }
+      work_.text.append(run, cursor_);
+      text = stored_text(*work_.arena, work_.text.data(),
+                         work_.text.data() + work_.text.size());
+    } else {
+      static_cast<void>(text);
+      static_cast<void>(run);
+      static_cast<void>(escaped);
+    }
   }
 
   // Fails the string that opens at `quote` after an escape or a UTF-8 sequence
@@ -460,21 +662,21 @@ private:
   }
 
   // The escape whose backslash is at the cursor.
-  [[nodiscard]] bool escape(Text& text) {
+  [[nodiscard]] bool escape() {
     const char* const backslash = cursor_++;
     if (at_end()) {
       return fail(Fault::end_of_input, cursor_);
     }
     const char escaped = *cursor_++;
     if (escaped == 'u') {
-      return unicode_escape(text, backslash);
+      return unicode_escape(backslash);
     }
     const char decoded = simple_escape(escaped);
     if (decoded == '\0') {
       return fail(Fault::invalid_escape, backslash);
     }
     if constexpr (Build) {
-      text.push_back(decoded);
+      work_.text.push_back(decoded);
     }
     return true;
   }
@@ -502,7 +704,7 @@ private:
     return true;
   }
 
-  [[nodiscard]] bool unicode_escape(Text& text, const char* const backslash) {
+  [[nodiscard]] bool unicode_escape(const char* const backslash) {
     std::uint32_t code_point = 0;
     if (!hex_quad(backslash, code_point)) {
       return false;
@@ -515,7 +717,7 @@ private:
       return false;
     }
     if constexpr (Build) {
-      append_utf8(text, code_point);
+      append_utf8(work_.text, code_point);
     }
     return true;
   }
@@ -648,6 +850,7 @@ private:
   // What fail() recorded.
   Fault fault_{};
   const char* stop_{};
+  [[no_unique_address]] Work work_{};
 };
 
 // Each fault's phrase, in Fault order. The phrases are short and fixed, so the
@@ -716,7 +919,7 @@ void append_escape(std::string& output, const unsigned char byte) {
 
 void write_value(const Value& value, std::string& output);
 
-void write_array(const Array& elements, std::string& output) {
+void write_array(const Array elements, std::string& output) {
   output.push_back('[');
   for (std::size_t index = 0; index < elements.size(); ++index) {
     if (index > 0) {
@@ -727,15 +930,15 @@ void write_array(const Array& elements, std::string& output) {
   output.push_back(']');
 }
 
-void write_object(const Object& members, std::string& output) {
+void write_object(const Object members, std::string& output) {
   output.push_back('{');
   for (std::size_t index = 0; index < members.size(); ++index) {
     if (index > 0) {
       output.push_back(',');
     }
-    append_quoted(output, members[index].first);
+    append_quoted(output, members[index].key);
     output.push_back(':');
-    write_value(members[index].second, output);
+    write_value(members[index].value, output);
   }
   output.push_back('}');
 }
@@ -758,89 +961,105 @@ void write_scalar(const Value& value, std::string& output) {
 }
 
 void write_value(const Value& value, std::string& output) {
-  if (const auto* elements = value.array()) {
-    write_array(*elements, output);
-  } else if (const auto* members = value.object()) {
-    write_object(*members, output);
-  } else {
+  switch (value.kind()) {
+  case JsonKind::array:
+    write_array(value.elements(), output);
+    break;
+  case JsonKind::object:
+    write_object(value.members(), output);
+    break;
+  default:
     write_scalar(value, output);
+    break;
   }
 }
 
 } // namespace
 
-JsonKind Value::kind() const noexcept { return static_cast<JsonKind>(data_.index()); }
-
-bool Value::is_null() const noexcept {
-  return std::holds_alternative<std::nullptr_t>(data_);
+JsonKind Value::kind() const noexcept {
+  constexpr std::uint64_t kind_mask = (std::uint64_t{1} << kind_bits) - 1U;
+  return static_cast<JsonKind>(meta_ & kind_mask);
 }
 
+bool Value::is_null() const noexcept { return kind() == JsonKind::null; }
+
 std::optional<bool> Value::boolean() const noexcept {
-  const auto* value = std::get_if<bool>(&data_);
-  return value == nullptr ? std::nullopt : std::optional<bool>{*value};
+  if (kind() != JsonKind::boolean) {
+    return std::nullopt;
+  }
+  return payload_.boolean;
 }
 
 std::optional<std::int64_t> Value::signed_integer() const noexcept {
-  const auto* value = std::get_if<std::int64_t>(&data_);
-  return value == nullptr ? std::nullopt : std::optional<std::int64_t>{*value};
+  if (kind() != JsonKind::signed_integer) {
+    return std::nullopt;
+  }
+  return payload_.signed_integer;
 }
 
 std::optional<std::uint64_t> Value::unsigned_integer() const noexcept {
-  const auto* value = std::get_if<std::uint64_t>(&data_);
-  return value == nullptr ? std::nullopt : std::optional<std::uint64_t>{*value};
+  if (kind() != JsonKind::unsigned_integer) {
+    return std::nullopt;
+  }
+  return payload_.unsigned_integer;
 }
 
 std::optional<double> Value::number() const noexcept {
-  if (const auto* value = std::get_if<double>(&data_)) {
-    return *value;
+  switch (kind()) {
+  case JsonKind::number:
+    return payload_.number;
+  case JsonKind::unsigned_integer:
+    return static_cast<double>(payload_.unsigned_integer);
+  case JsonKind::signed_integer:
+    return static_cast<double>(payload_.signed_integer);
+  default:
+    return std::nullopt;
   }
-  if (const auto* value = std::get_if<std::uint64_t>(&data_)) {
-    return static_cast<double>(*value);
-  }
-  if (const auto* value = std::get_if<std::int64_t>(&data_)) {
-    return static_cast<double>(*value);
-  }
-  return std::nullopt;
 }
 
 std::optional<std::string_view> Value::string() const noexcept {
-  const auto* value = std::get_if<std::string>(&data_);
-  return value == nullptr ? std::nullopt : std::optional<std::string_view>{*value};
+  if (kind() != JsonKind::string) {
+    return std::nullopt;
+  }
+  return std::string_view{payload_.text, extent()};
 }
 
-const Array* Value::array() const noexcept { return std::get_if<Array>(&data_); }
+Array Value::elements() const noexcept {
+  if (kind() != JsonKind::array) {
+    return {};
+  }
+  return {payload_.elements, extent()};
+}
 
-const Object* Value::object() const noexcept { return std::get_if<Object>(&data_); }
+Object Value::members() const noexcept {
+  if (kind() != JsonKind::object) {
+    return {};
+  }
+  return {payload_.members, extent()};
+}
 
 std::size_t Value::size() const noexcept {
-  if (const auto* elements = array()) {
-    return elements->size();
-  }
-  if (const auto* members = object()) {
-    return members->size();
-  }
-  return 0;
+  const JsonKind held = kind();
+  return held == JsonKind::array || held == JsonKind::object ? extent() : 0;
 }
 
 const Value* Value::find(const std::string_view key) const noexcept {
-  const auto* members = object();
-  if (members == nullptr) {
+  const Object all = members();
+  const auto found = std::ranges::lower_bound(all, key, {}, &Member::key);
+  if (found == all.end() || found->key != key) {
     return nullptr;
   }
-  const auto found = std::ranges::lower_bound(*members, key, {}, &Member::first);
-  if (found == members->end() || found->first != key) {
-    return nullptr;
-  }
-  return &found->second;
+  return &found->value;
 }
 
-std::expected<Value, Rejection> parse(const std::string_view text) {
-  Value value{};
-  Reader<true> reader{text};
-  if (!reader.document(value)) {
+std::expected<Document, Rejection> parse(const std::string_view text) {
+  Arena arena{first_chunk_for(text.size())};
+  Value root{};
+  Reader<true> reader{text, arena};
+  if (!reader.document(root)) {
     return std::unexpected(reader.rejection());
   }
-  return value;
+  return Document{root, std::move(arena)};
 }
 
 bool validate(const std::string_view text) noexcept {
@@ -867,19 +1086,20 @@ Validity check(const std::string_view text, const std::size_t depth) noexcept {
 
 std::size_t nesting(const Value& value) noexcept {
   std::size_t deepest = 0;
-  if (const auto* elements = value.array()) {
-    for (const auto& element : *elements) {
+  switch (value.kind()) {
+  case JsonKind::array:
+    for (const auto& element : value.elements()) {
       deepest = std::max(deepest, nesting(element));
     }
     return deepest + 1;
-  }
-  if (const auto* members = value.object()) {
-    for (const auto& member : *members) {
-      deepest = std::max(deepest, nesting(member.second));
+  case JsonKind::object:
+    for (const auto& member : value.members()) {
+      deepest = std::max(deepest, nesting(member.value));
     }
     return deepest + 1;
+  default:
+    return 0;
   }
-  return 0;
 }
 
 std::string_view reason(const Fault fault) noexcept {

@@ -68,7 +68,7 @@ include(FetchContent)
 FetchContent_Declare(
   scrydantic
   GIT_REPOSITORY https://github.com/crybo-rybo/scrydantic.git
-  GIT_TAG v0.3.1
+  GIT_TAG v0.3.2
 )
 FetchContent_MakeAvailable(scrydantic)
 target_link_libraries(my_app PRIVATE scrydantic::scrydantic)

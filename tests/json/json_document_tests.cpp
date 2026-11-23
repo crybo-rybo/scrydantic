@@ -20,7 +20,7 @@ namespace {
 namespace json = scrydantic::detail::json;
 using scrydantic::JsonKind;
 
-[[nodiscard]] json::Value parse_ok(const std::string_view text) {
+[[nodiscard]] json::Document parse_ok(const std::string_view text) {
   auto parsed = json::parse(text);
   REQUIRE(parsed);
   REQUIRE(json::validate(text));
@@ -55,9 +55,9 @@ TEST_CASE("json values report their kind and nothing else") {
   CHECK(document.find("e")->number() == 1.5);
   CHECK(document.find("f")->string() == "x");
   CHECK(document.find("f")->number() == std::nullopt);
-  CHECK(document.find("g")->array()->size() == 1);
+  CHECK(document.find("g")->elements().size() == 1);
   CHECK(document.find("g")->size() == 1);
-  CHECK(document.find("h")->object()->empty());
+  CHECK(document.find("h")->members().empty());
   CHECK(document.find("missing") == nullptr);
   CHECK(document.find("g")->find("a") == nullptr);
   CHECK(json::Value{}.is_null());
@@ -67,19 +67,122 @@ TEST_CASE("json values report their kind and nothing else") {
 TEST_CASE("json objects sort keys by byte and keep the last duplicate") {
   const auto document = parse_ok(
       "{\"b\":1,\"a\":2,\"\xc3\xa9\":3,\"B\":4,\"a\":5,\"o\":{\"k\":1,\"k\":2}}");
-  const auto& members = *document.object();
+  const auto members = document.members();
   REQUIRE(members.size() == 5);
-  CHECK(members[0].first == "B");
-  CHECK(members[1].first == "a");
-  CHECK(members[2].first == "b");
-  CHECK(members[3].first == "o");
-  CHECK(members[4].first == "\xc3\xa9");
+  CHECK(members[0].key == "B");
+  CHECK(members[1].key == "a");
+  CHECK(members[2].key == "b");
+  CHECK(members[3].key == "o");
+  CHECK(members[4].key == "\xc3\xa9");
   CHECK(document.find("a")->unsigned_integer() == 5U);
   CHECK(document.find("o")->find("k")->unsigned_integer() == 2U);
   CHECK(json::write(document) ==
         "{\"B\":4,\"a\":5,\"b\":1,\"o\":{\"k\":2},\"\xc3\xa9\":3}");
   // An escaped key is the same key as its plain spelling.
   CHECK(canonical("{\"A\":1,\"\\u0041\":2}") == R"({"A":2})");
+}
+
+TEST_CASE("json objects of many members sort as small ones do") {
+  // Forty keys in descending order, each given twice: every member moves, and
+  // the second of each pair replaces the first.
+  std::string text{"{"};
+  for (int index = 39; index >= 0; --index) {
+    const auto key = "\"k" + std::string(index < 10 ? "0" : "") + std::to_string(index);
+    text += key + "\":0," + key + "\":" + std::to_string(index);
+    text += index == 0 ? "}" : ",";
+  }
+  const auto document = parse_ok(text);
+  const auto members = document.members();
+  REQUIRE(members.size() == 40);
+  for (std::size_t index = 0; index < members.size(); ++index) {
+    INFO(index);
+    CHECK(members[index].key ==
+          "k" + std::string(index < 10 ? "0" : "") + std::to_string(index));
+    CHECK(members[index].value.unsigned_integer() == index);
+  }
+}
+
+// A document's strings and containers live in the chunks of its arena
+// (json::Arena). These hold a document to the same answers however many chunks
+// it takes and wherever it is moved.
+TEST_CASE("json documents of any size keep every value") {
+  // Far more values and text than the first chunk holds, so later chunks do.
+  constexpr std::size_t count = 20000;
+  std::string text{"["};
+  for (std::size_t index = 0; index < count; ++index) {
+    text += R"({"id":)" + std::to_string(index) + R"(,"name":"item )" +
+            std::to_string(index) + R"(","tags":["a\tb",""]})";
+    text += index + 1 == count ? "]" : ",";
+  }
+  const auto document = parse_ok(text);
+  const auto elements = document.elements();
+  REQUIRE(elements.size() == count);
+  for (const std::size_t index : {std::size_t{0}, count / 2, count - 1}) {
+    INFO(index);
+    CHECK(elements[index].find("id")->unsigned_integer() == index);
+    CHECK(elements[index].find("name")->string() == "item " + std::to_string(index));
+    const auto tags = elements[index].find("tags")->elements();
+    REQUIRE(tags.size() == 2);
+    CHECK(tags[0].string() == "a\tb");
+    CHECK(tags[1].string() == "");
+  }
+  CHECK(json::write(document) == text);
+}
+
+TEST_CASE("json strings longer than an arena chunk are kept whole") {
+  // Longer than the largest chunk, without an escape and with one.
+  const std::string plain(3U << 20U, 'x');
+  const std::string escaped = plain + "\n" + plain;
+  const auto document =
+      parse_ok("[\"" + plain + "\",\"" + plain + "\\n" + plain + "\",\"after\"]");
+  const auto elements = document.elements();
+  REQUIRE(elements.size() == 3);
+  CHECK(elements[0].string() == plain);
+  CHECK(elements[1].string() == escaped);
+  CHECK(elements[2].string() == "after");
+}
+
+TEST_CASE("json empty strings and containers are values of their kind") {
+  const auto document = parse_ok(R"({"":"","a":[],"o":{}})");
+  REQUIRE(document.find("") != nullptr);
+  REQUIRE(document.find("")->string().has_value());
+  CHECK(document.find("")->string()->empty());
+  CHECK(document.find("")->string()->data() != nullptr);
+  CHECK(document.find("a")->kind() == JsonKind::array);
+  CHECK(document.find("a")->elements().empty());
+  CHECK(document.find("o")->kind() == JsonKind::object);
+  CHECK(document.find("o")->members().empty());
+  // Neither kind has the other's contents, and a scalar has neither's.
+  CHECK(document.find("a")->members().empty());
+  CHECK(document.find("")->elements().empty());
+  CHECK(json::write(document) == R"({"":"","a":[],"o":{}})");
+}
+
+TEST_CASE("json values stay valid when their document moves") {
+  auto document = parse_ok(R"({"list":[1,"two",{"three":3.5}],"text":"kept"})");
+  const json::Value* const list = document.find("list");
+  const json::Value* const text = document.find("text");
+  const json::Document moved = std::move(document);
+  CHECK(moved.find("list") == list);
+  CHECK(json::write(*list) == R"([1,"two",{"three":3.5}])");
+  CHECK(text->string() == "kept");
+  // Moved over, a document frees what it held and takes the other's.
+  auto replaced = parse_ok(R"(["first"])");
+  replaced = parse_ok(R"(["second"])");
+  CHECK(json::write(replaced) == R"(["second"])");
+}
+
+TEST_CASE("json strings with escapes do not run into one another") {
+  // The parser puts a string with an escape together in one buffer, which each
+  // such string starts over.
+  const auto document = parse_ok(R"(["long\nfirst string","b","\tc","","e\u00e9"])");
+  const auto elements = document.elements();
+  REQUIRE(elements.size() == 5);
+  CHECK(elements[0].string() == "long\nfirst string");
+  CHECK(elements[1].string() == "b");
+  CHECK(elements[2].string() == "\tc");
+  CHECK(elements[3].string() == "");
+  CHECK(elements[4].string() == "e\xc3\xa9");
 }
 
 TEST_CASE("json integers are plain digit strings that fit their kind") {

@@ -141,11 +141,13 @@ enum class json_validity : std::uint8_t {
 // a document through views costs two atomic operations for every value visited;
 // the reflected decoder walks nodes instead, under the view it was given.
 //
-// A node is valid for as long as any JsonView into its document is. find()
-// returns a node with no value for a member that is absent, which converts to
-// false; every other function requires a value.
+// A node is valid for as long as any JsonView into its document is. A
+// default-constructed node has no value, as the one find() returns for a member
+// that is absent, and converts to false; every other function requires a value.
 class json_node {
 public:
+  json_node() noexcept = default;
+
   // The value `view` shows; a default-constructed view shows a null.
   explicit json_node(const JsonView& view) noexcept;
 
@@ -168,6 +170,9 @@ public:
   // An object's key, in lexical order. Requires an object and an index below
   // its size().
   [[nodiscard]] std::string_view key_at(std::size_t index) const noexcept;
+
+  // The value of the member that key_at(index) names, which requires the same.
+  [[nodiscard]] json_node value_at(std::size_t index) const noexcept;
 
 private:
   explicit json_node(const void* const value) noexcept : value_{value} {}
