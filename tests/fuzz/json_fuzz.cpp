@@ -102,21 +102,22 @@ namespace json = scrydantic::detail::json;
 
 [[nodiscard]] bool same_tree(const json::Value& left, const json::Value& right);
 
+// `left` and `right` are both arrays or both objects, so of the two loops one
+// has nothing to visit.
 [[nodiscard]] bool same_containers(const json::Value& left, const json::Value& right) {
   if (left.size() != right.size()) {
     return false;
   }
-  if (const auto* elements = left.array()) {
-    for (std::size_t index = 0; index < elements->size(); ++index) {
-      if (!same_tree((*elements)[index], (*right.array())[index])) {
-        return false;
-      }
-    }
-    return true;
-  }
-  const auto& right_members = *right.object();
+  const auto right_elements = right.elements();
   std::size_t index = 0;
-  for (const auto& [key, value] : *left.object()) {
+  for (const auto& element : left.elements()) {
+    if (!same_tree(element, right_elements[index++])) {
+      return false;
+    }
+  }
+  const auto right_members = right.members();
+  index = 0;
+  for (const auto& [key, value] : left.members()) {
     const auto& [right_key, right_value] = right_members[index++];
     if (key != right_key || !same_tree(value, right_value)) {
       return false;
@@ -133,26 +134,21 @@ bool same_tree(const json::Value& left, const json::Value& right) {
   if (left.kind() != right.kind()) {
     return false;
   }
-  if (left.array() != nullptr || left.object() != nullptr) {
+  if (left.kind() == scrydantic::JsonKind::array ||
+      left.kind() == scrydantic::JsonKind::object) {
     return same_containers(left, right);
   }
   return left.boolean() == right.boolean() && left.string() == right.string();
 }
 
 void check_objects(const json::Value& value, const std::string_view input) {
-  if (const auto* elements = value.array()) {
-    for (const auto& element : *elements) {
-      check_objects(element, input);
-    }
-    return;
+  for (const auto& element : value.elements()) {
+    check_objects(element, input);
   }
-  const auto* members = value.object();
-  if (members == nullptr) {
-    return;
-  }
-  for (std::size_t index = 0; index < members->size(); ++index) {
-    const auto& [key, member] = (*members)[index];
-    if (index > 0 && !((*members)[index - 1].first < key)) {
+  const auto members = value.members();
+  for (std::size_t index = 0; index < members.size(); ++index) {
+    const auto& [key, member] = members[index];
+    if (index > 0 && !(members[index - 1].key < key)) {
       fail("object keys are not strictly increasing", input);
     }
     if (value.find(key) != &member) {

@@ -3,16 +3,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <new>
 #include <optional>
 #include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/json.hpp>
+#include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
-#include <variant>
-#include <vector>
 
-// Scrydantic's own strict JSON layer: an immutable document tree, a single-pass
+// Scrydantic's own strict JSON layer: an immutable document, a single-pass
 // parser, an allocation-free validator that accepts exactly what the parser
 // accepts, and the canonical writer.
 //
@@ -20,8 +21,8 @@
 // these decisions where the RFC leaves room:
 //
 // - Nesting: at most max_depth arrays and objects open at once, counting an
-//   empty one. Deeper input is rejected, which bounds the parser's and the
-//   tree's recursion.
+//   empty one. Deeper input is rejected, which bounds the recursion of the
+//   parser and of everything that walks a document.
 // - Whitespace: only space, tab, line feed, and carriage return, around any
 //   token. Input with no value at all, whitespace only included, is rejected,
 //   as are a byte order mark, a NUL, and anything after the value.
@@ -53,19 +54,24 @@ namespace scrydantic::detail::json {
 inline constexpr std::size_t max_depth = max_json_depth;
 
 class Value;
+struct Member;
 
-using Array = std::vector<Value>;
-using Member = std::pair<std::string, Value>;
-// Sorted by key in lexical byte order, keys unique.
-using Object = std::vector<Member>;
+// The elements of an array, in the arena of the document that holds it.
+using Array = std::span<const Value>;
+// The members of an object, there too: sorted by key in lexical byte order,
+// keys unique.
+using Object = std::span<const Member>;
 
-// One immutable JSON value. Only the parser builds one with content; a
-// default-constructed value is null. Objects are sorted vectors, so lookup is
-// a binary search and ordered iteration is the canonical order. Destruction
-// recurses once per nesting level, which max_depth bounds.
-class Value final {
+// One immutable JSON value, sixteen bytes: a scalar, or the place and size of a
+// string's text or a container's contents in the arena of the Document it was
+// parsed into. Copying a value copies those sixteen bytes and nothing they
+// point at, so a value and its copies are valid for as long as that Document.
+// Only the parser builds one with content; a default-constructed value is null.
+// An object's members are sorted, so lookup is a binary search and ordered
+// iteration is the canonical order.
+class Value {
 public:
-  Value() noexcept = default;
+  constexpr Value() noexcept = default;
 
   [[nodiscard]] JsonKind kind() const noexcept;
 
@@ -82,12 +88,15 @@ public:
   // Any numeric kind, as a double; an integer converts to the nearest double.
   [[nodiscard]] std::optional<double> number() const noexcept;
 
-  // Borrowed from this value.
+  // Borrowed from the document.
   [[nodiscard]] std::optional<std::string_view> string() const noexcept;
 
-  [[nodiscard]] const Array* array() const noexcept;
+  // An array's elements, borrowed from the document; none for any other kind.
+  [[nodiscard]] Array elements() const noexcept;
 
-  [[nodiscard]] const Object* object() const noexcept;
+  // An object's members, borrowed from the document and in key order; none for
+  // any other kind.
+  [[nodiscard]] Object members() const noexcept;
 
   // The element count of an array or member count of an object; zero otherwise.
   [[nodiscard]] std::size_t size() const noexcept;
@@ -99,13 +108,127 @@ public:
 private:
   friend class Builder;
 
-  // Alternatives in JsonKind order, so kind() is the index.
-  using Data = std::variant<std::nullptr_t, bool, std::int64_t, std::uint64_t, double,
-                            std::string, Array, Object>;
+  // What a kind holds: the scalar itself, or where a string's bytes, an
+  // array's elements, or an object's members start.
+  union Payload {
+    std::uint64_t unsigned_integer;
+    std::int64_t signed_integer;
+    double number;
+    bool boolean;
+    const char* text;
+    const Value* elements;
+    const Member* members;
+  };
 
-  explicit Value(Data data) noexcept : data_(std::move(data)) {}
+  // The kind takes the low byte of meta_, and a string's length or a
+  // container's count the rest, which is room for any that fits in memory.
+  static constexpr unsigned int kind_bits = 8;
 
-  Data data_{};
+  constexpr Value(const JsonKind kind, const std::size_t size,
+                  const Payload payload) noexcept
+      : payload_{payload}, meta_{(static_cast<std::uint64_t>(size) << kind_bits) |
+                                 std::to_underlying(kind)} {}
+
+  // The length or count that meta_ holds.
+  [[nodiscard]] constexpr std::size_t extent() const noexcept {
+    return static_cast<std::size_t>(meta_ >> kind_bits);
+  }
+
+  Payload payload_{};
+  // Zero is a null: JsonKind::null is the enumeration's zero.
+  std::uint64_t meta_{};
+};
+
+static_assert(sizeof(Value) == 16);
+static_assert(std::is_trivially_copyable_v<Value>);
+
+struct Member {
+  std::string_view key{};
+  Value value{};
+};
+
+// The memory that a document's values point into: the text of its strings and
+// the contents of its containers. It hands out pieces of chunks that it never
+// moves and frees only when it is destroyed, so a pointer into it stays valid
+// when the arena itself moves. Each chunk is twice the size of the one before,
+// up to max_chunk, so a document takes a handful of allocations whatever it
+// holds, where a tree of strings and vectors takes one or more for each of
+// them.
+class Arena {
+public:
+  // `first_chunk` is the size in bytes of the first chunk, which is allocated
+  // when something first asks for memory.
+  explicit Arena(const std::size_t first_chunk) noexcept : next_chunk_{first_chunk} {}
+
+  Arena(Arena&& other) noexcept
+      : chunks_{std::exchange(other.chunks_, nullptr)},
+        base_{std::exchange(other.base_, nullptr)},
+        used_{std::exchange(other.used_, 0)},
+        capacity_{std::exchange(other.capacity_, 0)}, next_chunk_{other.next_chunk_} {}
+
+  Arena& operator=(Arena&& other) noexcept {
+    if (this != &other) {
+      release();
+      chunks_ = std::exchange(other.chunks_, nullptr);
+      base_ = std::exchange(other.base_, nullptr);
+      used_ = std::exchange(other.used_, 0);
+      capacity_ = std::exchange(other.capacity_, 0);
+      next_chunk_ = other.next_chunk_;
+    }
+    return *this;
+  }
+
+  Arena(const Arena&) = delete;
+  Arena& operator=(const Arena&) = delete;
+
+  ~Arena() { release(); }
+
+  // Uninitialized storage for `count` objects of T, which the arena never
+  // destroys: T is one of the trivially destructible types a document is made
+  // of.
+  template <class T> [[nodiscard]] T* allocate(const std::size_t count) {
+    static_assert(std::is_trivially_destructible_v<T>);
+    static_assert(alignof(T) <= chunk_alignment);
+    return static_cast<T*>(take(count * sizeof(T), std::align_val_t{alignof(T)}));
+  }
+
+private:
+  // The largest chunk the doubling reaches; a single request for more gets a
+  // chunk of its own size.
+  static constexpr std::size_t max_chunk = std::size_t{1} << 20U;
+  // What a chunk's bytes are aligned for.
+  static constexpr std::size_t chunk_alignment = alignof(std::max_align_t);
+
+  // The header of a chunk, whose bytes follow it.
+  struct alignas(chunk_alignment) Chunk {
+    Chunk* next{};
+  };
+
+  [[nodiscard]] void* take(std::size_t bytes, std::align_val_t alignment);
+  void add_chunk(std::size_t bytes);
+  void release() noexcept;
+
+  // Every chunk, the newest first.
+  Chunk* chunks_{};
+  // The newest chunk's bytes, how many of them are taken, and how many there
+  // are.
+  char* base_{};
+  std::size_t used_{};
+  std::size_t capacity_{};
+  std::size_t next_chunk_{};
+};
+
+// A parsed document: its root value, which a Document is, and the arena that
+// everything under the root lives in. Moving a document moves neither the
+// values nor the text, so pointers and views into it stay valid; they end with
+// the document that was moved to.
+class Document : public Value {
+public:
+  Document(const Value root, Arena arena) noexcept
+      : Value{root}, arena_{std::move(arena)} {}
+
+private:
+  Arena arena_;
 };
 
 // Why the reader rejected a text: the first rule it found broken, reading from
@@ -160,7 +283,7 @@ struct Rejection {
 
 // Parses exactly one JSON document, or says where and why the rules above
 // reject it.
-[[nodiscard]] std::expected<Value, Rejection> parse(std::string_view text);
+[[nodiscard]] std::expected<Document, Rejection> parse(std::string_view text);
 
 // True exactly when parse(text) would succeed, without allocating.
 [[nodiscard]] bool validate(std::string_view text) noexcept;
