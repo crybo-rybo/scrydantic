@@ -10,6 +10,7 @@
 #include <limits>
 #include <meta>
 #include <optional>
+#include <scrydantic/decode_options.hpp>
 #include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/failure.hpp>
 #include <scrydantic/detail/json_string.hpp>
@@ -47,6 +48,83 @@ template <typename Type>
 [[nodiscard]] decode_result<Type> read_value(const json_node view,
                                              const decode_cursor& here);
 
+// ---- Strings that stand for another value ------------------------------------
+//
+// DecodeOptions lets a string stand for the value its text spells. A reader asks
+// for that value only where it has found the wrong kind and would report it, so
+// a value of the kind its type requires is read exactly as it is without the
+// options. The text is read by JsonView::parse(), so it is a number, a literal,
+// an array, or an object by the rules every other JSON text is held to, and the
+// reader goes on with the parsed value under the string's own cursor, as if it
+// had stood in the string's place. Neither function returns a string, so the
+// reader of what one returns does not ask again.
+//
+// The decode's report keeps the parsed value (decode_cursor::keep()), and the
+// reader of an array or an object goes on with a node of it in place of the
+// string. A reader that owned the value, or handed the branch to a function
+// that owned it and read again from there, would have a destructor to run or a
+// second caller, and GCC 16 then leaves out of line the readers that it
+// otherwise inlines into their one caller: a call for each value of every
+// decode, for a branch that few take. The two readers of numbers read what a
+// string spells by calling themselves, which costs nothing: each has a caller
+// for every member of its type and is out of line as it is.
+
+// The boolean or number that the whole text of `view` spells, when `view` is a
+// string and the decode coerces scalars; otherwise no value. A JSON scalar holds
+// no whitespace, so text with any around it starts or ends with some.
+[[nodiscard]] inline json_node spelled_scalar(const json_node view,
+                                              const decode_cursor& here) {
+  constexpr auto is_space = [](const char byte) {
+    return byte == ' ' || byte == '\t' || byte == '\n' || byte == '\r';
+  };
+  if (!here.options().coerce_scalars) {
+    return {};
+  }
+  const auto text = view.string();
+  if (!text || text->empty() || is_space(text->front()) || is_space(text->back())) {
+    return {};
+  }
+  auto spelled = JsonView::parse(*text);
+  if (!spelled) {
+    return {};
+  }
+  switch (spelled->kind()) {
+  case JsonKind::boolean:
+  case JsonKind::signed_integer:
+  case JsonKind::unsigned_integer:
+  case JsonKind::number:
+    return json_node{here.keep(std::move(*spelled))};
+  default:
+    return {};
+  }
+}
+
+// The array or object, as `kind` says, that the text of `view` spells, when
+// `view` is a string and the decode coerces structures; otherwise no value.
+// Every reader of an array or an object asks by the JSON kind it requires, so
+// the coercion follows the kind and not the C++ type. The text stands where its
+// string does, inside the arrays and objects open around `here`, and is refused
+// when it would nest past max_json_depth there: the limit bounds the decoder's
+// recursion, which goes on into the text. It is measured on the parsed value,
+// which is what the decoder walks.
+[[nodiscard]] inline json_node spelled_structure(const json_node view,
+                                                 const decode_cursor& here,
+                                                 const JsonKind kind) {
+  if (!here.options().coerce_structures) {
+    return {};
+  }
+  const auto text = view.string();
+  if (!text) {
+    return {};
+  }
+  auto spelled = JsonView::parse(*text);
+  if (!spelled || spelled->kind() != kind ||
+      here.depth() + spelled->depth() > max_json_depth) {
+    return {};
+  }
+  return json_node{here.keep(std::move(*spelled))};
+}
+
 template <typename Integer>
 [[nodiscard]] decode_result<Integer> read_integer(const json_node view,
                                                   const decode_cursor& here) {
@@ -61,6 +139,9 @@ template <typename Integer>
   }
   if (const auto value = view.unsigned_integer()) {
     return narrow(*value);
+  }
+  if (const json_node spelled = spelled_scalar(view, here)) {
+    return read_integer<Integer>(spelled, here);
   }
   return here.fail(IssueKind::wrong_type, "must be an integer");
 }
@@ -83,6 +164,9 @@ template <typename Float>
     value = *view.number();
     break;
   default:
+    if (const json_node spelled = spelled_scalar(view, here)) {
+      return read_float<Float>(spelled, here);
+    }
     return here.fail(IssueKind::wrong_type, "must be a number");
   }
 
@@ -345,13 +429,26 @@ template <std::meta::info Entity, typename Value>
 // optional and an indirect as constrained_type() does, so the validators take the
 // value they own; a decoded indirect always owns one.
 template <std::meta::info Member, typename Value>
-[[nodiscard]] bool accepts_member(const Value& value, const json_node view,
+[[nodiscard]] bool accepts_member(const Value& value, json_node view,
                                   const decode_cursor& here) {
   if constexpr (kind_of(^^Value) == value_kind::optional) {
     return !value.has_value() || accepts_member<Member>(*value, view, here);
   } else if constexpr (kind_of(^^Value) == value_kind::indirect) {
     return accepts_member<Member>(*value, view, here);
   } else {
+    // A floating-point constraint is checked on the number as the parser read
+    // it, and for a number that a string spelled, `view` is the string, so its
+    // text is read once more. This is the one place that asks for what a string
+    // spells before anything has failed, so it tests the option itself: a decode
+    // that coerces no scalars goes straight on. No other constraint reads `view`.
+    if constexpr (std::floating_point<Value> &&
+                  !checked_constraints_v<Member>.empty()) {
+      if (here.options().coerce_scalars) {
+        if (const json_node spelled = spelled_scalar(view, here)) {
+          view = spelled;
+        }
+      }
+    }
     bool met = true;
     template for (constexpr std::meta::info constraint :
                   checked_constraints_v<Member>) {
@@ -470,11 +567,14 @@ template <typename Type, std::meta::info Member>
 // whose every member is valid; in a recursive model each level's run once the
 // levels inside it have passed theirs.
 template <typename Type, bool Tagged>
-[[nodiscard]] bool read_object(Type& object, const json_node view,
+[[nodiscard]] bool read_object(Type& object, json_node view,
                                const decode_cursor& here) {
   if (view.kind() != JsonKind::object) {
-    here.report(IssueKind::wrong_type, "must be an object");
-    return false;
+    view = spelled_structure(view, here, JsonKind::object);
+    if (!view) {
+      here.report(IssueKind::wrong_type, "must be an object");
+      return false;
+    }
   }
   field_values<Type> found{};
   bool valid = pair_members<Type, Tagged>(view, here, found);
@@ -509,12 +609,15 @@ template <typename Type, bool Tagged>
 // tag selects rather than read in place, which would default-construct its
 // first alternative only to replace it, so it builds its failures itself.
 template <typename Variant>
-[[nodiscard]] decode_result<Variant> read_variant(const json_node view,
+[[nodiscard]] decode_result<Variant> read_variant(json_node view,
                                                   const decode_cursor& here) {
   static constexpr std::string_view tags = tag_names(^^Variant);
   if (view.kind() != JsonKind::object) {
-    here.report(IssueKind::wrong_type, "must be an object");
-    return decode_failed<Variant>();
+    view = spelled_structure(view, here, JsonKind::object);
+    if (!view) {
+      here.report(IssueKind::wrong_type, "must be an object");
+      return decode_failed<Variant>();
+    }
   }
   const decode_cursor tag = here.member(tag_key);
   const auto discriminator = view.find(tag_key);
@@ -562,10 +665,13 @@ template <typename Indirect>
 }
 
 template <typename Vector>
-[[nodiscard]] decode_result<Vector> read_vector(const json_node view,
+[[nodiscard]] decode_result<Vector> read_vector(json_node view,
                                                 const decode_cursor& here) {
   if (view.kind() != JsonKind::array) {
-    return here.fail(IssueKind::wrong_type, "must be an array");
+    view = spelled_structure(view, here, JsonKind::array);
+    if (!view) {
+      return here.fail(IssueKind::wrong_type, "must be an array");
+    }
   }
   Vector values{};
   const std::size_t size = view.size();
@@ -586,13 +692,16 @@ template <typename Vector>
 }
 
 template <typename Array>
-[[nodiscard]] decode_result<Array> read_array(const json_node view,
+[[nodiscard]] decode_result<Array> read_array(json_node view,
                                               const decode_cursor& here) {
   constexpr std::string_view reason = "must be an array of the declared fixed size";
   // Value-initialized for the reason read_in_place's value is.
   Array values = Array();
   if (view.kind() != JsonKind::array) {
-    return here.fail(IssueKind::wrong_type, reason);
+    view = spelled_structure(view, here, JsonKind::array);
+    if (!view) {
+      return here.fail(IssueKind::wrong_type, reason);
+    }
   }
   if (view.size() != values.size()) {
     return here.fail(IssueKind::wrong_size, reason);
@@ -614,11 +723,15 @@ template <typename Array>
 
 // Booleans, strings, and raw JSON: the leaves that need no numeric range.
 template <typename Type>
-[[nodiscard]] decode_result<Type> read_plain_leaf(const json_node view,
+[[nodiscard]] decode_result<Type> read_plain_leaf(json_node view,
                                                   const decode_cursor& here) {
   if constexpr (std::same_as<Type, bool>) {
     if (view.kind() != JsonKind::boolean) {
-      return here.fail(IssueKind::wrong_type, "must be a boolean");
+      view = spelled_scalar(view, here);
+      // What a string spells is a number where it is not a boolean.
+      if (!view || view.kind() != JsonKind::boolean) {
+        return here.fail(IssueKind::wrong_type, "must be a boolean");
+      }
     }
     return *view.boolean();
   } else if constexpr (std::same_as<Type, std::string>) {
@@ -658,9 +771,11 @@ decode_result<Type> read_value(const json_node view, const decode_cursor& here) 
 }
 
 // Decodes a value checked against a family, reporting every issue it finds with
-// a schema-derived model_message.
-template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view) {
-  decode_report report{};
+// a schema-derived model_message. `options` are the public decode()'s.
+template <typename Type>
+[[nodiscard]] Result<Type> decode(const JsonView& view,
+                                  const DecodeOptions& options = {}) {
+  decode_report report{.options = options};
   return read_value<Type>(json_node{view}, decode_cursor{report})
       .transform_error(
           [&report](decode_failure) { return decode_error(std::move(report)); });

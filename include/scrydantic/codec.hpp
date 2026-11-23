@@ -6,6 +6,7 @@
 
 #include <meta>
 #include <scrydantic/annotations.hpp>
+#include <scrydantic/decode_options.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
 #include <scrydantic/detail/json_text.hpp>
@@ -159,10 +160,19 @@ template <typename Type> [[nodiscard]] Result<Json> encode_verbatim(const Type& 
 /// failed check gives the validator's own `message`, where it has one. A type
 /// outside Decodable fails to compile with the offending member path and the
 /// reason.
+///
+/// `options` let a JSON string stand for the value its text spells, where the
+/// type requires a value of another kind; DecodeOptions says which strings, and
+/// what is never converted. Every option is off unless it is set, so a call
+/// without them is the strict decode. A value that a string stands for is held
+/// to every rule above, and fails with the same kinds, paths, and reasons.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param view Parsed JSON value to decode.
+/// @param options What to accept beyond the strict rules; nothing by default.
 /// @return The decoded value, or every issue that kept it from decoding.
-template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view) {
+template <typename Type>
+[[nodiscard]] Result<Type> decode(const JsonView& view,
+                                  const DecodeOptions& options = {}) {
   constexpr std::string_view problem = detail::decodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
   if constexpr (!problem.empty()) {
@@ -170,7 +180,7 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
     // rejected type of that shape prints the static_assert and nothing more.
     return Result<Type>{std::unexpect};
   } else {
-    return detail::decode<Type>(view);
+    return detail::decode<Type>(view, options);
   }
 }
 
@@ -183,12 +193,15 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 /// `JSON text is not valid JSON: expected ':' at line 1, column 7` as both
 /// messages. The column counts code points, not bytes; JsonView::parse() lists
 /// the reasons. Every other failure is reported as decode(const JsonView&)
-/// reports it.
+/// reports it. The text itself must be JSON whatever `options` hold: they apply
+/// to the values in it.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param text JSON text to parse and decode.
+/// @param options What to accept beyond the strict rules; nothing by default.
 /// @return The decoded value, or the parse or decode failure.
 template <typename Type>
-[[nodiscard]] Result<Type> decode(const std::string_view text) {
+[[nodiscard]] Result<Type> decode(const std::string_view text,
+                                  const DecodeOptions& options = {}) {
   // Composed from std::expected's monadic operations, which build their failure
   // with std::unexpect: see detail::decode_failed(). Text that is not JSON is
   // read once more to describe it, which only a failure pays for.
@@ -197,15 +210,18 @@ template <typename Type>
         return detail::invalid_json_error("JSON text is not valid JSON",
                                           detail::describe_invalid_json(text));
       })
-      .and_then([](const JsonView& view) { return decode<Type>(view); });
+      .and_then(
+          [&options](const JsonView& view) { return decode<Type>(view, options); });
 }
 
 /// Parses the text of a Json and decodes it, as decode(std::string_view) does.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param json JSON text to parse and decode.
+/// @param options What to accept beyond the strict rules; nothing by default.
 /// @return What decode(std::string_view) returns for `json.text`.
-template <typename Type> [[nodiscard]] Result<Type> decode(const Json& json) {
-  return decode<Type>(std::string_view{json.text});
+template <typename Type>
+[[nodiscard]] Result<Type> decode(const Json& json, const DecodeOptions& options = {}) {
+  return decode<Type>(std::string_view{json.text}, options);
 }
 
 /// The JSON keys of a reflected object type, in the order encode() writes them.

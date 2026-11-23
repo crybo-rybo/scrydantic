@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <expected>
 #include <ranges>
+#include <scrydantic/decode_options.hpp>
 #include <scrydantic/error.hpp>
+#include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -76,8 +78,19 @@ encode_fail_whole(std::string message) {
 
 // ---- Decoding ----------------------------------------------------------------
 
+// A value that the text of a string spelled, for a decode whose options let the
+// string stand for it, and the depth() of the cursor the string was read at.
+struct spelled_value {
+  std::size_t depth{};
+  JsonView value{};
+};
+
 // The issues one decode found, in the order it found them. `stopped` is set at
-// the first issue past max_issues, which is not kept; decoding ends there.
+// the first issue past max_issues, which is not kept; decoding ends there. The
+// rest of what one decode shares is here too, because this is the one thing every
+// cursor of the decode already points at, so carrying it costs a reader nothing
+// until it asks: the options the decode was given, and the values that strings
+// spelled, which decode_cursor::keep() explains.
 struct decode_report {
   std::vector<Issue> issues{};
   // The host's reason for each issue whose reason the model is not given in
@@ -85,6 +98,8 @@ struct decode_report {
   // reason is its `model_message`. Few decodes have one, so they are kept apart.
   std::vector<std::pair<std::size_t, std::string>> host_reasons{};
   bool stopped{};
+  DecodeOptions options{};
+  std::vector<spelled_value> spelled{};
 };
 
 // What the model is told of a validator's rejection that gives it no text: that
@@ -146,6 +161,38 @@ public:
 
   // Whether the report is full, so decoding must stop.
   [[nodiscard]] bool stopped() const noexcept { return report_->stopped; }
+
+  // What the decode was asked to accept beyond its strict rules.
+  [[nodiscard]] const DecodeOptions& options() const noexcept {
+    return report_->options;
+  }
+
+  // How many arrays and objects are open around this cursor's value: the steps
+  // of its path, each of which entered one.
+  [[nodiscard]] std::size_t depth() const noexcept {
+    std::size_t steps = 0;
+    for (const decode_cursor* cursor = this; cursor->parent_ != nullptr;
+         cursor = cursor->parent_) {
+      ++steps;
+    }
+    return steps;
+  }
+
+  // Keeps `value`, which the text of the string at this cursor spelled, for as
+  // long as the decode reads it, and returns the kept view. A value is read
+  // under the cursor of its string and the cursors below that one, which are
+  // deeper, and a string in it is at one of those. So the values still being
+  // read were all kept at a lesser depth than this cursor's, and every other
+  // is dropped here. What is kept is therefore one value for each depth at
+  // most, however many strings the input holds.
+  [[nodiscard]] const JsonView& keep(JsonView value) const {
+    auto& kept = report_->spelled;
+    const std::size_t level = depth();
+    while (!kept.empty() && kept.back().depth >= level) {
+      kept.pop_back();
+    }
+    return kept.emplace_back(level, std::move(value)).value;
+  }
 
   // Reports an issue at this cursor's value. Past max_issues it only stops the
   // decode, without building the issue.

@@ -169,6 +169,7 @@ set(
   include/scrydantic/annotations.hpp
   include/scrydantic/bound_tool.hpp
   include/scrydantic/codec.hpp
+  include/scrydantic/decode_options.hpp
   include/scrydantic/diagnostics.hpp
   include/scrydantic/detail/binding.hpp
   include/scrydantic/detail/constraints.hpp
