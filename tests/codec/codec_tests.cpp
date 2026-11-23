@@ -252,15 +252,15 @@ static_assert(!scrydantic::SupportedValue<BorrowedRequest>);
 
 static_assert(scrydantic::Encodable<Document>);
 static_assert(scrydantic::Decodable<Document>);
-static_assert(!scrydantic::SupportedValue<Document>);
-static_assert(!scrydantic::ToolArguments<Document>);
+static_assert(scrydantic::SupportedValue<Document>);
+static_assert(scrydantic::ToolArguments<Document>);
 
 static_assert(scrydantic::Encodable<ConstView>);
 static_assert(!scrydantic::Decodable<ConstView>);
 static_assert(scrydantic::Decodable<Payload>);
 static_assert(scrydantic::Encodable<scrydantic::Json>);
 static_assert(scrydantic::Decodable<std::optional<scrydantic::Json>>);
-static_assert(!scrydantic::SupportedValue<scrydantic::Json>);
+static_assert(scrydantic::SupportedValue<scrydantic::Json>);
 static_assert(scrydantic::Encodable<std::string_view>);
 static_assert(!scrydantic::Decodable<std::string_view>);
 
@@ -356,8 +356,7 @@ static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsView>(),
                        "std::string"));
 static_assert(mentions(scrydantic::decodable_diagnostic<ConstView>(),
                        "ConstView::value: is a const member"));
-static_assert(mentions(scrydantic::supported_value_diagnostic<Document>(),
-                       "scrydantic::Json is raw JSON, which has no schema"));
+static_assert(scrydantic::supported_value_diagnostic<Document>().empty());
 static_assert(mentions(scrydantic::tool_arguments_diagnostic<Shape>(),
                        "is not a plain aggregate; tool arguments decode from one "
                        "JSON object"));
@@ -2130,7 +2129,7 @@ struct Sizes {
   Größe size;
 };
 
-// A recursive value that splices raw JSON, which only encoding takes.
+// A recursive value that splices raw JSON.
 struct Noted {
   [[= scrydantic::skip_null]] std::optional<std::indirect<Noted>> next;
   scrydantic::Json note;
@@ -2233,9 +2232,9 @@ static_assert(!scrydantic::SupportedValue<recursive::Scales>);
 static_assert(!scrydantic::SupportedValue<recursive::Sizes>);
 // A recursive root needs no name of its own.
 static_assert(scrydantic::SupportedValue<recursive::Tagged<int*>>);
-// Encoding reads a Json payload, which has no schema.
+// A Json payload has a schema, so a recursive type that holds one does too.
 static_assert(scrydantic::Encodable<recursive::Noted>);
-static_assert(!scrydantic::SupportedValue<recursive::Noted>);
+static_assert(scrydantic::SupportedValue<recursive::Noted>);
 
 // The diagnostics agree with the concepts for recursive types too.
 static_assert(scrydantic::supported_value_diagnostic<recursive::Category>().empty());

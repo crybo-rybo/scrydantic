@@ -123,7 +123,7 @@ template <typename Enum>
   }
   const auto text = *view.string();
   template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
-    if (text == std::meta::identifier_of(enumerator)) {
+    if (text == json_name_of(enumerator)) {
       return [:enumerator:];
     }
   }
@@ -364,7 +364,9 @@ template <std::meta::info Member, typename Value>
 }
 
 // Where `Member` stands among Type's fields in key order: its index in
-// fields_v<Type>.
+// fields_v<Type>. The member may be one that a class flattened into Type
+// declares; it is still one field of Type, since an object that held such a
+// class twice would have each of its keys twice, which the checks reject.
 template <typename Type, std::meta::info Member>
 inline constexpr std::size_t field_position_v = [] {
   std::size_t position = 0;
@@ -435,11 +437,12 @@ template <typename Type, bool Tagged>
 // being read or no value when that object lacks the member, and returns false
 // if the member failed, missed a constraint, failed a check, or is required and
 // absent. A member that keeps its default is the program's own value, so it is
-// not checked.
-template <typename Type, std::meta::info Member>
-[[nodiscard]] bool read_member(Type& object, const json_node found,
+// not checked. Root is the type of the JSON object, whose field the member is:
+// the class of `object`, or one that flattens it.
+template <typename Root, std::meta::info Member, typename Owner>
+[[nodiscard]] bool read_member(Owner& object, const json_node found,
                                const decode_cursor& parent) {
-  constexpr field_layout field = field_of(^^Type, Member);
+  constexpr field_layout field = fields_v<Root>[field_position_v<Root, Member>];
   constexpr std::string_view key = field.key_view();
   using Value = std::remove_cv_t<typename[:std::meta::type_of(Member):]>;
   const decode_cursor here = parent.member(key);
@@ -464,11 +467,42 @@ template <typename Type, std::meta::info Member>
   return true;
 }
 
+// Reads the members of `object`, a member flattened into the Root object being
+// read, and returns false if it failed. Its members are fields of that JSON
+// object, so they are read from `found`, the values of Root's fields, at the
+// object's own path, and a flattened member among them likewise. The class of
+// `object` has validators of its own, which run on it as read_object runs
+// Root's: last, and only once every member of it is valid.
+//
+// The loop is read_object's, repeated rather than shared with it: GCC 16
+// compiles a loop that the two share into other, larger code for a class that
+// flattens nothing, and as it stands that class is read by the same
+// instructions as before there were flattened members.
+template <typename Root, typename Flattened>
+[[nodiscard]] bool read_flattened(Flattened& object, const field_values<Root>& found,
+                                  const decode_cursor& here) {
+  bool valid = true;
+  template for (constexpr std::meta::info member : declared_members_v<Flattened>) {
+    if (here.stopped()) {
+      return false;
+    }
+    if constexpr (is_flattened(member)) {
+      if (!read_flattened<Root>(object.[:member:], found, here)) {
+        valid = false;
+      }
+    } else if (!read_member<Root, member>(object, found[field_position_v<Root, member>],
+                                          here)) {
+      valid = false;
+    }
+  }
+  return valid && passes_checks<^^Flattened>(object, here);
+}
+
 // Reads `view` into `object` and returns false if it failed. The members the
 // type does not declare are reported first, and then its own are read in
-// declaration order. The class's validators run last, and see only an object
-// whose every member is valid; in a recursive model each level's run once the
-// levels inside it have passed theirs.
+// declaration order, a flattened member's where it stands. The class's
+// validators run last, and see only an object whose every member is valid; in a
+// recursive model each level's run once the levels inside it have passed theirs.
 template <typename Type, bool Tagged>
 [[nodiscard]] bool read_object(Type& object, const json_node view,
                                const decode_cursor& here) {
@@ -482,8 +516,12 @@ template <typename Type, bool Tagged>
     if (here.stopped()) {
       return false;
     }
-    if (!read_member<Type, member>(object, found[field_position_v<Type, member>],
-                                   here)) {
+    if constexpr (is_flattened(member)) {
+      if (!read_flattened<Type>(object.[:member:], found, here)) {
+        valid = false;
+      }
+    } else if (!read_member<Type, member>(object, found[field_position_v<Type, member>],
+                                          here)) {
       valid = false;
     }
   }
@@ -612,6 +650,41 @@ template <typename Array>
   return values;
 }
 
+// Every member of the object is an entry, read in key order, which is the order
+// the document holds them in and so the order their issues are reported in. The
+// document has already kept only the last of its members of one key. Keys that
+// differ as strings can still be one key to a map with a comparator or an
+// equality of its own, such as one that ignores case; the later entry then
+// replaces the earlier one's value, as the later of two equal keys does.
+template <typename Map>
+[[nodiscard]] decode_result<Map> read_map(const json_node view,
+                                          const decode_cursor& here) {
+  if (view.kind() != JsonKind::object) {
+    return here.fail(IssueKind::wrong_type, "must be an object");
+  }
+  Map values{};
+  const std::size_t size = view.size();
+  if constexpr (requires { values.reserve(size); }) {
+    values.reserve(size);
+  }
+  bool valid = true;
+  for (std::size_t index = 0; index < size && !here.stopped(); ++index) {
+    const std::string_view key = view.key_at(index);
+    if (auto decoded = read_value<typename Map::mapped_type>(view.value_at(index),
+                                                             here.entry(key))) {
+      // The keys arrive in the order of a std::map of std::less, where the hint
+      // makes each insertion constant time. To any other map it is only a hint.
+      values.insert_or_assign(values.end(), std::string{key}, std::move(*decoded));
+    } else {
+      valid = false;
+    }
+  }
+  if (!valid) {
+    return std::unexpected(decode_failure::reported);
+  }
+  return values;
+}
+
 // Booleans, strings, and raw JSON: the leaves that need no numeric range.
 template <typename Type>
 [[nodiscard]] decode_result<Type> read_plain_leaf(const json_node view,
@@ -648,6 +721,8 @@ decode_result<Type> read_value(const json_node view, const decode_cursor& here) 
     return read_vector<Type>(view, here);
   } else if constexpr (kind == value_kind::array) {
     return read_array<Type>(view, here);
+  } else if constexpr (kind == value_kind::map) {
+    return read_map<Type>(view, here);
   } else if constexpr (kind == value_kind::variant) {
     return read_variant<Type>(view, here);
   } else if constexpr (kind == value_kind::aggregate) {

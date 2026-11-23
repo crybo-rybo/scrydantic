@@ -10,6 +10,7 @@
 #include <scrydantic/detail/keywords.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -128,7 +129,7 @@ consteval void append_enumerator_names(std::vector<char>& output,
     if (!first) {
       output.push_back(',');
     }
-    append_json_string(output, std::meta::identifier_of(enumerator));
+    append_json_string(output, json_name_of(enumerator));
     first = false;
   }
   output.push_back(']');
@@ -160,6 +161,19 @@ consteval void append_sequence_schema(std::vector<char>& output,
   append_typed_schema(output, "array", std::move(keywords));
 }
 
+// A map is an object that declares no member: any key is allowed, and the value
+// under each has the mapped type's schema, which may be a "$ref". The checks
+// admit no constraint on a map, so it takes no keywords.
+consteval void append_map_schema(std::vector<char>& output, const std::meta::info type,
+                                 schema_keywords keywords,
+                                 const schema_references& references) {
+  keywords.push_back(
+      written_keyword("additionalProperties", [&](std::vector<char>& values) {
+        append_schema(values, mapped_of(type), {}, {}, references);
+      }));
+  append_typed_schema(output, "object", std::move(keywords));
+}
+
 // The "type" property a tagged alternative's schema gains.
 consteval void append_tag_property(std::vector<char>& output,
                                    const std::string_view tag_text) {
@@ -184,7 +198,12 @@ consteval schema_keywords member_keywords(const field_layout& field) {
   if (const auto text = annotated_text(field.member, ^^description)) {
     keywords.push_back({.key = "description", .value = string_value(*text)});
   }
-  if (!field.required && !field.omit_null) {
+  // A field of a flattened member takes its default from the class that declares
+  // it. Where the flattened member has an initializer of its own, that one
+  // decides the value instead, and the schema states none.
+  const bool overridden = std::ranges::any_of(
+      std::span{field.path, field.depth}, std::meta::has_default_member_initializer);
+  if (!field.required && !field.omit_null && !overridden) {
     if (const auto text = default_of(field.member); !text.empty()) {
       keywords.push_back({.key = "default", .value = owned_text(text)});
     }
@@ -365,6 +384,10 @@ consteval void append_schema(std::vector<char>& output, const std::meta::info re
     return append_typed_schema(output, "number", std::move(keywords));
   case value_kind::string:
     return append_typed_schema(output, "string", std::move(keywords));
+  case value_kind::json:
+    // A Json holds any JSON value, so its schema is the empty one, which accepts
+    // every value, with whatever its member states beside it.
+    return append_schema_object(output, std::move(keywords));
   case value_kind::enumeration:
     return append_enum_schema(output, type, std::move(keywords));
   case value_kind::optional:
@@ -374,6 +397,8 @@ consteval void append_schema(std::vector<char>& output, const std::meta::info re
   case value_kind::vector:
   case value_kind::array:
     return append_sequence_schema(output, type, std::move(keywords), references);
+  case value_kind::map:
+    return append_map_schema(output, type, std::move(keywords), references);
   case value_kind::variant:
     return append_variant_schema(output, type, std::move(keywords), references);
   case value_kind::aggregate:

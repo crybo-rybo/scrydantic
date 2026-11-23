@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <meta>
+#include <optional>
 #include <scrydantic/bound_tool.hpp>
 #include <scrydantic/codec.hpp>
 #include <scrydantic/detail/decode.hpp>
@@ -24,7 +25,8 @@
 
 // Turns reflected tool declarations and typed handlers into bound tools: a
 // generated schema plus a handler that decodes the arguments strictly, calls the
-// C++ function, and encodes what it returns.
+// C++ function, and encodes what it returns. The call itself, of any function
+// with its decoded argument object, is what apply() publishes.
 //
 // This is the implementation of tools.hpp. It builds the public types that
 // bound_tool.hpp declares: ToolFunction, BoundTool, and ToolDescriptor.
@@ -123,10 +125,11 @@ template <typename Args, typename Context, typename Handler>
 // The call helpers below are keyed on the function and the context alone, or on
 // those and the argument object: their code depends only on the function's type
 // and the context type, which are the same in every translation unit, and on
-// `Args`, whose identity already carries the tool's parameter names. Only the
-// templates keyed on a bound_tool read facts that can differ between units.
+// `Args`, whose identity already carries the function's parameter names. Only
+// the templates keyed on a bound_function or a bound_tool read facts that can
+// differ between units.
 
-// Calls a tool function, on `object` when it is a non-static member function.
+// Calls a function, on `object` when it is a non-static member function.
 template <std::meta::info Function, typename Object, typename... Values>
 decltype(auto) call_on_object([[maybe_unused]] Object* object, Values&&... values) {
   if constexpr (std::meta::is_class_member(Function) &&
@@ -137,16 +140,16 @@ decltype(auto) call_on_object([[maybe_unused]] Object* object, Values&&... value
   }
 }
 
-// Calls a tool function with its value arguments, preceded by the context when
-// it takes one. This is a function template rather than a generic lambda
-// because GCC 16 instantiates both branches of an if constexpr on an enclosing
-// template parameter inside a generic lambda.
+// Calls a function with its value arguments, preceded by the context when it
+// takes one. This is a function template rather than a generic lambda because
+// GCC 16 instantiates both branches of an if constexpr on an enclosing template
+// parameter inside a generic lambda.
 template <std::meta::info Function, typename Context, typename Object,
           typename... Values>
 decltype(auto)
-call_tool_function(Object* object,
-                   [[maybe_unused]] const context_argument_t<Context>& context,
-                   Values&&... values) {
+call_function(Object* object,
+              [[maybe_unused]] const context_argument_t<Context>& context,
+              Values&&... values) {
   if constexpr (takes_context(Function, ^^Context)) {
     return call_on_object<Function>(object, context, std::forward<Values>(values)...);
   } else {
@@ -155,24 +158,55 @@ call_tool_function(Object* object,
 }
 
 // Spreads a decoded argument object over the function's parameter list: nothing,
-// the whole object, or one synthesized member per parameter. `Args` is deduced
-// rather than spelled tool_arguments_t<Tool>, because GCC 16 cannot mangle a
-// function template whose signature contains a splice.
+// the whole object, or one synthesized member per parameter. It returns exactly
+// what the function returns. This is the one call behind apply() and behind a
+// bound tool's handler.
 template <std::meta::info Function, typename Context, typename Object, typename Args>
-decltype(auto) invoke_tool_function(Object* object,
-                                    const context_argument_t<Context>& context,
-                                    [[maybe_unused]] Args& arguments) {
+decltype(auto) apply_function(Object* object,
+                              const context_argument_t<Context>& context,
+                              [[maybe_unused]] Args& arguments) {
   constexpr auto form = arguments_form_of(Function, ^^Context);
   if constexpr (form == arguments_form::none) {
-    return call_tool_function<Function, Context>(object, context);
+    return call_function<Function, Context>(object, context);
   } else if constexpr (form == arguments_form::aggregate) {
-    return call_tool_function<Function, Context>(object, context, std::move(arguments));
+    return call_function<Function, Context>(object, context, std::move(arguments));
   } else {
     static constexpr auto members = declared_members_v<Args>;
     return [&]<std::size_t... Index>(std::index_sequence<Index...>) -> decltype(auto) {
-      return call_tool_function<Function, Context>(
+      return call_function<Function, Context>(
           object, context, std::move(arguments.[:members[Index]:])...);
     }(std::make_index_sequence<members.size()>{});
+  }
+}
+
+// Why apply() cannot call a bound function without an object; empty when it
+// can, and for an unbound one, which arguments_t has already reported.
+template <typename Binding, typename Object>
+consteval std::string_view object_diagnostic() {
+  if constexpr (is_bound_v<Binding> && std::is_void_v<Object>) {
+    const auto function = Binding::function;
+    if (std::meta::is_class_member(function) &&
+        !std::meta::is_static_member(function)) {
+      return static_string(
+          call_diagnostic("scrydantic::apply", function,
+                          entity_name(function) +
+                              " is a non-static member function; pass the object to "
+                              "call it on, as apply(object, arguments)"));
+    }
+  }
+  return {};
+}
+
+// What every apply() overload does. `object` is null, as a `void*`, for a call
+// on no object, and `context` is a no_context for a binding without one. A
+// binding that cannot be called is skipped, so it fails with its one diagnostic.
+template <typename Binding, typename Context, typename Object, typename Args>
+decltype(auto) apply_binding(Object* object, const context_argument_t<Context>& context,
+                             Args& arguments) {
+  constexpr std::string_view problem = object_diagnostic<Binding, Object>();
+  static_assert(problem.empty(), problem);
+  if constexpr (is_bound_v<Binding> && problem.empty()) {
+    return apply_function<Binding::function, Context>(object, context, arguments);
   }
 }
 
@@ -184,7 +218,8 @@ decltype(auto) invoke_tool_function(Object* object,
 template <typename Tool, typename Context, typename Object>
 [[nodiscard]] ToolFunction<Context>
 make_function_handler(std::shared_ptr<Object> object) {
-  using Args = tool_arguments_t<Tool>;
+  using Binding = typename Tool::binding;
+  using Args = function_arguments_t<Binding>;
   return tool_function_of<Context>(
       [object = std::move(object)](const context_argument_t<Context>& context,
                                    const Json& input) -> Result<Json> {
@@ -193,10 +228,24 @@ make_function_handler(std::shared_ptr<Object> object) {
           return std::unexpected(std::move(arguments.error()));
         }
         return run_tool([&]() -> decltype(auto) {
-          return invoke_tool_function<Tool::function, Context>(object.get(), context,
-                                                               *arguments);
+          return apply_function<Binding::function, Context>(object.get(), context,
+                                                            *arguments);
         });
       });
+}
+
+// The schema of what a successful call of a tool function returns: schema_v of
+// the value it returns, alone or in a Result. A function that returns void or
+// Status has none, and the view is empty: the `{}` such a tool answers with is
+// an acknowledgment, not a value with a contract. The return type is part of
+// the function's type, so this is keyed on the function alone.
+template <std::meta::info Function> consteval std::string_view output_schema_of() {
+  constexpr auto result = std::meta::return_type_of(Function);
+  if constexpr (is_acknowledgment(result)) {
+    return {};
+  } else {
+    return schema_v<typename[:plain_type(result_value_type(result)):]>;
+  }
 }
 
 // The contract of one bound_tool, named and described as the binding unit saw
@@ -205,17 +254,23 @@ template <typename Tool> [[nodiscard]] constexpr ToolDescriptor tool_descriptor(
   return ToolDescriptor{
       .name = Tool::name,
       .description = Tool::description,
-      .input_schema = input_schema_v<tool_arguments_t<Tool>>,
+      .input_schema = input_schema_v<function_arguments_t<typename Tool::binding>>,
+      .output_schema = output_schema_of<Tool::binding::function>(),
   };
 }
 
 template <typename Tool, typename Context, typename Object>
 [[nodiscard]] BoundTool<Context> make_bound_tool(std::shared_ptr<Object> object) {
   static constexpr ToolDescriptor descriptor = tool_descriptor<Tool>();
+  // No schema is empty text, so an empty view can only mean that there is none.
   return BoundTool<Context>{
       .name = std::string{descriptor.name},
       .description = std::string{descriptor.description},
       .input_schema = Json{.text = std::string{descriptor.input_schema}},
+      .output_schema =
+          descriptor.output_schema.empty()
+              ? std::nullopt
+              : std::optional{Json{.text = std::string{descriptor.output_schema}}},
       .invoke = make_function_handler<Tool, Context>(std::move(object)),
   };
 }

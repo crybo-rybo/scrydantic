@@ -119,8 +119,9 @@ struct Error {
   std::string model_message{};
   /// The issues a decode found, in the order it visited them: an object's
   /// unknown members in key order, then its declared members in declaration
-  /// order, and an array's elements in index order. It holds at most max_issues.
-  /// Every other failure, encoding included, leaves it empty.
+  /// order, a map's entries in key order, and an array's elements in index
+  /// order. It holds at most max_issues. Every other failure, encoding included,
+  /// leaves it empty.
   std::vector<Issue> issues{};
 };
 

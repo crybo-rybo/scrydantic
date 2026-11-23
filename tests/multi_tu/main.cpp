@@ -7,11 +7,14 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace echo_tools {
 // Each unit declares echo with its own parameter name; this is the definition.
 std::int32_t echo(std::int32_t value) { return value; }
+// The same for twice, which each unit binds by hand, without a tool annotation.
+std::int32_t twice(std::int32_t value) { return 2 * value; }
 } // namespace echo_tools
 
 namespace {
@@ -44,6 +47,20 @@ names_of(const std::vector<scrydantic::BoundTool<>>& tools) {
          echoed->text == "7";
 }
 
+// Whether `bind` is twice as one unit declared it: its parameter name in the
+// schema of the argument object, a call that decodes that name, and none that
+// decodes the name the other unit gave it.
+[[nodiscard]] bool is_twice(HandBound (*const bind)(std::string_view),
+                            const std::string& parameter, const std::string& other) {
+  const auto expected_schema =
+      R"({"additionalProperties":false,"properties":{")" + parameter +
+      R"(":{"maximum":2147483647,"minimum":-2147483648,"type":"integer"}},"required":[")" +
+      parameter + R"("],"type":"object"})";
+  const HandBound called = bind("{\"" + parameter + "\":7}");
+  return called.schema == expected_schema && called.result == 14 &&
+         !bind("{\"" + other + "\":7}").result;
+}
+
 } // namespace
 
 int main() {
@@ -53,5 +70,9 @@ int main() {
   failures += names_of(bind_inventory_from_b()) != Names{"only_b"} ? 1 : 0;
   failures += is_echo(bind_echo_from_a(), "Echo a count", "count") ? 0 : 1;
   failures += is_echo(bind_echo_from_b(), "Echo a quantity", "quantity") ? 0 : 1;
+  failures += is_twice(twice_from_a, "count", "quantity") ? 0 : 1;
+  failures += is_twice(twice_from_b, "quantity", "count") ? 0 : 1;
+  failures += is_twice(wrapped_twice_from_a, "count", "quantity") ? 0 : 1;
+  failures += is_twice(wrapped_twice_from_b, "quantity", "count") ? 0 : 1;
   return failures == 0 ? 0 : 1;
 }

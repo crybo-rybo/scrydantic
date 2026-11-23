@@ -105,7 +105,7 @@ template <typename Enum>
 consteval bool append_default_enumerator(std::string& output, const Enum value) {
   template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
     if (value == [:enumerator:]) {
-      const auto name = std::meta::identifier_of(enumerator);
+      const auto name = json_name_of(enumerator);
       append_json_string(output, name);
       return is_utf8(name);
     }
@@ -171,15 +171,16 @@ consteval bool append_default_object(std::string& output, const Type& value,
     if (key > tag_key) {
       write_tag();
     }
+    const auto& owner = declaring_object<field.path, field.depth>(value);
     bool present = true;
     if constexpr (field.omit_null) {
-      present = value.[:member:].has_value();
+      present = owner.[:member:].has_value();
     }
     if (present) {
       separate();
       append_json_string(output, key);
       output.push_back(':');
-      if (!append_default(output, value.[:member:], depth + 1)) {
+      if (!append_default(output, owner.[:member:], depth + 1)) {
         return false;
       }
     }

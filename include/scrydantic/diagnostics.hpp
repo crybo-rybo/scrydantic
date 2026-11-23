@@ -115,4 +115,23 @@ tools_diagnostic(const std::string_view api = "scrydantic::bind") {
   return detail::entity_tools_diagnostic<Entity, Context>(api);
 }
 
+/// Why arguments_t<Function, Context> and apply() cannot bind a function: why
+/// its parameters cannot form an argument object.
+///
+/// The text starts with the call, as tools_diagnostic() writes it, under the
+/// name of the wrapper's own entry point, and then names the function, the
+/// parameter, and the reason. The rules are the ones bind() applies to a tool's
+/// parameters. Nothing is asked of the function's annotations or of its return
+/// type, and nothing of the object that calls a non-static member function.
+/// @tparam Function Reflection of the function to bind.
+/// @tparam Context Call context the function may take first, or void for none.
+/// @param api Name of the function the user called.
+/// @return Empty when arguments_t<Function, Context> names an argument object,
+/// and otherwise the reason.
+template <std::meta::info Function, typename Context = void>
+[[nodiscard]] consteval std::string_view
+arguments_diagnostic(const std::string_view api = "scrydantic::apply") {
+  return detail::function_arguments_diagnostic<Function, Context>(api);
+}
+
 } // namespace scrydantic
