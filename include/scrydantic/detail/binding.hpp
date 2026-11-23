@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <meta>
+#include <optional>
 #include <scrydantic/bound_tool.hpp>
 #include <scrydantic/codec.hpp>
 #include <scrydantic/detail/decode.hpp>
@@ -233,6 +234,20 @@ make_function_handler(std::shared_ptr<Object> object) {
       });
 }
 
+// The schema of what a successful call of a tool function returns: schema_v of
+// the value it returns, alone or in a Result. A function that returns void or
+// Status has none, and the view is empty: the `{}` such a tool answers with is
+// an acknowledgment, not a value with a contract. The return type is part of
+// the function's type, so this is keyed on the function alone.
+template <std::meta::info Function> consteval std::string_view output_schema_of() {
+  constexpr auto result = std::meta::return_type_of(Function);
+  if constexpr (is_acknowledgment(result)) {
+    return {};
+  } else {
+    return schema_v<typename[:plain_type(result_value_type(result)):]>;
+  }
+}
+
 // The contract of one bound_tool, named and described as the binding unit saw
 // the function.
 template <typename Tool> [[nodiscard]] constexpr ToolDescriptor tool_descriptor() {
@@ -240,16 +255,22 @@ template <typename Tool> [[nodiscard]] constexpr ToolDescriptor tool_descriptor(
       .name = Tool::name,
       .description = Tool::description,
       .input_schema = input_schema_v<function_arguments_t<typename Tool::binding>>,
+      .output_schema = output_schema_of<Tool::binding::function>(),
   };
 }
 
 template <typename Tool, typename Context, typename Object>
 [[nodiscard]] BoundTool<Context> make_bound_tool(std::shared_ptr<Object> object) {
   static constexpr ToolDescriptor descriptor = tool_descriptor<Tool>();
+  // No schema is empty text, so an empty view can only mean that there is none.
   return BoundTool<Context>{
       .name = std::string{descriptor.name},
       .description = std::string{descriptor.description},
       .input_schema = Json{.text = std::string{descriptor.input_schema}},
+      .output_schema =
+          descriptor.output_schema.empty()
+              ? std::nullopt
+              : std::optional{Json{.text = std::string{descriptor.output_schema}}},
       .invoke = make_function_handler<Tool, Context>(std::move(object)),
   };
 }

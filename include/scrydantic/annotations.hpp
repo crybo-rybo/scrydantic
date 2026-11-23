@@ -155,12 +155,20 @@ template <const std::string_view& View> [[nodiscard]] consteval auto description
   return annotation{typename annotation::view_tag{}, View};
 }
 
-/// Overrides the JSON key of one data member, or the name of one tool function.
+/// Overrides the JSON key of one data member, the JSON string of one enumerator,
+/// or the name of one tool function.
 ///
 /// On a data member the key replaces the member's identifier in encoding,
 /// decoding, generated schemas, and decode-failure paths. Objects are written in
 /// lexical order of these final keys, and two members of one class that end with
-/// the same key are a compile-time error. On a function annotated with
+/// the same key are a compile-time error. On an enumerator, where it is written
+/// after the identifier, the name replaces that identifier as the string the
+/// enumerator is in JSON: in encoding, in decoding, in a schema's `enum` list,
+/// and in the reason an unknown string is rejected with. It is how an enum holds
+/// a value that is not a C++ identifier, such as
+/// `public_ [[= scrydantic::name{"public"}]]`. Two enumerators of one enum that
+/// end with the same name are a compile-time error, and so is any other
+/// Scrydantic annotation on an enumerator. On a function annotated with
 /// scrydantic::tool it replaces the function's identifier as the tool name
 /// the model sees. Usage: `[[= scrydantic::name{"max_tokens"}]]`.
 /// @tparam Size Character-array extent including the null terminator.
@@ -243,6 +251,33 @@ struct ignore_unknown_t {};
 /// stay closed (`"additionalProperties":false`), because a schema describes what a
 /// producer should send, not everything the decoder tolerates.
 inline constexpr ignore_unknown_t ignore_unknown{};
+
+/// Type of the flatten annotation.
+struct flatten_t {};
+
+/// Makes the fields of a data member fields of the object that holds it.
+///
+/// Applies to a data member whose type is an aggregate. The member has no key
+/// of its own: its class's fields are written, read, and described in the schema
+/// as fields of the enclosing object, sorted among that object's own keys.
+/// `struct ToolList { std::vector<Tool> tools; [[= scrydantic::flatten]] Page
+/// page; };` with `struct Page { std::optional<std::string> next_cursor; };`
+/// is the object `{"next_cursor":null,"tools":[]}`, and an issue inside it is
+/// reported where the JSON has it, at `$.next_cursor`. A flattened class may
+/// flatten members of its own.
+///
+/// Each field keeps what its own class says of it: a skip_null on `Page` governs
+/// `next_cursor`, and a scrydantic::check on `Page` runs on the `page` member
+/// once its fields have decoded. Unknown members are a matter for the whole JSON
+/// object, so the ignore_unknown of the outermost class decides them. A field is
+/// required unless it, or a flattened member it is reached through, has a
+/// default member initializer, or skip_null applies to it.
+///
+/// The compiler rejects two fields of one object that end with the same key, a
+/// flattened member that is not an aggregate, such as a `std::optional` of one,
+/// and a flattened member that carries an annotation describing its own key or
+/// value, which it does not have.
+inline constexpr flatten_t flatten{};
 
 /// Bounds an integer or floating-point data member, as JSON Schema's `minimum`,
 /// `exclusiveMinimum`, `maximum`, and `exclusiveMaximum` do.

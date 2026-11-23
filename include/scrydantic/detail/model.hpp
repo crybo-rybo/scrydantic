@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <map>
 #include <memory>
 #include <meta>
 #include <optional>
@@ -13,6 +15,7 @@
 #include <scrydantic/json.hpp>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -40,6 +43,7 @@ enum class value_kind : std::uint8_t {
   indirect,
   vector,
   array,
+  map,
   variant,
   aggregate,
 };
@@ -78,6 +82,12 @@ consteval bool is_character_type(const std::meta::info type) {
   return false;
 }
 
+// Whether `type` is a std::map or a std::unordered_map, whatever its key is.
+consteval bool is_map_template(const std::meta::info type) {
+  return is_specialization_of(type, ^^std::map) ||
+         is_specialization_of(type, ^^std::unordered_map);
+}
+
 consteval value_kind template_kind_of(const std::meta::info type) {
   if (is_specialization_of(type, ^^std::optional)) {
     return value_kind::optional;
@@ -90,6 +100,15 @@ consteval value_kind template_kind_of(const std::meta::info type) {
   }
   if (is_specialization_of(type, ^^std::array)) {
     return value_kind::array;
+  }
+  // A map is the JSON object whose keys are data, and a JSON key is a string.
+  // Its comparator, or its hash and equality, and its allocator change nothing
+  // about that object, so only the key and mapped types are looked at.
+  if (is_map_template(type)) {
+    return std::meta::dealias(std::meta::template_arguments_of(type)[0]) ==
+                   plain_type(^^std::string)
+               ? value_kind::map
+               : value_kind::unsupported;
   }
   if (is_specialization_of(type, ^^std::variant)) {
     return value_kind::variant;
@@ -144,6 +163,25 @@ consteval std::meta::info element_of(const std::meta::info container) {
 consteval std::size_t array_size_of(const std::meta::info array) {
   return std::meta::extract<std::size_t>(
       std::meta::template_arguments_of(plain_type(array))[1]);
+}
+
+// The second template argument of a map: the type of the value under each key.
+consteval std::meta::info mapped_of(const std::meta::info map) {
+  return std::meta::template_arguments_of(plain_type(map))[1];
+}
+
+// Whether iterating a map visits its keys in canonical order, which is lexical
+// byte order: a std::map ordered by std::less, of std::string or transparent,
+// which compares two strings as the JSON core compares two keys. Any other
+// comparator may order them otherwise, and a std::unordered_map has no order.
+consteval bool iterates_in_key_order(const std::meta::info map) {
+  const auto type = plain_type(map);
+  if (!is_specialization_of(type, ^^std::map)) {
+    return false;
+  }
+  const auto comparator = std::meta::dealias(std::meta::template_arguments_of(type)[2]);
+  // Parenthesized so clang-format, which does not know `^^`, lays them out.
+  return comparator == (^^std::less<std::string>) || comparator == (^^std::less<>);
 }
 
 // The value a type stands for once every std::indirect around it is seen
@@ -228,6 +266,16 @@ consteval std::string_view json_key_of(const std::meta::info member) {
   return std::meta::identifier_of(member);
 }
 
+// The string an enumerator is in JSON: its name annotation, or else its
+// identifier. The schema's `enum` list, encoding, decoding, and the reason an
+// unknown enumerator is rejected with all read it here, so they cannot disagree.
+consteval std::string_view json_name_of(const std::meta::info enumerator) {
+  if (const auto text = annotated_text(enumerator, ^^name)) {
+    return *text;
+  }
+  return std::meta::identifier_of(enumerator);
+}
+
 consteval std::optional<std::string_view> tag_of(const std::meta::info type) {
   return annotated_text(plain_type(type), ^^tag);
 }
@@ -246,14 +294,63 @@ consteval bool omits_null(const std::meta::info owner, const std::meta::info mem
   return !has_annotation(member, ^^emit_null_t) && has_annotation(owner, ^^skip_null_t);
 }
 
+// Whether a data member is flattened: its class's fields are fields of the
+// object that holds it, and it has no key of its own. The family checks admit
+// the annotation on a member of aggregate type alone, and it is asked here of
+// that type as well, so that the walks below stay inside aggregates even for a
+// class that the checks have not finished with.
+consteval bool is_flattened(const std::meta::info member) {
+  return has_annotation(member, ^^flatten_t) &&
+         kind_of(std::meta::type_of(member)) == value_kind::aggregate;
+}
+
 // ---- Field layout ------------------------------------------------------------
 
-// Everything the codec and the schema generator need to know about one data
-// member, resolved once. It is a structural type so a class's fields can be one
+// One field of an object: a data member whose value the object's JSON carries
+// under a key, and where the member is.
+struct declared_field {
+  std::meta::info member{};
+  // The flattened members between the object and the class that declares
+  // `member`, outermost first; none for a member of the object's own class.
+  std::vector<std::meta::info> path{};
+};
+
+consteval void append_declared_fields(std::vector<declared_field>& fields,
+                                      const std::meta::info type,
+                                      std::vector<std::meta::info>& path) {
+  for (const auto member : data_members_of(type)) {
+    if (is_flattened(member)) {
+      path.push_back(member);
+      append_declared_fields(fields, plain_type(std::meta::type_of(member)), path);
+      path.pop_back();
+    } else {
+      fields.push_back({.member = member, .path = path});
+    }
+  }
+}
+
+// The fields of an object of `type`, in declaration order: its class's data
+// members, with each flattened member replaced, where it stands, by the fields
+// of its own class. This is what "the fields of an object" means to the checks,
+// the schemas, the codec, and keys_v alike. A class cannot hold itself by value,
+// so the walk ends.
+consteval std::vector<declared_field> declared_fields_of(const std::meta::info type) {
+  std::vector<declared_field> fields{};
+  std::vector<std::meta::info> path{};
+  append_declared_fields(fields, plain_type(type), path);
+  return fields;
+}
+
+// Everything the codec and the schema generator need to know about one field,
+// resolved once. It is a structural type so an object's fields can be one
 // static array that `template for` walks; string members point at static strings
-// because std::string_view is not structural.
+// because std::string_view is not structural, and the path at a static array.
 struct field_layout {
   std::meta::info member{};
+  // The flattened members that lead from the object to `member`, as
+  // declared_field::path lists them: `depth` of them, in a static array.
+  const std::meta::info* path{};
+  std::size_t depth{};
   const char* key{};
   std::size_t key_size{};
   // Encoding omits the member while it is a disengaged optional, and decoding
@@ -267,25 +364,35 @@ struct field_layout {
   }
 };
 
-consteval field_layout field_of(const std::meta::info owner,
-                                const std::meta::info member) {
-  const auto key = json_key_of(member);
-  const bool omit = omits_null(owner, member);
+// Class annotations follow the class that declares the member, so a skip_null
+// on a flattened class governs its fields and one on the enclosing class does
+// not. A default member initializer gives a value to the member it is written
+// on, and so to every field under a flattened member: none of them is required.
+consteval field_layout field_of(const declared_field& field) {
+  const auto key = json_key_of(field.member);
+  const bool omit = omits_null(std::meta::parent_of(field.member), field.member);
+  const bool defaulted =
+      std::meta::has_default_member_initializer(field.member) ||
+      std::ranges::any_of(field.path, [](const std::meta::info flattened) {
+        return std::meta::has_default_member_initializer(flattened);
+      });
   return field_layout{
-      .member = member,
+      .member = field.member,
+      .path = std::define_static_array(field.path).data(),
+      .depth = field.path.size(),
       .key = std::define_static_string(key),
       .key_size = key.size(),
       .omit_null = omit,
-      .required = !omit && !std::meta::has_default_member_initializer(member),
+      .required = !omit && !defaulted,
   };
 }
 
-// A class's fields in lexical order of their final JSON keys, which is the
+// An object's fields in lexical order of their final JSON keys, which is the
 // canonical order objects are written in.
 consteval std::vector<field_layout> fields_of(const std::meta::info type) {
   std::vector<field_layout> fields{};
-  for (const auto member : data_members_of(plain_type(type))) {
-    fields.push_back(field_of(plain_type(type), member));
+  for (const auto& field : declared_fields_of(type)) {
+    fields.push_back(field_of(field));
   }
   std::ranges::sort(fields, {},
                     [](const field_layout& field) { return field.key_view(); });
@@ -296,10 +403,11 @@ template <typename Type>
 inline constexpr auto fields_v = std::define_static_array(fields_of(^^Type));
 
 // Decoding visits members in declaration order, which is the order it reports
-// their issues in. This is an array of member reflections rather than a second
-// array of field_layout: GCC 16 rejects a define_static_array of consteval-only
-// class elements whose value equals one it already made, which the two orders of
-// a one-member class would be.
+// their issues in, and reads a flattened member's own members where it stands.
+// This is an array of member reflections rather than a second array of
+// field_layout: GCC 16 rejects a define_static_array of consteval-only class
+// elements whose value equals one it already made, which the two orders of a
+// one-member class would be.
 template <typename Type>
 inline constexpr auto declared_members_v =
     std::define_static_array(data_members_of(plain_type(^^Type)));
@@ -370,11 +478,11 @@ consteval std::string_view joined_names(const std::vector<std::string_view>& nam
   return static_string(text);
 }
 
-// The declared enumerator names, as the decode diagnostic lists them.
+// The declared enumerators' JSON names, as the decode diagnostic lists them.
 consteval std::string_view enumerator_names(const std::meta::info type) {
   std::vector<std::string_view> names{};
   for (const auto enumerator : std::meta::enumerators_of(plain_type(type))) {
-    names.push_back(std::meta::identifier_of(enumerator));
+    names.push_back(json_name_of(enumerator));
   }
   return joined_names(names);
 }
@@ -411,6 +519,8 @@ consteval void append_held_nodes(std::vector<schema_node>& nodes,
   case value_kind::vector:
   case value_kind::array:
     return append_held_nodes(nodes, element_of(plain));
+  case value_kind::map:
+    return append_held_nodes(nodes, mapped_of(plain));
   case value_kind::variant:
     for (const auto alternative : alternatives_of(plain)) {
       nodes.push_back({.type = plain_type(alternative), .tagged = true});
@@ -424,10 +534,12 @@ consteval void append_held_nodes(std::vector<schema_node>& nodes,
   }
 }
 
+// A flattened member's class is no link: a schema writes its fields among the
+// node's own, so the links are what those fields hold.
 consteval std::vector<schema_node> links_of(const schema_node node) {
   std::vector<schema_node> links{};
-  for (const auto member : data_members_of(node.type)) {
-    append_held_nodes(links, std::meta::type_of(member));
+  for (const auto& field : declared_fields_of(node.type)) {
+    append_held_nodes(links, std::meta::type_of(field.member));
   }
   return links;
 }
@@ -472,13 +584,15 @@ consteval std::optional<schema_node> root_node(const std::meta::info type) {
 //   type       = "bool" | "char" | "wchar_t" | "char8_t" | "char16_t" | "char32_t"
 //              | ( "int" | "uint" ) width | "float" | "double" | "string"
 //              | ( "optional" | "vector" | "indirect" ) "-" type
+//              | ( "map" | "unordered_map" ) "-" type "-" type
 //              | "array" "-" type "-" constant | "variant" "-" type { "-" type }
 //              | class
 //   constant   = [ "minus" ] decimal | "true" | "false" | enumerator-identifier
 //
 // A scope is a namespace, an anonymous namespace, or a class; a class argument
 // is an aggregate or an enum; `width` is an integer's width in bits, so a name is
-// the same on every platform; and a vector or an indirect uses std::allocator.
+// the same on every platform; a vector or an indirect uses std::allocator; and
+// a map, spelled with its key and mapped types, uses its template's defaults.
 // Thus recursive::Node<std::string> is "recursive.Node-string", Spin<-1> in an
 // anonymous namespace is "anonymous.Spin-minus1", and the plain form of a class
 // that carries a tag, whose schema lacks the tag, is "<class>-untagged".
@@ -611,6 +725,17 @@ consteval std::optional<name_result> container_name(const std::meta::info type) 
   if (default_allocator && is_specialization_of(type, ^^std::indirect)) {
     return spelled_template("indirect", arguments, 1);
   }
+  // A map whose every argument past the mapped type is its template's default.
+  // Parenthesized so clang-format, which does not know `^^`, lays them out.
+  for (const auto& [container, word] :
+       {std::pair{(^^std::map), "map"},
+        std::pair{(^^std::unordered_map), "unordered_map"}}) {
+    if (is_specialization_of(type, container) &&
+        type == std::meta::dealias(
+                    std::meta::substitute(container, {arguments[0], arguments[1]}))) {
+      return spelled_template(word, arguments, 2);
+    }
+  }
   return std::nullopt;
 }
 
@@ -655,8 +780,9 @@ consteval name_result type_name(const std::meta::info reflected) {
       display(type) +
       " is not a type that a definition name spells; an argument type must be "
       "bool, a character or integer type, float, double, std::string, a "
-      "std::optional, std::vector, std::indirect, std::array, or std::variant of "
-      "such types, an aggregate, or an enum");
+      "std::optional, std::vector, std::indirect, std::array, std::map, "
+      "std::unordered_map, or std::variant of such types, an aggregate, or an "
+      "enum");
 }
 
 // An integral constant, widened so that consteval code can read it without
@@ -673,6 +799,8 @@ consteval std::string signed_decimal(const std::int64_t value) {
                    : decimal(static_cast<std::uint64_t>(value));
 }
 
+// By its identifier, not by json_name_of: a definition name spells the C++
+// type, and a scrydantic::name may hold characters a definition name refuses.
 consteval name_result enumerator_name(const std::meta::info constant) {
   for (const auto enumerator :
        std::meta::enumerators_of(std::meta::type_of(constant))) {

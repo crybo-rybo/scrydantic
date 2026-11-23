@@ -336,6 +336,9 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
            "ignore_unknown), which applies to data members or classes; a tool's "
            "description is its scrydantic::tool text";
   }
+  if (has_annotation(function, ^^flatten_t)) {
+    return "carries scrydantic::flatten, which applies to data members";
+  }
   for (const auto annotation : std::meta::annotations_of(function)) {
     if (is_constraint(annotation)) {
       return "carries " + owned_text(constraint_name(annotation)) +
