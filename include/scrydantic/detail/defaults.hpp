@@ -190,14 +190,23 @@ consteval bool append_default_object(std::string& output, const Type& value,
   return true;
 }
 
-// The object of the alternative a variant holds, with its tag.
+// The alternative a variant holds, as write_variant() writes it: a tagged one
+// as its object with the tag, a std::monostate as null, and any other as its
+// type's value.
 template <typename Variant>
 consteval bool append_default_variant(std::string& output, const Variant& value,
                                       const std::size_t depth) {
   template for (constexpr std::meta::info alternative : alternatives_v<Variant>) {
     using Alternative = [:alternative:];
     if (const auto* const held = std::get_if<Alternative>(&value)) {
-      return append_default_object<Alternative, true>(output, *held, depth);
+      if constexpr (is_tagged_alternative(alternative)) {
+        return append_default_object<Alternative, true>(output, *held, depth);
+      } else if constexpr (std::same_as<Alternative, std::monostate>) {
+        append_json_literal(output, "null");
+        return true;
+      } else {
+        return append_default(output, *held, depth);
+      }
     }
   }
   // Left valueless by an exception.

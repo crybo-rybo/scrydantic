@@ -257,23 +257,131 @@ annotated_text(const std::meta::info entity,
   return std::nullopt;
 }
 
+// ---- Naming rules ------------------------------------------------------------
+
+// Only the ASCII letters have a case here: an identifier's other bytes are
+// digits or parts of a UTF-8 sequence, which no rule changes.
+consteval char ascii_upper(const char character) {
+  return character >= 'a' && character <= 'z' ? static_cast<char>(character - 'a' + 'A')
+                                              : character;
+}
+
+consteval char ascii_lower(const char character) {
+  return character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a')
+                                              : character;
+}
+
+// One character of a word as `rule` spells it. camel_case and pascal_case decide
+// a word's first character and leave the rest as written; the other two decide
+// every character.
+consteval char in_case(const naming_rule rule, const char character,
+                       const bool starts_word, const bool first_word) {
+  switch (rule) {
+  case naming_rule::camel_case:
+    if (!starts_word) {
+      return character;
+    }
+    return first_word ? ascii_lower(character) : ascii_upper(character);
+  case naming_rule::pascal_case:
+    return starts_word ? ascii_upper(character) : character;
+  case naming_rule::kebab_case:
+    return ascii_lower(character);
+  case naming_rule::screaming_snake_case:
+    return ascii_upper(character);
+  }
+  return character;
+}
+
+// What `rule` puts between two words, or nothing.
+consteval std::string_view word_separator(const naming_rule rule) {
+  switch (rule) {
+  case naming_rule::kebab_case:
+    return "-";
+  case naming_rule::screaming_snake_case:
+    return "_";
+  default:
+    return {};
+  }
+}
+
+// `identifier` as `rule` spells it. The identifier's words are what its
+// underscores separate, and nothing else is a boundary: splitting at a capital
+// or a digit would have to guess where `HTTPServer` or `sha256` divides, and a
+// guess is no rule. Leading underscores are not separators, since there is no
+// word before them; they are copied, so `_meta` keeps its underscore. Trailing
+// underscores separate a word from nothing and vanish, which is what makes
+// `default_` the key `default`. The text is built a character at a time, as
+// owned_text explains.
+consteval std::string renamed(const std::string_view identifier,
+                              const naming_rule rule) {
+  std::string text{};
+  std::size_t at = 0;
+  for (; at < identifier.size() && identifier[at] == '_'; ++at) {
+    text.push_back('_');
+  }
+  bool first_word = true;
+  bool starts_word = true;
+  for (; at < identifier.size(); ++at) {
+    if (identifier[at] == '_') {
+      starts_word = true;
+      continue;
+    }
+    if (starts_word && !first_word) {
+      for (const char character : word_separator(rule)) {
+        text.push_back(character);
+      }
+    }
+    text.push_back(in_case(rule, identifier[at], starts_word, first_word));
+    starts_word = false;
+    first_word = false;
+  }
+  return text;
+}
+
+// The rule a class or an enum states for the names of what it declares.
+consteval std::optional<naming_rule> naming_rule_of(const std::meta::info scope) {
+  for (const auto annotation : std::meta::annotations_of(scope)) {
+    if (annotation_matches(annotation, ^^rename_all)) {
+      return std::meta::extract<rename_all>(annotation).rule;
+    }
+  }
+  return std::nullopt;
+}
+
+// The identifier of a data member or an enumerator, spelled by the rename_all
+// of the class or enum that declares it, if that states one. The rule is read
+// from the entity's own parent, so it reaches no further than the declaration
+// it is written on: not into a member's type, and not out of a flattened class
+// into the object that holds it.
+consteval std::string_view declared_name_of(const std::meta::info entity) {
+  const auto identifier = std::meta::identifier_of(entity);
+  const auto rule = naming_rule_of(std::meta::parent_of(entity));
+  if (!rule) {
+    return identifier;
+  }
+  const auto text = renamed(identifier, *rule);
+  return {std::define_static_string(text), text.size()};
+}
+
 // The JSON key a data member is written under: its name annotation, or else its
-// identifier.
+// identifier, as its class's rename_all spells it. The schemas, the codec,
+// keys_v, issue paths, and the duplicate-key check all read the key here.
 consteval std::string_view json_key_of(const std::meta::info member) {
   if (const auto key = annotated_text(member, ^^name)) {
     return *key;
   }
-  return std::meta::identifier_of(member);
+  return declared_name_of(member);
 }
 
 // The string an enumerator is in JSON: its name annotation, or else its
-// identifier. The schema's `enum` list, encoding, decoding, and the reason an
-// unknown enumerator is rejected with all read it here, so they cannot disagree.
+// identifier, as its enum's rename_all spells it. The schema's `enum` list,
+// encoding, decoding, and the reason an unknown enumerator is rejected with all
+// read it here, so they cannot disagree.
 consteval std::string_view json_name_of(const std::meta::info enumerator) {
   if (const auto text = annotated_text(enumerator, ^^name)) {
     return *text;
   }
-  return std::meta::identifier_of(enumerator);
+  return declared_name_of(enumerator);
 }
 
 consteval std::optional<std::string_view> tag_of(const std::meta::info type) {
@@ -331,6 +439,90 @@ consteval bool is_flattened(const std::meta::info member) {
   return has_annotation(member, ^^flatten_t) &&
          kind_of(std::meta::type_of(member)) == value_kind::aggregate;
 }
+
+// ---- Variant alternatives ----------------------------------------------------
+
+// The JSON kind of a variant alternative: what a JSON value must be to be read
+// as it. A variant's alternatives are told apart by kind alone, so it holds at
+// most one of each, but for two cases. An integer and a floating-point
+// alternative share the numbers: a JSON integer within the integer
+// alternative's range is that alternative, and any other number the
+// floating-point one. And aggregates that each carry a scrydantic::tag share
+// the objects, told apart by the tag under tag_key. A variant of such
+// aggregates alone, the tagged union, is the case where every alternative is
+// an object.
+//
+// `none` is a type that is no alternative: one without a kind of its own, as a
+// Json, an optional, a std::indirect, and another variant are, or one that is
+// no supported value at all.
+enum class alternative_kind : std::uint8_t {
+  none,
+  null,
+  boolean,
+  integer,
+  number,
+  string,
+  array,
+  object,
+};
+
+// std::monostate is a variant's way to hold nothing, so as an alternative it is
+// null. Elsewhere it is the empty aggregate that kind_of() finds it to be.
+consteval alternative_kind alternative_kind_of(const std::meta::info alternative) {
+  const auto type = plain_type(alternative);
+  if (type == (^^std::monostate)) {
+    return alternative_kind::null;
+  }
+  switch (kind_of(type)) {
+  case value_kind::boolean:
+    return alternative_kind::boolean;
+  case value_kind::integer:
+    return alternative_kind::integer;
+  case value_kind::floating:
+    return alternative_kind::number;
+  case value_kind::string:
+  case value_kind::string_view:
+  case value_kind::enumeration:
+    return alternative_kind::string;
+  case value_kind::vector:
+  case value_kind::array:
+    return alternative_kind::array;
+  case value_kind::map:
+  case value_kind::aggregate:
+    return alternative_kind::object;
+  default:
+    return alternative_kind::none;
+  }
+}
+
+// Whether an alternative's object carries a tag and is selected by it: an
+// aggregate with a scrydantic::tag. An aggregate without one, like a map, is an
+// object that its kind alone selects.
+consteval bool is_tagged_alternative(const std::meta::info alternative) {
+  return kind_of(alternative) == value_kind::aggregate &&
+         tag_of(alternative).has_value();
+}
+
+// The first alternative of `variant` that has `kind`, or the null reflection
+// when none has. In a variant the checks admit it is the only one, but for the
+// tagged aggregates, which are all objects.
+consteval std::meta::info alternative_of_kind(const std::meta::info variant,
+                                              const alternative_kind kind) {
+  for (const auto alternative : alternatives_of(variant)) {
+    if (alternative_kind_of(alternative) == kind) {
+      return alternative;
+    }
+  }
+  return {};
+}
+
+template <typename Variant, alternative_kind Kind>
+inline constexpr std::meta::info kind_alternative_v =
+    alternative_of_kind(^^Variant, Kind);
+
+template <typename Variant, alternative_kind Kind>
+inline constexpr bool has_kind_v =
+    kind_alternative_v<Variant, Kind> != std::meta::info{};
 
 // ---- Field layout ------------------------------------------------------------
 
@@ -526,18 +718,68 @@ consteval std::string_view enumerator_names(const std::meta::info type) {
   return joined_names(names);
 }
 
-// The declared tags of a variant's alternatives, in declaration order.
+// The declared tags of a variant's tagged alternatives, in declaration order.
 consteval std::string_view tag_names(const std::meta::info variant) {
   std::vector<std::string_view> names{};
   for (const auto alternative : alternatives_of(variant)) {
-    names.push_back(*tag_of(alternative));
+    if (is_tagged_alternative(alternative)) {
+      names.push_back(*tag_of(alternative));
+    }
   }
   return joined_names(names);
 }
 
+// A kind's name, and the words a reason asks for a value of that kind with.
+struct kind_words {
+  std::string_view name{};
+  std::string_view phrase{};
+};
+
+consteval kind_words words_of(const alternative_kind kind) {
+  switch (kind) {
+  case alternative_kind::null:
+    return {.name = "null", .phrase = "null"};
+  case alternative_kind::boolean:
+    return {.name = "boolean", .phrase = "a boolean"};
+  case alternative_kind::integer:
+    return {.name = "integer", .phrase = "an integer"};
+  case alternative_kind::number:
+    return {.name = "number", .phrase = "a number"};
+  case alternative_kind::string:
+    return {.name = "string", .phrase = "a string"};
+  case alternative_kind::array:
+    return {.name = "array", .phrase = "an array"};
+  case alternative_kind::object:
+    return {.name = "object", .phrase = "an object"};
+  default:
+    return {};
+  }
+}
+
+// The reason a variant rejects a value of a kind that none of its alternatives
+// has: the kinds they have, each once, in alternative order, as `must be an
+// integer or a string`. For a tagged union it is `must be an object`.
+consteval std::string_view accepted_kinds_reason(const std::meta::info variant) {
+  std::vector<alternative_kind> kinds{};
+  for (const auto alternative : alternatives_of(variant)) {
+    if (const auto kind = alternative_kind_of(alternative);
+        !std::ranges::contains(kinds, kind)) {
+      kinds.push_back(kind);
+    }
+  }
+  std::string text{"must be "};
+  for (std::size_t index = 0; index < kinds.size(); ++index) {
+    if (index != 0) {
+      text += kinds.size() == 2 ? " or " : index + 1 == kinds.size() ? ", or " : ", ";
+    }
+    text += words_of(kinds[index]).phrase;
+  }
+  return static_string(text);
+}
+
 // ---- Recursion ---------------------------------------------------------------
 
-// An aggregate as a schema writes it: as a plain value, or as a variant
+// An aggregate as a schema writes it: as a plain value, or as a tagged variant
 // alternative, whose object also carries the tag. The two forms have different
 // schemas, so whether a form can contain itself is asked of each separately.
 struct schema_node {
@@ -561,8 +803,15 @@ consteval void append_held_nodes(std::vector<schema_node>& nodes,
   case value_kind::map:
     return append_held_nodes(nodes, mapped_of(plain));
   case value_kind::variant:
+    // A tagged alternative is its own form of its aggregate. Any other holds
+    // what its type does anywhere, but for std::monostate, which is null here
+    // and no aggregate.
     for (const auto alternative : alternatives_of(plain)) {
-      nodes.push_back({.type = plain_type(alternative), .tagged = true});
+      if (is_tagged_alternative(alternative)) {
+        nodes.push_back({.type = plain_type(alternative), .tagged = true});
+      } else if (alternative_kind_of(alternative) != alternative_kind::null) {
+        append_held_nodes(nodes, alternative);
+      }
     }
     return;
   case value_kind::aggregate:

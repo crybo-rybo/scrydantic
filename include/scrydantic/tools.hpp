@@ -318,12 +318,13 @@ consteval std::meta::info toolbox_tools_of(const std::meta::info type,
 
 /// Binds a callable whose arguments are a reflected aggregate.
 ///
-/// The returned handler decodes its JSON input strictly into `Args`, invokes the
-/// callable as const with it, preceded by the context when the callable accepts
-/// one, and encodes the typed return. State that calls change therefore lives
-/// outside the callable, as ToolHandlerFor describes. The callable may return a
-/// supported value, a Result of one, `void`, or Status; the last two answer `{}`
-/// on success. The argument schema is input_schema_v<Args>.
+/// The returned handler decodes its JSON input, a view or text as ToolFunction
+/// describes, strictly into `Args`, invokes the callable as const with it,
+/// preceded by the context when the callable accepts one, and encodes the typed
+/// return. State that calls change therefore lives outside the callable, as
+/// ToolHandlerFor describes. The callable may return a supported value, a
+/// Result of one, `void`, or Status; the last two answer `{}` on success. The
+/// argument schema is input_schema_v<Args>.
 ///
 /// What comes back is the bare handler, which has nowhere to carry a schema. A
 /// host that builds a BoundTool around it sets `input_schema` from
@@ -542,11 +543,23 @@ public:
   [[nodiscard]] Result<Json> invoke(const std::string_view name, Json arguments) const
     requires std::is_void_v<Context>
   {
-    const BoundTool<Context>* const tool = find(name);
-    if (tool == nullptr) {
-      return std::unexpected(unknown_tool(name));
-    }
-    return tool->invoke(std::move(arguments));
+    return call(name, std::move(arguments));
+  }
+
+  /// Calls the tool named `name` with arguments the host has already parsed.
+  ///
+  /// The view may show any part of a larger document, such as the member of a
+  /// request that holds the arguments; the tool decodes it in place, as
+  /// ToolFunction describes. Otherwise this is invoke(name, arguments) with the
+  /// arguments as text.
+  /// @param name Tool name the model called.
+  /// @param arguments View of the JSON argument object the model supplied.
+  /// @return What the tool returned, or the unknown-tool error.
+  [[nodiscard]] Result<Json> invoke(const std::string_view name,
+                                    const JsonView& arguments) const
+    requires std::is_void_v<Context>
+  {
+    return call(name, arguments);
   }
 
   /// Calls the tool named `name` with the call context and `arguments`.
@@ -562,11 +575,24 @@ public:
                                     Json arguments) const
     requires(!std::is_void_v<Context>)
   {
-    const BoundTool<Context>* const tool = find(name);
-    if (tool == nullptr) {
-      return std::unexpected(unknown_tool(name));
-    }
-    return tool->invoke(context, std::move(arguments));
+    return call(name, context, std::move(arguments));
+  }
+
+  /// Calls the tool named `name` with the call context and arguments the host
+  /// has already parsed.
+  ///
+  /// This is invoke(name, context, arguments) with the arguments as the view
+  /// that invoke(name, view) takes.
+  /// @param name Tool name the model called.
+  /// @param context Call context passed through to the tool.
+  /// @param arguments View of the JSON argument object the model supplied.
+  /// @return What the tool returned, or the unknown-tool error.
+  [[nodiscard]] Result<Json> invoke(const std::string_view name,
+                                    const detail::context_argument_t<Context>& context,
+                                    const JsonView& arguments) const
+    requires(!std::is_void_v<Context>)
+  {
+    return call(name, context, arguments);
   }
 
   /// Lists the tools, for publishing them to a model, or to call one directly.
@@ -584,6 +610,19 @@ public:
   }
 
 private:
+  // What every invoke() does. `arguments` are what the tool's handler is called
+  // with: the context, when the set has one, and the argument object as text
+  // or as a view.
+  template <typename... Arguments>
+  [[nodiscard]] Result<Json> call(const std::string_view name,
+                                  Arguments&&... arguments) const {
+    const BoundTool<Context>* const tool = find(name);
+    if (tool == nullptr) {
+      return std::unexpected(unknown_tool(name));
+    }
+    return tool->invoke(std::forward<Arguments>(arguments)...);
+  }
+
   // Why the set holds no tool named `name`, listing the ones it does.
   [[nodiscard]] Error unknown_tool(const std::string_view name) const {
     std::vector<std::string_view> names(tools_.size());

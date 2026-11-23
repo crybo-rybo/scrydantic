@@ -81,17 +81,21 @@ using context_argument_t =
     std::conditional_t<std::is_void_v<Context>, no_context, Context>;
 
 // Wraps the shared body of a handler, which takes the context argument and the
-// input, into the ToolFunction of `Context`.
+// input, into the ToolFunction of `Context`. The input is the parsed argument
+// object: a ToolFunction parses the text of a call that passes text, so the body
+// reads a view either way.
 template <typename Context, typename Body>
 [[nodiscard]] ToolFunction<Context> tool_function_of(Body body) {
   if constexpr (std::is_void_v<Context>) {
-    return ToolFunction<Context>{[body = std::move(body)](Json input) -> Result<Json> {
-      return body(no_context{}, std::move(input));
-    }};
+    return ToolFunction<Context>{
+        [body = std::move(body)](const JsonView& input) -> Result<Json> {
+          return body(no_context{}, input);
+        }};
   } else {
     return ToolFunction<Context>{
-        [body = std::move(body)](const Context& context, Json input) -> Result<Json> {
-          return body(context, std::move(input));
+        [body = std::move(body)](const Context& context,
+                                 const JsonView& input) -> Result<Json> {
+          return body(context, input);
         }};
   }
 }
@@ -105,8 +109,8 @@ template <typename Args, typename Context, typename Handler>
   return tool_function_of<Context>(
       [callable = Callable{std::forward<Handler>(handler)}](
           [[maybe_unused]] const context_argument_t<Context>& context,
-          const Json& input) -> Result<Json> {
-        auto arguments = decode_arguments<Args>(input);
+          const JsonView& input) -> Result<Json> {
+        auto arguments = detail::decode<Args>(input);
         if (!arguments) {
           return std::unexpected(std::move(arguments.error()));
         }
@@ -281,8 +285,8 @@ make_function_handler(std::shared_ptr<Object> object) {
   using Args = function_arguments_t<Binding>;
   return tool_function_of<Context>(
       [object = std::move(object)](const context_argument_t<Context>& context,
-                                   const Json& input) -> Result<Json> {
-        auto arguments = decode_arguments<Args>(input);
+                                   const JsonView& input) -> Result<Json> {
+        auto arguments = detail::decode<Args>(input);
         if (!arguments) {
           return std::unexpected(std::move(arguments.error()));
         }

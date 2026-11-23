@@ -1,18 +1,18 @@
-# Publishes reflected tools as an MCP-style listing and serves calls, using only
-# the installed package's headers. It reports through its exit code, so it runs
+# Lists reflected tools and serves calls to them by name, using only the
+# installed package's headers. It reports through its exit code, so it runs
 # under ctest when the tests are built.
-add_executable(scrydantic_mcp_tools_example mcp_tools.cpp)
+add_executable(scrydantic_tool_host_example tool_host.cpp)
 target_link_libraries(
-  scrydantic_mcp_tools_example
+  scrydantic_tool_host_example
   PRIVATE scrydantic::scrydantic scrydantic_project_options
 )
 if(SCRYDANTIC_BUILD_TESTS)
   add_test(
-    NAME scrydantic.example.mcp-tools
-    COMMAND scrydantic_mcp_tools_example
+    NAME scrydantic.example.tool-host
+    COMMAND scrydantic_tool_host_example
   )
   set_tests_properties(
-    scrydantic.example.mcp-tools
+    scrydantic.example.tool-host
     PROPERTIES LABELS example
   )
 endif()

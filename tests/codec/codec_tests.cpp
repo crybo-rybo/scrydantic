@@ -292,8 +292,8 @@ static_assert(!checked_decodable<Payload&>);
 
 } // namespace constrained
 
-static_assert(!scrydantic::SupportedValue<std::variant<Unannotated>>);
-static_assert(!scrydantic::SupportedValue<std::variant<Left, int>>);
+static_assert(!scrydantic::SupportedValue<std::variant<Unannotated, Left>>);
+static_assert(!scrydantic::SupportedValue<std::variant<Left, int*>>);
 static_assert(!scrydantic::SupportedValue<std::variant<Left, AlsoLeft>>);
 static_assert(!scrydantic::SupportedValue<std::variant<TypedAlternative>>);
 static_assert(!scrydantic::SupportedValue<Colliding>);
@@ -333,11 +333,11 @@ static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsBad>(),
 static_assert(mentions(scrydantic::supported_value_diagnostic<HoldsBad>(),
                        "BadAlternative>.letter: char is a character type"));
 static_assert(
-    mentions(scrydantic::supported_value_diagnostic<std::variant<Unannotated>>(),
+    mentions(scrydantic::supported_value_diagnostic<std::variant<Unannotated, Left>>(),
              "without a scrydantic::tag annotation"));
 static_assert(
-    mentions(scrydantic::supported_value_diagnostic<std::variant<Left, int>>(),
-             "has the alternative int, which is not a plain aggregate"));
+    mentions(scrydantic::supported_value_diagnostic<std::variant<Left, int*>>(),
+             "int* is not a supported reflected value"));
 static_assert(
     mentions(scrydantic::supported_value_diagnostic<std::variant<Left, AlsoLeft>>(),
              "that share the tag \"left\""));

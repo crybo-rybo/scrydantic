@@ -10,6 +10,8 @@
 #include <optional>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/constraints.hpp>
+#include <scrydantic/detail/failure.hpp>
+#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/detail/keywords.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
@@ -18,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 // The compile-time model of bound functions and reflected tools: how a parameter
@@ -392,6 +395,20 @@ consteval std::string entity_name(const std::meta::info entity) {
   return own;
 }
 
+// The annotations that decide which keys an object has, on a function, which
+// has none: its arguments are named after its parameters, and an argument
+// aggregate carries these itself.
+consteval std::string key_annotation_problem(const std::meta::info function) {
+  if (has_annotation(function, ^^flatten_t)) {
+    return "carries scrydantic::flatten, which applies to data members";
+  }
+  if (has_annotation(function, ^^rename_all)) {
+    return "carries scrydantic::rename_all, which applies to classes and enums; a "
+           "tool's arguments keep the names of its parameters";
+  }
+  return {};
+}
+
 consteval std::string tool_annotation_problem(const std::meta::info function) {
   if (annotation_count(function, ^^tool) > 1) {
     return "has more than one scrydantic::tool annotation";
@@ -407,8 +424,8 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
            "ignore_unknown), which applies to data members or classes; a tool's "
            "description is its scrydantic::tool text";
   }
-  if (has_annotation(function, ^^flatten_t)) {
-    return "carries scrydantic::flatten, which applies to data members";
+  if (auto reason = key_annotation_problem(function); !reason.empty()) {
+    return reason;
   }
   for (const auto annotation : std::meta::annotations_of(function)) {
     if (is_constraint(annotation)) {
@@ -868,16 +885,86 @@ consteval std::string_view toolbox_diagnostic() {
   return unsatisfied(display(^^Type), "Toolbox", toolbox_problem(^^Type, ^^Context));
 }
 
-// The type-erased handler that ToolFunction<Context> names in bound_tool.hpp. A
-// trait rather than a conditional type, because a handler type that took a
-// `const void&` could not even be named. Its call operator is const, so a const
-// table of tools can be called, and it calls what it stores as const.
+// The type-erased handler that ToolFunction<Context> names in bound_tool.hpp.
+// `Leading` is what a call passes before the arguments: the `const Context&` of
+// a binding with a context, or nothing.
+//
+// A handler reads its arguments from a parsed view, and that is the form bind()
+// and bind_handler() store: a call with a view decodes the caller's document
+// where it lies, and a call with text parses the text first, which is where
+// text that is not JSON fails. A callable that takes its arguments as `Json`,
+// as a handler written by hand may, is stored as it is instead: text goes to it
+// untouched and unchecked, and a view is written out for it as its canonical
+// text, once per call. A handler holds one form or the other, never both, so
+// each call tests which. Both call operators are const, so a const table of
+// tools can be called, and they call what they store as const.
+template <typename... Leading> class tool_handler {
+  using view_function =
+      std::move_only_function<Result<Json>(Leading..., const JsonView&) const>;
+  using text_function = std::move_only_function<Result<Json>(Leading..., Json) const>;
+
+public:
+  tool_handler() noexcept = default;
+  tool_handler(std::nullptr_t) noexcept {}
+
+  // A callable that can be called either way is stored as one that reads a
+  // view. The handler itself is such a callable, so it is excluded: copying
+  // one is the deleted copy, not a handler wrapped in a handler.
+  template <typename Handler>
+    requires(!std::same_as<std::remove_cvref_t<Handler>, tool_handler> &&
+             std::constructible_from<view_function, Handler>)
+  tool_handler(Handler&& handler) : view_{std::forward<Handler>(handler)} {}
+
+  template <typename Handler>
+    requires(!std::same_as<std::remove_cvref_t<Handler>, tool_handler> &&
+             !std::constructible_from<view_function, Handler> &&
+             std::constructible_from<text_function, Handler>)
+  tool_handler(Handler&& handler) : text_{std::forward<Handler>(handler)} {}
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return static_cast<bool>(view_) || static_cast<bool>(text_);
+  }
+
+  [[nodiscard]] friend bool operator==(const tool_handler& handler,
+                                       std::nullptr_t) noexcept {
+    return !handler;
+  }
+
+  [[nodiscard]] Result<Json> operator()(Leading... leading,
+                                        const JsonView& arguments) const {
+    if (view_) {
+      return view_(leading..., arguments);
+    }
+    return text_(leading..., arguments.to_json());
+  }
+
+  // Text that is not JSON is read once more to describe it, which only a
+  // failure pays for.
+  [[nodiscard]] Result<Json> operator()(Leading... leading, Json arguments) const {
+    if (text_) {
+      return text_(leading..., std::move(arguments));
+    }
+    const auto view = JsonView::parse(std::string_view{arguments.text});
+    if (!view) {
+      return std::unexpected(invalid_json_error("tool arguments are not valid JSON",
+                                                describe_invalid_json(arguments.text)));
+    }
+    return view_(leading..., *view);
+  }
+
+private:
+  view_function view_{};
+  text_function text_{};
+};
+
+// Names the tool_handler of a context. A trait rather than a conditional type,
+// because a `const void&` could not even be named.
 template <typename Context> struct tool_function {
-  using type = std::move_only_function<Result<Json>(const Context&, Json) const>;
+  using type = tool_handler<const Context&>;
 };
 
 template <> struct tool_function<void> {
-  using type = std::move_only_function<Result<Json>(Json) const>;
+  using type = tool_handler<>;
 };
 
 } // namespace scrydantic::detail
