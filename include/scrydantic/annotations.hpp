@@ -155,12 +155,20 @@ template <const std::string_view& View> [[nodiscard]] consteval auto description
   return annotation{typename annotation::view_tag{}, View};
 }
 
-/// Overrides the JSON key of one data member, or the name of one tool function.
+/// Overrides the JSON key of one data member, the JSON string of one enumerator,
+/// or the name of one tool function.
 ///
 /// On a data member the key replaces the member's identifier in encoding,
 /// decoding, generated schemas, and decode-failure paths. Objects are written in
 /// lexical order of these final keys, and two members of one class that end with
-/// the same key are a compile-time error. On a function annotated with
+/// the same key are a compile-time error. On an enumerator, where it is written
+/// after the identifier, the name replaces that identifier as the string the
+/// enumerator is in JSON: in encoding, in decoding, in a schema's `enum` list,
+/// and in the reason an unknown string is rejected with. It is how an enum holds
+/// a value that is not a C++ identifier, such as
+/// `public_ [[= scrydantic::name{"public"}]]`. Two enumerators of one enum that
+/// end with the same name are a compile-time error, and so is any other
+/// Scrydantic annotation on an enumerator. On a function annotated with
 /// scrydantic::tool it replaces the function's identifier as the tool name
 /// the model sees. Usage: `[[= scrydantic::name{"max_tokens"}]]`.
 /// @tparam Size Character-array extent including the null terminator.

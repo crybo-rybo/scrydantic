@@ -214,6 +214,48 @@ private:
     if (enumerators.empty()) {
       return problem(path, type, "has no enumerators");
     }
+    for (const auto enumerator : enumerators) {
+      if (auto text = check_enumerator_annotations(enumerator, path); !text.empty()) {
+        return text;
+      }
+    }
+    if (auto text = check_enumerator_values(type, path); !text.empty()) {
+      return text;
+    }
+    return check_enumerator_names(type, path);
+  }
+
+  // An enumerator takes scrydantic::name and no other annotation of
+  // Scrydantic's, since nothing reads one there. The test is the namespace the
+  // annotation's type is declared in, not a list of today's annotations, so one
+  // added later is rejected here until an enumerator gives it a meaning.
+  static consteval std::string
+  check_enumerator_annotations(const std::meta::info enumerator,
+                               const std::string& path) {
+    if (annotation_count(enumerator, ^^name) > 1) {
+      return problem(path, enumerator, "has more than one scrydantic::name annotation");
+    }
+    for (const auto annotation : std::meta::annotations_of(enumerator)) {
+      const auto type = plain_type(std::meta::type_of(annotation));
+      if (std::meta::has_parent(type) &&
+          std::meta::parent_of(type) == (^^::scrydantic) &&
+          !annotation_matches(annotation, ^^name)) {
+        const auto named = std::meta::has_template_arguments(type)
+                               ? std::meta::template_of(type)
+                               : type;
+        return problem(
+            path, enumerator,
+            "carries scrydantic::" + owned_text(std::meta::identifier_of(named)) +
+                ", which does not apply to enumerators; an enumerator "
+                "takes only scrydantic::name");
+      }
+    }
+    return {};
+  }
+
+  static consteval std::string check_enumerator_values(const std::meta::info type,
+                                                       const std::string& path) {
+    const auto enumerators = std::meta::enumerators_of(type);
     for (std::size_t left = 0; left < enumerators.size(); ++left) {
       for (std::size_t right = left + 1; right < enumerators.size(); ++right) {
         if (std::meta::constant_of(enumerators[left]) ==
@@ -224,6 +266,27 @@ private:
                              " and " +
                              owned_text(std::meta::identifier_of(enumerators[right])) +
                              " with one value, so that value has no single name");
+        }
+      }
+    }
+    return {};
+  }
+
+  // Two enumerators with one JSON name would make that string decode to
+  // whichever is declared first, as two members with one key would write it twice.
+  static consteval std::string check_enumerator_names(const std::meta::info type,
+                                                      const std::string& path) {
+    const auto enumerators = std::meta::enumerators_of(type);
+    for (std::size_t left = 0; left < enumerators.size(); ++left) {
+      for (std::size_t right = left + 1; right < enumerators.size(); ++right) {
+        const auto name = json_name_of(enumerators[left]);
+        if (name == json_name_of(enumerators[right])) {
+          return problem(
+              path, type,
+              "has enumerators " +
+                  owned_text(std::meta::identifier_of(enumerators[left])) + " and " +
+                  owned_text(std::meta::identifier_of(enumerators[right])) +
+                  " that both map to the JSON string \"" + owned_text(name) + "\"");
         }
       }
     }

@@ -141,6 +141,7 @@ add_executable(
   codec/codec_boundary_tests.cpp
   codec/codec_tests.cpp
   codec/constraint_tests.cpp
+  codec/enumerator_name_tests.cpp
   codec/json_schema_tests.cpp
   codec/number_spelling_tests.cpp
   codec/validator_tests.cpp
@@ -252,6 +253,21 @@ scrydantic_add_compile_fail_test(
   duplicate-key
   duplicate_key.cpp
   "does not satisfy scrydantic::Encodable: Limits has members limit and max_tokens that both map to the JSON key"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-enumerator-name
+  duplicate_enumerator_name.cpp
+  "does not satisfy scrydantic::Encodable: Level has enumerators low and minimum that both map to the JSON string \"low\""
+)
+scrydantic_add_compile_fail_test(
+  two-enumerator-names
+  two_enumerator_names.cpp
+  "does not satisfy scrydantic::Decodable: Gauge::level: Level::low has more than one scrydantic::name annotation"
+)
+scrydantic_add_compile_fail_test(
+  annotated-enumerator
+  annotated_enumerator.cpp
+  "does not satisfy scrydantic::SupportedValue: Gauge::level: Level::high carries scrydantic::description, which does not apply to enumerators; an enumerator takes only scrydantic::name"
 )
 scrydantic_add_compile_fail_test(
   endless-recursion

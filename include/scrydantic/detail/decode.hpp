@@ -123,7 +123,7 @@ template <typename Enum>
   }
   const auto text = *view.string();
   template for (constexpr std::meta::info enumerator : enumerators_v<Enum>) {
-    if (text == std::meta::identifier_of(enumerator)) {
+    if (text == json_name_of(enumerator)) {
       return [:enumerator:];
     }
   }
