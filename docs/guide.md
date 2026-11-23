@@ -93,7 +93,8 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | Annotation | Goes on | What it does |
 |---|---|---|
 | `description{"..."}` | member | Sets the member's `description` in the schema. |
-| `title{"..."}` | member, class | Sets the `title` of the member's or the class's schema. It is written to the schema only. Encoding and decoding do not read it. |
+| `title{"..."}` | member, class | Sets the `title` of the member's or the class's schema. It is written to the schema only. |
+| `keyword{"key", "json"}`, `keyword_string{"key", "text"}` | member, class | Adds a keyword of your choosing, such as `format` or `examples`, to the member's or the class's schema. It is written to the schema only. Decoding does not check it. |
 | `name{"..."}` | member, tool | Replaces the member's JSON key, or the tool's name. |
 | `tag{"..."}` | class | The class's `"type"` value when it is a variant alternative. |
 | `skip_null` | class, optional member | Leaves out an empty optional instead of writing `null`, and lets the input leave it out. On a class, it applies to every optional member. |
@@ -196,6 +197,60 @@ member a title goes with the value's schema, inside the `anyOf`, as a
 constraint does. An optional variant has no schema of its own inside the
 `anyOf`, so its title is beside it.
 
+**Custom keywords.** `keyword{"key", "json"}` adds any other keyword to a
+member's schema, or a class's: `format`, `examples`, `deprecated`, or a vendor
+extension under `x-`. Its value is JSON text. `keyword_string{"key", "text"}`
+is the same for a value that is a string, and takes the text as it is:
+
+```cpp
+struct Query {
+  [[= scrydantic::keyword_string{"format", "date-time"}]] std::string since;
+  [[= scrydantic::keyword{"examples", R"(["us-west1","eu-north1"])"}]] std::string zone;
+  [[= scrydantic::keyword{"x-header", R"("Region")"}]] std::string region;
+};
+
+scrydantic::schema_v<Query>
+// {"additionalProperties":false,
+//  "properties":{"region":{"type":"string","x-header":"Region"},
+//                "since":{"format":"date-time","type":"string"},
+//                "zone":{"examples":["us-west1","eu-north1"],"type":"string"}},
+//  "required":["region","since","zone"],"type":"object"}
+```
+
+Like `pattern`, a custom keyword is written to the schema only. Decoding does
+not check it: a `since` that is not a date decodes. If you rely on a keyword,
+check it in a validator too.
+
+The value must be exactly one JSON value, or the type does not compile. It is
+written as you wrote it, without the whitespace between its tokens. The keys of
+an object in it are not sorted, and its numbers are not respelled, so write the
+value in canonical form if the whole schema must be canonical. The keyword
+itself is sorted among the schema's other keywords.
+
+A member or a class can carry several keywords, each with a key of its own. A
+key that Scrydantic writes itself is a compile error on any member or class:
+`type`, `enum`, `anyOf`, `items`, `properties`, `required`,
+`additionalProperties`, `$ref`, `$defs`, `description`, `title`, `default`, and
+the constraint keywords. A custom keyword goes where a title goes. A class's
+keyword is on its schema wherever the class appears, unless a member of that
+type sets the same key.
+
+To give a library of your own an annotation that takes a plain name, wrap
+`keyword_string` in a `consteval` function:
+
+```cpp
+namespace http {
+template <std::size_t N> consteval auto header(const char (&name)[N]) {
+  return scrydantic::keyword_string{"x-header", name};
+}
+}
+
+struct Routed {
+  [[= http::header("Region")]] std::string region;
+};
+// "region":{"type":"string","x-header":"Region"}
+```
+
 A schema is written in place, with no `$ref`, unless the type is recursive.
 Then every type that contains itself is defined once under `$defs`, and a
 recursive root refers to itself as `{"$ref":"#"}`:
@@ -208,9 +263,9 @@ scrydantic::schema_v<Comment>
 //  "required":["replies","text"],"type":"object"}
 ```
 
-A member whose type is recursive states its own `description`, `default`, and
-`title` beside the `$ref`. JSON Schema 2019-09 and later read a keyword there,
-and draft-07 ignores it.
+A member whose type is recursive states its own `description`, `default`,
+`title`, and custom keywords beside the `$ref`. JSON Schema 2019-09 and later
+read a keyword there, and draft-07 ignores it.
 
 `input_schema_v<Args>` is the schema of a tool's argument object. It is the
 same as `schema_v<Args>`, but `Args` must be an aggregate.

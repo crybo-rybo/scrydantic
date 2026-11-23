@@ -43,10 +43,17 @@ struct schema_references {
 // Writes one schema, `{"key":value,...}`, with its keywords in the sorted order
 // that canonical JSON has. Every writer below gathers the keywords of its own
 // shape with those its caller hands it and ends here, so where a keyword stands
-// never depends on which others a schema happens to have.
+// never depends on which others a schema happens to have. No two of them share
+// a key: a writer's own differ, and a custom keyword may use none of them
+// (reserved_keywords).
 consteval void append_schema_object(std::vector<char>& output,
                                     schema_keywords keywords) {
   std::ranges::sort(keywords, {}, &schema_keyword::key);
+  if (std::ranges::adjacent_find(keywords, {}, &schema_keyword::key) !=
+      keywords.end()) {
+    // Unreachable while reserved_keywords lists every keyword a writer adds.
+    throw std::meta::exception(u8"schema generation wrote one keyword twice", ^^::);
+  }
   output.push_back('{');
   bool first = true;
   for (const auto& keyword : keywords) {
@@ -186,8 +193,8 @@ consteval schema_keywords member_keywords(const field_layout& field) {
 }
 
 // What a member's schema states about the value it holds: the keywords of its
-// constraints, and its title. An optional member's schema states them of the
-// engaged value, inside the "anyOf".
+// constraints, its title, and its custom keywords. An optional member's schema
+// states them of the engaged value, inside the "anyOf".
 consteval schema_keywords value_keywords(const std::meta::info member) {
   auto keywords = constraint_keywords(member);
   keywords.append_range(extra_keywords(member));
@@ -235,9 +242,9 @@ consteval void append_object_keys(std::vector<char>& output, const std::meta::in
 }
 
 // An aggregate's own schema, which a definition and the root write in place.
-// The class's title stands on it wherever it is written, unless `keywords`, a
-// member's, already state one: what a member says of its own value is the more
-// specific.
+// The class's title and custom keywords stand on it wherever it is written, but
+// for one that `keywords`, a member's, already state: what a member says of its
+// own value is the more specific.
 consteval void append_object_schema(std::vector<char>& output, const schema_node node,
                                     schema_keywords keywords,
                                     const schema_references& references) {
@@ -302,8 +309,9 @@ consteval void append_alternatives(std::vector<char>& output,
 
 // An optional variant joins null to the variant's own anyOf rather than nesting one
 // anyOf inside another. Constraints bound the engaged value, so their keywords go
-// to its schema, and null stays allowed. So does a title, but for an optional
-// variant's, which has no schema apart from the joined anyOf to go to.
+// to its schema, and null stays allowed. So do a title and a custom keyword, but
+// for an optional variant's, which have no schema apart from the joined anyOf to
+// go to.
 consteval void append_optional_schema(std::vector<char>& output,
                                       const std::meta::info type,
                                       schema_keywords member,

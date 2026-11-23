@@ -181,6 +181,88 @@ template <std::size_t Size> struct title : detail::fixed_text<Size> {
 /// @param value Title text whose extent is deduced.
 template <std::size_t Size> title(const char (&value)[Size]) -> title<Size>;
 
+/// Adds a keyword of your choosing to the schema of a data member, or of a
+/// class, with its value written as JSON: `format`, `examples`, `deprecated`, a
+/// vendor extension under `x-`, or any other keyword that Scrydantic has no
+/// annotation for.
+///
+/// **It is written to the schema only.** Encoding and decoding neither read nor
+/// check it: like scrydantic::pattern, it is a statement to whoever reads the
+/// schema, and a host that relies on it checks it itself. Usage:
+/// `[[= scrydantic::keyword{"examples", R"(["us-west1","eu-north1"])"}]]
+/// std::string zone;`, whose schema is
+/// `{"examples":["us-west1","eu-north1"],"type":"string"}`.
+///
+/// The value must be exactly one JSON value, as JsonView::parse() reads one,
+/// which the compiler checks. The schema holds it as it was written, less the
+/// whitespace between its tokens: the keys of an object in it are not sorted,
+/// and its numbers and strings keep their spelling. The keyword itself stands
+/// among the schema's other keywords in their sorted order, so a schema whose
+/// values are written in canonical form is canonical throughout.
+///
+/// A member or a class may carry several. Two with one key do not compile, and
+/// neither does a key that Scrydantic writes itself in any schema: `type`,
+/// `enum`, `anyOf`, `items`, `properties`, `required`, `additionalProperties`,
+/// `$ref`, `$defs`, `description`, `title`, `default`, and the keywords of the
+/// constraint annotations. Those are what the codec promises, and no annotation
+/// replaces them.
+///
+/// A keyword goes where a scrydantic::title goes. On a std::optional member it
+/// joins the engaged value's schema, as a constraint does, and through a
+/// std::indirect that of the value it owns. On a class, written between the
+/// class-key and the class name, it joins the object schema wherever the class
+/// is written, and its entry under `$defs` when the class is recursive; where a
+/// member of that class's type carries the same key, the member's stands.
+/// @tparam KeySize Extent of the key, including the null terminator.
+/// @tparam ValueSize Extent of the JSON text, including the null terminator.
+template <std::size_t KeySize, std::size_t ValueSize> struct keyword {
+  /// The keyword's name.
+  detail::fixed_text<KeySize> key;
+  /// The keyword's value, as JSON text.
+  detail::fixed_text<ValueSize> value;
+};
+
+/// Deduces a keyword's extents from two string literals.
+/// @param key Keyword name whose extent is deduced.
+/// @param value JSON text whose extent is deduced.
+template <std::size_t KeySize, std::size_t ValueSize>
+keyword(const char (&key)[KeySize], const char (&value)[ValueSize])
+    -> keyword<KeySize, ValueSize>;
+
+/// scrydantic::keyword for a value that is a string, given as plain text.
+///
+/// The text is written as a JSON string, escaped as the encoder escapes one, so
+/// `keyword_string{"format", "date-time"}` is
+/// `keyword{"format", R"("date-time")"}`, with no JSON to spell. That also lets
+/// a function wrap it, so that a library's users write an annotation of its own
+/// that takes a plain name:
+///
+/// ```cpp
+/// template <std::size_t Size> consteval auto header(const char (&name)[Size]) {
+///   return scrydantic::keyword_string{"x-header", name};
+/// }
+/// // [[= header("Region")]] std::string region;
+/// // {"type":"string","x-header":"Region"}
+/// ```
+///
+/// Everything else about it is scrydantic::keyword's: it is written to the
+/// schema only, the same keys are reserved, and it goes to the same schema.
+/// @tparam KeySize Extent of the key, including the null terminator.
+/// @tparam ValueSize Extent of the text, including the null terminator.
+template <std::size_t KeySize, std::size_t ValueSize> struct keyword_string {
+  /// The keyword's name.
+  detail::fixed_text<KeySize> key;
+  /// The keyword's value, as plain text.
+  detail::fixed_text<ValueSize> value;
+};
+
+/// Deduces a keyword_string's extents from two string literals.
+/// @param key Keyword name whose extent is deduced.
+/// @param value Text whose extent is deduced.
+template <std::size_t KeySize, std::size_t ValueSize>
+keyword_string(const char (&key)[KeySize], const char (&value)[ValueSize])
+    -> keyword_string<KeySize, ValueSize>;
+
 /// Overrides the JSON key of one data member, or the name of one tool function.
 ///
 /// On a data member the key replaces the member's identifier in encoding,

@@ -428,6 +428,36 @@ scrydantic_add_compile_fail_test(
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::title, which applies to data members and classes"
 )
 scrydantic_add_compile_fail_test(
+  invalid-keyword-json
+  invalid_keyword_json.cpp
+  "Query::since: carries a scrydantic::keyword with the key \"format\" whose value is not one JSON value"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-keyword
+  duplicate_keyword.cpp
+  "Query::since: has more than one keyword annotation with the key \"format\""
+)
+scrydantic_add_compile_fail_test(
+  reserved-keyword
+  reserved_keyword.cpp
+  "Reading::level: carries a keyword annotation with the key \"type\", which Scrydantic writes itself; an annotation cannot replace a generated keyword"
+)
+scrydantic_add_compile_fail_test(
+  reserved-class-keyword
+  reserved_class_keyword.cpp
+  "Reading carries a keyword annotation with the key \"additionalProperties\", which Scrydantic writes itself; an annotation cannot replace a generated keyword"
+)
+scrydantic_add_compile_fail_test(
+  empty-keyword-key
+  empty_keyword_key.cpp
+  "Reading::level: carries a keyword annotation with an empty key"
+)
+scrydantic_add_compile_fail_test(
+  keyword-on-tool
+  keyword_on_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::keyword, which applies to data members and classes"
+)
+scrydantic_add_compile_fail_test(
   annotated-parameter
   annotated_parameter.cpp
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume has parameter `level` carrying a Scrydantic annotation, which a parameter cannot hold; take an argument aggregate and annotate its member"

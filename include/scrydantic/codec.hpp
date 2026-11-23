@@ -80,7 +80,8 @@ concept ToolArguments = detail::tool_arguments_problem(^^Type).empty();
 /// member initializer states it as `default`, spelled as encode() spells it,
 /// wherever the default-constructed class is a constant expression and the value
 /// is one whose spelling is known at compile time; elsewhere the keyword is left
-/// out. A scrydantic::title adds its keyword and nothing else. A type outside
+/// out. A scrydantic::title, keyword, or keyword_string adds its keyword to the
+/// schema and does nothing else. A type outside
 /// SupportedValue fails to compile with the offending member path and the reason.
 /// @tparam Value Type satisfying SupportedValue.
 template <typename Value>
