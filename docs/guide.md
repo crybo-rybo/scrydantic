@@ -25,7 +25,7 @@ constructors of its own. Its members can be any of these types:
 | integers, such as `int` or `std::uint64_t` | an integer within the type's range |
 | `float`, `double` | a finite number |
 | `std::string` | a string |
-| a scoped `enum class` | the enumerator's name, as a string |
+| a scoped `enum class` | the enumerator's name, as a string: its identifier, or the `name` annotation it carries |
 | `std::optional<T>` | `T` or `null` |
 | `std::vector<T>` (not `vector<bool>`) | an array |
 | `std::array<T, N>` | an array of exactly `N` elements |
@@ -93,7 +93,7 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | Annotation | Goes on | What it does |
 |---|---|---|
 | `description{"..."}` | member | Sets the member's `description` in the schema. |
-| `name{"..."}` | member, tool | Replaces the member's JSON key, or the tool's name. |
+| `name{"..."}` | member, enumerator, tool | Replaces the member's JSON key, the enumerator's JSON string, or the tool's name. |
 | `tag{"..."}` | class | The class's `"type"` value when it is a variant alternative. |
 | `skip_null` | class, optional member | Leaves out an empty optional instead of writing `null`, and lets the input leave it out. On a class, it applies to every optional member. |
 | `emit_null` | optional member | Writes `null` again for one member of a `skip_null` class. |
@@ -115,6 +115,34 @@ struct [[= scrydantic::skip_null]] Profile {
 scrydantic::encode(Profile{.name = "Ada"})->text;
 // {"display_name":"Ada","phone":null}
 ```
+
+**Enumerators.** An enumerator is written as its identifier unless it carries a
+`name`, which gives an enum a value that is not a C++ identifier: a keyword, a
+value with punctuation, or one in another case convention. The annotation goes
+after the enumerator's identifier:
+
+```cpp
+enum class Visibility {
+  public_ [[= scrydantic::name{"public"}]],
+  private_ [[= scrydantic::name{"private"}]],
+  internal,
+};
+struct Post { Visibility visibility; };
+
+scrydantic::schema_v<Visibility>;
+// {"enum":["public","private","internal"],"type":"string"}
+scrydantic::encode(Post{Visibility::public_})->text;
+// {"visibility":"public"}
+scrydantic::decode<Post>(R"({"visibility":"public_"})").error().model_message;
+// $.visibility is not a declared enumerator; must be one of: public, private, internal
+```
+
+An enum with one enumerator is a constant:
+`enum class Version { v2 [[= scrydantic::name{"2.0"}]] };` has the schema
+`{"enum":["2.0"],"type":"string"}`, and a member of that type decodes from
+`"2.0"` and nothing else. Two enumerators of one enum cannot end with the same
+name, and `name` is the only Scrydantic annotation an enumerator takes; either
+mistake is a compile-time error.
 
 **Variants.** Every alternative of a `std::variant` must be an aggregate with a
 distinct `tag`. The encoded object carries the tag under the key `"type"`, so an
