@@ -624,6 +624,13 @@ consteval std::string arguments_problem(const std::meta::info function,
              ": carries scrydantic::flatten, which applies to data members; a "
              "parameter is one argument under one key";
     }
+    // emit_null undoes a class's skip_null for one member. The argument object
+    // of a parameter list carries no skip_null, so it would undo nothing.
+    if (has_annotation(values[index], ^^emit_null_t)) {
+      return "has " + label +
+             ": carries scrydantic::emit_null, which undoes a class's skip_null for "
+             "one member; a parameter list has no skip_null to undo";
+    }
     const auto reason = parameter_value_problem(values[index]);
     if (!reason.empty()) {
       return "has " + label + ": " + reason;

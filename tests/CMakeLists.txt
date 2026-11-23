@@ -523,6 +523,11 @@ scrydantic_add_compile_fail_test(
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::keyword, which applies to data members and classes"
 )
 scrydantic_add_compile_fail_test(
+  emit-null-parameter
+  emit_null_parameter.cpp
+  "scrydantic::bind<^^listing_tools>(): listing_tools::tagged has parameter `tag`: carries scrydantic::emit_null, which undoes a class's skip_null for one member; a parameter list has no skip_null to undo"
+)
+scrydantic_add_compile_fail_test(
   parameter-misapplied-constraint
   parameter_misapplied_constraint.cpp
   "scrydantic::bind<^^catalog>(): catalog::search has parameter `limit`: carries scrydantic::length, which applies to std::string members, not to int"

@@ -152,10 +152,10 @@ consteval std::meta::info binding_of(const std::meta::info function,
 /// reason, the text arguments_diagnostic() returns.
 ///
 /// A parameter that becomes a member takes the annotations a data member
-/// takes, but for flatten, and the member carries them, another library's
-/// included: a description, a name, a constraint, or a check on a parameter
-/// means what it means on a member. No other parameter takes a Scrydantic
-/// annotation.
+/// takes, but for flatten and emit_null, and the member carries them, another
+/// library's included: a description, a name, a constraint, or a check on a
+/// parameter means what it means on a member. No other parameter takes a
+/// Scrydantic annotation.
 ///
 /// The member has the parameter's type, without references and cv-qualifiers,
 /// and is required. A parameter with a default argument is the exception: its
