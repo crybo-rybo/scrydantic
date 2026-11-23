@@ -205,4 +205,21 @@ TEST_CASE("bound tool calls", "[tools]") {
         .text =
             R"({"name":"loop","points":[{"x":1,"y":2},{"x":3,"y":4},{"x":5,"y":6}]})"});
   };
+
+  // A host that parsed the arguments as part of a larger message holds them as
+  // a view. Passing the view costs the call no parse; writing it out to pass
+  // text costs the writing and a second parse.
+  const auto message = *scrydantic::JsonView::parse(
+      R"({"calls":[{"name":"add","arguments":{"left":40,"right":2}},)"
+      R"({"name":"reverse","arguments":{"name":"loop","points":)"
+      R"([{"x":1,"y":2},{"x":3,"y":4},{"x":5,"y":6}]}}]})");
+  const auto calls = *message.find("calls");
+  const auto add_arguments = *calls.at(0)->find("arguments");
+  const auto reverse_arguments = *calls.at(1)->find("arguments");
+  BENCHMARK("synthesized, from a view") { return add(add_arguments); };
+  BENCHMARK("synthesized, view written out") { return add(add_arguments.to_json()); };
+  BENCHMARK("aggregate, from a view") { return reverse(reverse_arguments); };
+  BENCHMARK("aggregate, view written out") {
+    return reverse(reverse_arguments.to_json());
+  };
 }
