@@ -6,6 +6,7 @@
 
 #include <meta>
 #include <scrydantic/annotations.hpp>
+#include <scrydantic/decode_options.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
 #include <scrydantic/detail/json_text.hpp>
@@ -24,44 +25,52 @@ namespace scrydantic {
 /// Values supported by reflected schema generation and strict marshalling.
 ///
 /// Supported shapes are a deliberately closed matrix: booleans, bounded
-/// non-character integers, finite floats, strings, scoped enums, one optional layer,
-/// vectors except `vector<bool>`, fixed arrays, `std::indirect`, plain aggregates
+/// non-character integers, finite floats, strings, scoped enums, `Json`, one
+/// optional layer, vectors except `vector<bool>`, fixed arrays, `std::map` and
+/// `std::unordered_map` keyed by `std::string`, `std::indirect`, plain aggregates
 /// of supported members, and tagged variants of such aggregates, each alternative
-/// carrying a distinct scrydantic::tag. An indirect encodes, decodes, and has the
+/// carrying a distinct scrydantic::tag. A `Json` is any JSON value: its schema is
+/// the empty schema `{}`, which accepts every value, decoding captures the
+/// canonical text of whatever value sits at its position, `null` included, and
+/// encoding checks that text and splices it, so a document can carry an opaque
+/// payload through a typed value. An indirect encodes, decodes, and has the
 /// schema of the value it owns, and `std::optional<std::indirect<T>>` is its
-/// nullable form. An aggregate may contain itself, through `std::vector` or
-/// `std::indirect`, when every such cycle passes through a `std::optional`, a
-/// `std::vector`, or a variant alternative after the first, so that
-/// default-constructing it ends; its schema refers to it with `$ref`. Every
-/// supported value has a generated schema, encodes, and decodes. A member's
-/// constraint annotations must apply to its type and admit a value, in this
-/// family and in the others. Reflected entry points report the member path and
-/// the reason a type falls outside this family.
+/// nullable form. A map is the JSON object whose keys are data: its schema allows
+/// any key, encoding writes its keys in canonical order whatever its comparator
+/// or hash, and decoding makes an entry of every member. An aggregate may contain
+/// itself, through `std::vector`, a map, or `std::indirect`, when every such
+/// cycle passes through a `std::optional`, a `std::vector`, a map, or a variant
+/// alternative after the first, so that default-constructing it ends; its schema
+/// refers to it with `$ref`, under a name spelled from its type. Every supported
+/// value has a generated schema, encodes, and decodes. A member's constraint
+/// annotations must apply to its type and admit a value, in this family and in
+/// the others. Reflected entry points report the member path and the reason a
+/// type falls outside this family.
 template <typename Type>
 concept SupportedValue =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::supported)
         .empty();
 
-/// Values scrydantic::encode() accepts: SupportedValue plus the encode-only leaves.
+/// Values scrydantic::encode() accepts: SupportedValue plus what encoding can
+/// read but decoding cannot fill.
 ///
-/// `std::string_view` is written as a JSON string, for text the caller owns
-/// elsewhere. `Json` is checked for validity and spliced verbatim.
-/// Aggregates here need not be default-constructible, movable, or free of `const`
-/// members, and may borrow a member through a reference, since encoding only reads
-/// them; for the same reason, a cycle may pass through any variant alternative.
-/// Neither leaf has a schema.
+/// `std::string_view` is the one encode-only leaf: it is written as a JSON
+/// string, for text the caller owns elsewhere, and it has no schema. Aggregates
+/// here need not be default-constructible, movable, or free of `const` members,
+/// and may borrow a member through a reference, since encoding only reads them;
+/// for the same reason, a cycle may pass through any variant alternative.
+/// Encoding writes no schema, so a recursive type needs no definition name.
 template <typename Type>
 concept Encodable =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::encodable)
         .empty();
 
-/// Values scrydantic::decode() produces: SupportedValue plus `Json`.
+/// Values scrydantic::decode() produces: the shapes of SupportedValue.
 ///
-/// A `Json` member captures the canonical text of whatever JSON value sits
-/// at its position, `null` included, so a document can carry an opaque payload through
-/// a typed decode. `Json` has no schema. Decoding produces a value, so the
-/// target itself must be a cv-unqualified object type, as scrydantic::decode()
-/// requires.
+/// Decoding writes no schema, so a recursive type whose schema could not name
+/// its definitions, and which is therefore not a SupportedValue, is still
+/// Decodable. Decoding produces a value, so the target itself must be a
+/// cv-unqualified object type, as scrydantic::decode() requires.
 template <typename Type>
 concept Decodable =
     !detail::is_qualified(^^Type) &&
@@ -73,10 +82,15 @@ concept ToolArguments = detail::tool_arguments_problem(^^Type).empty();
 
 /// Canonical JSON Schema generated for any supported reflected value.
 ///
-/// Handler result types are supported roots too. A tool binding never sends a
-/// result schema to a model; it is here so a host can export its own tool
-/// contracts. A member's constraint annotations add their keywords to its schema,
-/// and decoding checks every one of them but `pattern`. A type outside
+/// A tool's result type is a supported root too: bind() and describe() publish
+/// its schema as the tool's `output_schema`, beside the `input_schema` of its
+/// arguments. A member's constraint annotations add their keywords to its schema,
+/// and decoding checks every one of them but `pattern`. A member with a default
+/// member initializer states it as `default`, spelled as encode() spells it,
+/// wherever the default-constructed class is a constant expression and the value
+/// is one whose spelling is known at compile time; elsewhere the keyword is left
+/// out. A scrydantic::title, keyword, or keyword_string adds its keyword to the
+/// schema and does nothing else. A type outside
 /// SupportedValue fails to compile with the offending member path and the reason.
 /// @tparam Value Type satisfying SupportedValue.
 template <typename Value>
@@ -101,10 +115,10 @@ inline constexpr std::string_view input_schema_v = detail::checked_input_schema<
 /// @param value Value to encode without modifying it.
 /// @return Canonical JSON, or an Error whose `message` names the path of a
 /// non-finite number, an undeclared enumerator value, an invalid Json, or a
-/// valueless variant or std::indirect, or says that a string is not valid UTF-8
-/// or that the value nests arrays and objects deeper than JsonView::parse
-/// accepts, and whose `model_message` is empty. Encoding stops at the first
-/// such failure, in the order the text is written.
+/// valueless variant or std::indirect, or says that a string or a map's key is
+/// not valid UTF-8 or that the value nests arrays and objects deeper than
+/// JsonView::parse accepts, and whose `model_message` is empty. Encoding stops
+/// at the first such failure, in the order the text is written.
 template <typename Type> [[nodiscard]] Result<Json> encode(const Type& value) {
   constexpr std::string_view problem = detail::encodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
@@ -159,10 +173,19 @@ template <typename Type> [[nodiscard]] Result<Json> encode_verbatim(const Type& 
 /// failed check gives the validator's own `message`, where it has one. A type
 /// outside Decodable fails to compile with the offending member path and the
 /// reason.
+///
+/// `options` let a JSON string stand for the value its text spells, where the
+/// type requires a value of another kind; DecodeOptions says which strings, and
+/// what is never converted. Every option is off unless it is set, so a call
+/// without them is the strict decode. A value that a string stands for is held
+/// to every rule above, and fails with the same kinds, paths, and reasons.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param view Parsed JSON value to decode.
+/// @param options What to accept beyond the strict rules; nothing by default.
 /// @return The decoded value, or every issue that kept it from decoding.
-template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view) {
+template <typename Type>
+[[nodiscard]] Result<Type> decode(const JsonView& view,
+                                  const DecodeOptions& options = {}) {
   constexpr std::string_view problem = detail::decodable_diagnostic<Type>();
   static_assert(problem.empty(), problem);
   if constexpr (!problem.empty()) {
@@ -170,7 +193,7 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
     // rejected type of that shape prints the static_assert and nothing more.
     return Result<Type>{std::unexpect};
   } else {
-    return detail::decode<Type>(view);
+    return detail::decode<Type>(view, options);
   }
 }
 
@@ -183,12 +206,15 @@ template <typename Type> [[nodiscard]] Result<Type> decode(const JsonView& view)
 /// `JSON text is not valid JSON: expected ':' at line 1, column 7` as both
 /// messages. The column counts code points, not bytes; JsonView::parse() lists
 /// the reasons. Every other failure is reported as decode(const JsonView&)
-/// reports it.
+/// reports it. The text itself must be JSON whatever `options` hold: they apply
+/// to the values in it.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param text JSON text to parse and decode.
+/// @param options What to accept beyond the strict rules; nothing by default.
 /// @return The decoded value, or the parse or decode failure.
 template <typename Type>
-[[nodiscard]] Result<Type> decode(const std::string_view text) {
+[[nodiscard]] Result<Type> decode(const std::string_view text,
+                                  const DecodeOptions& options = {}) {
   // Composed from std::expected's monadic operations, which build their failure
   // with std::unexpect: see detail::decode_failed(). Text that is not JSON is
   // read once more to describe it, which only a failure pays for.
@@ -197,15 +223,18 @@ template <typename Type>
         return detail::invalid_json_error("JSON text is not valid JSON",
                                           detail::describe_invalid_json(text));
       })
-      .and_then([](const JsonView& view) { return decode<Type>(view); });
+      .and_then(
+          [&options](const JsonView& view) { return decode<Type>(view, options); });
 }
 
 /// Parses the text of a Json and decodes it, as decode(std::string_view) does.
 /// @tparam Type Cv-unqualified value type from the Decodable family.
 /// @param json JSON text to parse and decode.
+/// @param options What to accept beyond the strict rules; nothing by default.
 /// @return What decode(std::string_view) returns for `json.text`.
-template <typename Type> [[nodiscard]] Result<Type> decode(const Json& json) {
-  return decode<Type>(std::string_view{json.text});
+template <typename Type>
+[[nodiscard]] Result<Type> decode(const Json& json, const DecodeOptions& options = {}) {
+  return decode<Type>(std::string_view{json.text}, options);
 }
 
 /// The JSON keys of a reflected object type, in the order encode() writes them.

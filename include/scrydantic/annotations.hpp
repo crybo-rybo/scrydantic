@@ -155,12 +155,128 @@ template <const std::string_view& View> [[nodiscard]] consteval auto description
   return annotation{typename annotation::view_tag{}, View};
 }
 
-/// Overrides the JSON key of one data member, or the name of one tool function.
+/// Gives the schema of a data member, or of a class, a `title`: a short label
+/// for it, which a generated form or document shows in place of its key.
+///
+/// **It is written to the schema only.** Encoding and decoding neither read nor
+/// check it. On a data member the text becomes the `title` of the member's
+/// schema: `[[= scrydantic::title{"Display name"}]] std::string name;` has the
+/// schema `{"title":"Display name","type":"string"}`. On a std::optional member
+/// it titles the engaged value, as a constraint bounds it, and through a
+/// std::indirect the value it owns. On a class, written between the class-key
+/// and the class name, it becomes the `title` of the object schema wherever the
+/// class is written, and of its entry under `$defs` when the class is recursive.
+/// A member of such a class's type that carries a title of its own shows the
+/// member's. Scrydantic never makes a title up from an identifier: a schema has
+/// one only where it is written. A title must not be empty, and a member or a
+/// class has at most one.
+/// @tparam Size Character-array extent including the null terminator.
+template <std::size_t Size> struct title : detail::fixed_text<Size> {
+  static_assert(Size > 1, "scrydantic::title must not be empty");
+
+  using detail::fixed_text<Size>::fixed_text;
+};
+
+/// Deduces a title extent from a string literal.
+/// @param value Title text whose extent is deduced.
+template <std::size_t Size> title(const char (&value)[Size]) -> title<Size>;
+
+/// Adds a keyword of your choosing to the schema of a data member, or of a
+/// class, with its value written as JSON: `format`, `examples`, `deprecated`, a
+/// vendor extension under `x-`, or any other keyword that Scrydantic has no
+/// annotation for.
+///
+/// **It is written to the schema only.** Encoding and decoding neither read nor
+/// check it: like scrydantic::pattern, it is a statement to whoever reads the
+/// schema, and a host that relies on it checks it itself. Usage:
+/// `[[= scrydantic::keyword{"examples", R"(["us-west1","eu-north1"])"}]]
+/// std::string zone;`, whose schema is
+/// `{"examples":["us-west1","eu-north1"],"type":"string"}`.
+///
+/// The value must be exactly one JSON value, as JsonView::parse() reads one,
+/// which the compiler checks. The schema holds it as it was written, less the
+/// whitespace between its tokens: the keys of an object in it are not sorted,
+/// and its numbers and strings keep their spelling. The keyword itself stands
+/// among the schema's other keywords in their sorted order, so a schema whose
+/// values are written in canonical form is canonical throughout.
+///
+/// A member or a class may carry several. Two with one key do not compile, and
+/// neither does a key that Scrydantic writes itself in any schema: `type`,
+/// `enum`, `anyOf`, `items`, `properties`, `required`, `additionalProperties`,
+/// `$ref`, `$defs`, `description`, `title`, `default`, and the keywords of the
+/// constraint annotations. Those are what the codec promises, and no annotation
+/// replaces them.
+///
+/// A keyword goes where a scrydantic::title goes. On a std::optional member it
+/// joins the engaged value's schema, as a constraint does, and through a
+/// std::indirect that of the value it owns. On a class, written between the
+/// class-key and the class name, it joins the object schema wherever the class
+/// is written, and its entry under `$defs` when the class is recursive; where a
+/// member of that class's type carries the same key, the member's stands.
+/// @tparam KeySize Extent of the key, including the null terminator.
+/// @tparam ValueSize Extent of the JSON text, including the null terminator.
+template <std::size_t KeySize, std::size_t ValueSize> struct keyword {
+  /// The keyword's name.
+  detail::fixed_text<KeySize> key;
+  /// The keyword's value, as JSON text.
+  detail::fixed_text<ValueSize> value;
+};
+
+/// Deduces a keyword's extents from two string literals.
+/// @param key Keyword name whose extent is deduced.
+/// @param value JSON text whose extent is deduced.
+template <std::size_t KeySize, std::size_t ValueSize>
+keyword(const char (&key)[KeySize], const char (&value)[ValueSize])
+    -> keyword<KeySize, ValueSize>;
+
+/// scrydantic::keyword for a value that is a string, given as plain text.
+///
+/// The text is written as a JSON string, escaped as the encoder escapes one, so
+/// `keyword_string{"format", "date-time"}` is
+/// `keyword{"format", R"("date-time")"}`, with no JSON to spell. That also lets
+/// a function wrap it, so that a library's users write an annotation of its own
+/// that takes a plain name:
+///
+/// ```cpp
+/// template <std::size_t Size> consteval auto header(const char (&name)[Size]) {
+///   return scrydantic::keyword_string{"x-header", name};
+/// }
+/// // [[= header("Region")]] std::string region;
+/// // {"type":"string","x-header":"Region"}
+/// ```
+///
+/// Everything else about it is scrydantic::keyword's: it is written to the
+/// schema only, the same keys are reserved, and it goes to the same schema.
+/// @tparam KeySize Extent of the key, including the null terminator.
+/// @tparam ValueSize Extent of the text, including the null terminator.
+template <std::size_t KeySize, std::size_t ValueSize> struct keyword_string {
+  /// The keyword's name.
+  detail::fixed_text<KeySize> key;
+  /// The keyword's value, as plain text.
+  detail::fixed_text<ValueSize> value;
+};
+
+/// Deduces a keyword_string's extents from two string literals.
+/// @param key Keyword name whose extent is deduced.
+/// @param value Text whose extent is deduced.
+template <std::size_t KeySize, std::size_t ValueSize>
+keyword_string(const char (&key)[KeySize], const char (&value)[ValueSize])
+    -> keyword_string<KeySize, ValueSize>;
+
+/// Overrides the JSON key of one data member, the JSON string of one enumerator,
+/// or the name of one tool function.
 ///
 /// On a data member the key replaces the member's identifier in encoding,
 /// decoding, generated schemas, and decode-failure paths. Objects are written in
 /// lexical order of these final keys, and two members of one class that end with
-/// the same key are a compile-time error. On a function annotated with
+/// the same key are a compile-time error. On an enumerator, where it is written
+/// after the identifier, the name replaces that identifier as the string the
+/// enumerator is in JSON: in encoding, in decoding, in a schema's `enum` list,
+/// and in the reason an unknown string is rejected with. It is how an enum holds
+/// a value that is not a C++ identifier, such as
+/// `public_ [[= scrydantic::name{"public"}]]`. Two enumerators of one enum that
+/// end with the same name are a compile-time error, and so is any other
+/// Scrydantic annotation on an enumerator. On a function annotated with
 /// scrydantic::tool it replaces the function's identifier as the tool name
 /// the model sees. Usage: `[[= scrydantic::name{"max_tokens"}]]`.
 /// @tparam Size Character-array extent including the null terminator.
@@ -243,6 +359,33 @@ struct ignore_unknown_t {};
 /// stay closed (`"additionalProperties":false`), because a schema describes what a
 /// producer should send, not everything the decoder tolerates.
 inline constexpr ignore_unknown_t ignore_unknown{};
+
+/// Type of the flatten annotation.
+struct flatten_t {};
+
+/// Makes the fields of a data member fields of the object that holds it.
+///
+/// Applies to a data member whose type is an aggregate. The member has no key
+/// of its own: its class's fields are written, read, and described in the schema
+/// as fields of the enclosing object, sorted among that object's own keys.
+/// `struct ToolList { std::vector<Tool> tools; [[= scrydantic::flatten]] Page
+/// page; };` with `struct Page { std::optional<std::string> next_cursor; };`
+/// is the object `{"next_cursor":null,"tools":[]}`, and an issue inside it is
+/// reported where the JSON has it, at `$.next_cursor`. A flattened class may
+/// flatten members of its own.
+///
+/// Each field keeps what its own class says of it: a skip_null on `Page` governs
+/// `next_cursor`, and a scrydantic::check on `Page` runs on the `page` member
+/// once its fields have decoded. Unknown members are a matter for the whole JSON
+/// object, so the ignore_unknown of the outermost class decides them. A field is
+/// required unless it, or a flattened member it is reached through, has a
+/// default member initializer, or skip_null applies to it.
+///
+/// The compiler rejects two fields of one object that end with the same key, a
+/// flattened member that is not an aggregate, such as a `std::optional` of one,
+/// and a flattened member that carries an annotation describing its own key or
+/// value, which it does not have.
+inline constexpr flatten_t flatten{};
 
 /// Bounds an integer or floating-point data member, as JSON Schema's `minimum`,
 /// `exclusiveMinimum`, `maximum`, and `exclusiveMaximum` do.

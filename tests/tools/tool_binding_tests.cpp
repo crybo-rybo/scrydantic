@@ -749,9 +749,10 @@ TEST_CASE("a tool's argument constraints are in its schema and checked on each c
   auto tools = scrydantic::bind<^^mixer_tools>();
   REQUIRE(names_of(tools) == std::vector<std::string>{"set_level", "crossfade"});
   const std::string channel =
-      R"({"additionalProperties":false,"properties":{"level":{"maximum":11,)"
-      R"("minimum":0,"type":"integer"},"name":{"maxLength":8,"minLength":1,)"
-      R"("type":"string"}},"required":[],"type":"object"})";
+      R"({"additionalProperties":false,"properties":{"level":{"default":0,)"
+      R"("maximum":11,"minimum":0,"type":"integer"},"name":{"default":"",)"
+      R"("maxLength":8,"minLength":1,"type":"string"}},"required":[],)"
+      R"("type":"object"})";
   CHECK(tools[0].input_schema.text == channel);
   CHECK(tools[1].input_schema.text ==
         R"({"additionalProperties":false,"properties":{"from":)" + channel +
@@ -806,8 +807,9 @@ TEST_CASE("a tool's validators reject arguments without telling the model the "
   REQUIRE(tools.size() == 1);
   // A validator states nothing in the schema.
   CHECK(tools[0].input_schema.text ==
-        R"({"additionalProperties":false,"properties":{"city":{"type":"string"},)"
-        R"("guests":{"maximum":2147483647,"minimum":1,"type":"integer"}},)"
+        R"({"additionalProperties":false,"properties":{)"
+        R"("city":{"default":"","type":"string"},)"
+        R"("guests":{"default":0,"maximum":2147483647,"minimum":1,"type":"integer"}},)"
         R"("required":[],"type":"object"})");
 
   const auto booked = tools[0].invoke(json(R"({"city":"Oslo","guests":2})"));

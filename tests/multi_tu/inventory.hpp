@@ -1,6 +1,11 @@
 #pragma once
 
+#include <cstdint>
+#include <meta>
+#include <optional>
 #include <scrydantic/tools.hpp>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 // Two translation units bind tools under one name while seeing different
@@ -12,3 +17,33 @@ namespace inventory_tools {}
 [[nodiscard]] std::vector<scrydantic::BoundTool<>> bind_inventory_from_b();
 [[nodiscard]] std::vector<scrydantic::BoundTool<>> bind_echo_from_a();
 [[nodiscard]] std::vector<scrydantic::BoundTool<>> bind_echo_from_b();
+
+// Each unit also declares echo_tools::twice, which is no tool, with its own
+// parameter name, and binds it by hand: the schema of its argument object as
+// that unit sees it, and what a call with `arguments` returned, or nothing when
+// they did not decode.
+struct HandBound {
+  std::string_view schema{};
+  std::optional<std::int32_t> result{};
+};
+
+// A wrapper of arguments_t and apply(), as a library on top of Scrydantic writes
+// one. Both units instantiate this one template, so only the `Binding` that it
+// takes from its caller and forwards keeps their two views of a function apart.
+template <std::meta::info Function,
+          typename Binding = typename[:scrydantic::binding_of(Function, ^^void):]>
+[[nodiscard]] HandBound bind_by_hand(const std::string_view arguments) {
+  using Arguments = scrydantic::arguments_t<Function, void, Binding>;
+  HandBound bound{.schema = scrydantic::input_schema_v<Arguments>};
+  if (auto decoded = scrydantic::decode<Arguments>(arguments)) {
+    bound.result = scrydantic::apply<Function, void, Binding>(std::move(*decoded));
+  }
+  return bound;
+}
+
+// Through arguments_t and apply() themselves.
+[[nodiscard]] HandBound twice_from_a(std::string_view arguments);
+[[nodiscard]] HandBound twice_from_b(std::string_view arguments);
+// Through bind_by_hand().
+[[nodiscard]] HandBound wrapped_twice_from_a(std::string_view arguments);
+[[nodiscard]] HandBound wrapped_twice_from_b(std::string_view arguments);

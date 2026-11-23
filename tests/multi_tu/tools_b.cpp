@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace inventory_tools {
 [[= scrydantic::tool{"Only unit B declares this tool"}]] inline std::string only_b() {
@@ -11,6 +13,7 @@ namespace inventory_tools {
 
 namespace echo_tools {
 [[= scrydantic::tool{"Echo a quantity"}]] std::int32_t echo(std::int32_t quantity);
+std::int32_t twice(std::int32_t quantity);
 } // namespace echo_tools
 
 std::vector<scrydantic::BoundTool<>> bind_inventory_from_b() {
@@ -19,4 +22,17 @@ std::vector<scrydantic::BoundTool<>> bind_inventory_from_b() {
 
 std::vector<scrydantic::BoundTool<>> bind_echo_from_b() {
   return scrydantic::bind<^^echo_tools::echo>();
+}
+
+HandBound twice_from_b(const std::string_view arguments) {
+  using Arguments = scrydantic::arguments_t<^^echo_tools::twice>;
+  HandBound bound{.schema = scrydantic::input_schema_v<Arguments>};
+  if (auto decoded = scrydantic::decode<Arguments>(arguments)) {
+    bound.result = scrydantic::apply<^^echo_tools::twice>(std::move(*decoded));
+  }
+  return bound;
+}
+
+HandBound wrapped_twice_from_b(const std::string_view arguments) {
+  return bind_by_hand<^^echo_tools::twice>(arguments);
 }
