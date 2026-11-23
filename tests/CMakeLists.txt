@@ -155,6 +155,7 @@ add_executable(
   tools/output_schema_tests.cpp
   tools/tool_binding_tests.cpp
   tools/tool_set_tests.cpp
+  tools/view_call_tests.cpp
 )
 target_link_libraries(
   scrydantic_tests

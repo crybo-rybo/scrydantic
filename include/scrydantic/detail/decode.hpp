@@ -858,17 +858,4 @@ template <typename Type>
           [&report](decode_failure) { return decode_error(std::move(report)); });
 }
 
-// Composed from std::expected's monadic operations, which build their failure
-// with std::unexpect: see decode_failed(). Text that is not JSON is read once
-// more to describe it, which only a failure pays for.
-template <typename Args>
-[[nodiscard]] Result<Args> decode_arguments(const Json& input) {
-  return JsonView::parse(std::string_view{input.text})
-      .transform_error([&input](const Error&) {
-        return invalid_json_error("tool arguments are not valid JSON",
-                                  describe_invalid_json(input.text));
-      })
-      .and_then([](const JsonView& view) { return detail::decode<Args>(view); });
-}
-
 } // namespace scrydantic::detail
