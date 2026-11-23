@@ -179,6 +179,10 @@ std::string_view json_node::key_at(const std::size_t index) const noexcept {
   return node(value_)->members()[index].key;
 }
 
+json_node json_node::value_at(const std::size_t index) const noexcept {
+  return json_node{&node(value_)->members()[index].value};
+}
+
 } // namespace detail
 
 } // namespace scrydantic

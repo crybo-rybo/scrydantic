@@ -363,50 +363,87 @@ template <std::meta::info Member, typename Value>
   }
 }
 
+// Where `Member` stands among Type's fields in key order: its index in
+// fields_v<Type>.
+template <typename Type, std::meta::info Member>
+inline constexpr std::size_t field_position_v = [] {
+  std::size_t position = 0;
+  while (fields_v<Type>[position].member != Member) {
+    ++position;
+  }
+  return position;
+}();
+
+// The values of Type's fields in an object, in key order as fields_v<Type> is;
+// a field the object lacks has a node with no value.
 template <typename Type>
-[[nodiscard]] bool is_declared_key(const std::string_view key) {
-  static constexpr auto keys = [] {
-    std::array<std::string_view, fields_v<Type>.size()> sorted{};
-    for (std::size_t index = 0; index < sorted.size(); ++index) {
-      sorted[index] = fields_v<Type>[index].key_view();
-    }
-    return sorted;
-  }();
-  return std::ranges::binary_search(keys, key);
+using field_values = std::array<json_node, fields_v<Type>.size()>;
+
+inline void report_unknown_key(const std::string_view key, const decode_cursor& here) {
+  std::string reason{"contains unknown member "};
+  append_json_string(reason, key);
+  here.report(IssueKind::unknown_member, reason);
 }
 
-// Reports each member of `view`, an object, that Type does not declare, and
-// returns false if there was one. Tagged is true when the object is a variant
-// alternative, whose discriminator member the variant has already read.
+// Finds the value of each of Type's fields in `view`, an object, and reports
+// each member of it that Type does not declare, in key order; returns false if
+// there was one. The object's members and the type's fields are both in key
+// order, so one pass over the two pairs them, where a search for each field and
+// another for each member would compare keys many times over. Tagged is true
+// when the object is a variant alternative, whose discriminator member the
+// variant has already read.
 template <typename Type, bool Tagged>
-[[nodiscard]] bool report_unknown_keys(const json_node view,
-                                       const decode_cursor& here) {
+[[nodiscard]] bool pair_members(const json_node view, const decode_cursor& here,
+                                field_values<Type>& found) {
   bool known = true;
-  const std::size_t size = view.size();
-  for (std::size_t index = 0; index < size && !here.stopped(); ++index) {
-    const auto key = view.key_at(index);
-    if ((!Tagged || key != tag_key) && !is_declared_key<Type>(key)) {
-      std::string reason{"contains unknown member "};
-      append_json_string(reason, key);
-      here.report(IssueKind::unknown_member, reason);
-      known = false;
+  const auto undeclared = [&here, &known](const std::string_view key) {
+    if constexpr (!ignores_unknown(^^Type)) {
+      if ((!Tagged || key != tag_key) && !here.stopped()) {
+        report_unknown_key(key, here);
+        known = false;
+      }
     }
+  };
+  const std::size_t size = view.size();
+  std::size_t position = 0;
+  [[maybe_unused]] std::size_t slot = 0;
+  template for (constexpr field_layout field : fields_v<Type>) {
+    // A member whose key sorts before this field's is no field's: every field
+    // before this one has already met the keys up to its own.
+    for (; position < size; ++position) {
+      const std::string_view key = view.key_at(position);
+      const auto order = key <=> field.key_view();
+      if (std::is_gt(order)) {
+        break;
+      }
+      if (std::is_eq(order)) {
+        found[slot] = view.value_at(position);
+        ++position;
+        break;
+      }
+      undeclared(key);
+    }
+    ++slot;
+  }
+  for (; position < size; ++position) {
+    undeclared(view.key_at(position));
   }
   return known;
 }
 
-// Reads one declared member of `object` from `view`, an object, and returns
-// false if the member failed, missed a constraint, failed a check, or is
-// required and absent. A member that keeps its default is the program's own
-// value, so it is not checked.
+// Reads one declared member of `object` from `found`, its value in the object
+// being read or no value when that object lacks the member, and returns false
+// if the member failed, missed a constraint, failed a check, or is required and
+// absent. A member that keeps its default is the program's own value, so it is
+// not checked.
 template <typename Type, std::meta::info Member>
-[[nodiscard]] bool read_member(Type& object, const json_node view,
+[[nodiscard]] bool read_member(Type& object, const json_node found,
                                const decode_cursor& parent) {
   constexpr field_layout field = field_of(^^Type, Member);
   constexpr std::string_view key = field.key_view();
   using Value = std::remove_cv_t<typename[:std::meta::type_of(Member):]>;
   const decode_cursor here = parent.member(key);
-  if (const auto found = view.find(key)) {
+  if (found) {
     auto decoded = read_value<Value>(found, here);
     if (!decoded) {
       return false;
@@ -427,9 +464,11 @@ template <typename Type, std::meta::info Member>
   return true;
 }
 
-// Reads `view` into `object` and returns false if it failed. The class's
-// validators run last, and see only an object whose every member is valid; in a
-// recursive model each level's run once the levels inside it have passed theirs.
+// Reads `view` into `object` and returns false if it failed. The members the
+// type does not declare are reported first, and then its own are read in
+// declaration order. The class's validators run last, and see only an object
+// whose every member is valid; in a recursive model each level's run once the
+// levels inside it have passed theirs.
 template <typename Type, bool Tagged>
 [[nodiscard]] bool read_object(Type& object, const json_node view,
                                const decode_cursor& here) {
@@ -437,15 +476,14 @@ template <typename Type, bool Tagged>
     here.report(IssueKind::wrong_type, "must be an object");
     return false;
   }
-  bool valid = true;
-  if constexpr (!ignores_unknown(^^Type)) {
-    valid = report_unknown_keys<Type, Tagged>(view, here);
-  }
+  field_values<Type> found{};
+  bool valid = pair_members<Type, Tagged>(view, here, found);
   template for (constexpr std::meta::info member : declared_members_v<Type>) {
     if (here.stopped()) {
       return false;
     }
-    if (!read_member<Type, member>(object, view, here)) {
+    if (!read_member<Type, member>(object, found[field_position_v<Type, member>],
+                                   here)) {
       valid = false;
     }
   }

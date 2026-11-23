@@ -1263,6 +1263,16 @@ struct Bulk {
   std::string after;
 };
 
+// Declared out of key order, with a key that a name moves and one that may be
+// absent, so the order of the fields is neither the keys' nor the document's.
+// The members without an initializer are the required ones.
+struct Scattered {
+  int foxtrot;
+  [[= scrydantic::name{"hotel"}]] int alpha;
+  int delta = 4;
+  int bravo;
+};
+
 using scrydantic::IssueKind;
 using Issues = std::vector<scrydantic::Issue>;
 
@@ -1368,6 +1378,78 @@ TEST_CASE("decoding reports every issue in an object, in declaration order") {
   CHECK(sparse.error().model_message == "$ contains unknown member \"a\"\n"
                                         "$ contains unknown member \"b\"\n"
                                         "$.name is a required member");
+}
+
+TEST_CASE("an object's members reach their fields wherever other members fall") {
+  // The decoder pairs members with fields in one pass over both in key order
+  // (pair_members): every field gets its own value, in whatever order the
+  // text has them.
+  const auto decoded =
+      decode_text<Scattered>(R"({"hotel":8,"foxtrot":6,"delta":40,"bravo":2})");
+  REQUIRE(decoded);
+  CHECK(decoded->foxtrot == 6);
+  CHECK(decoded->alpha == 8);
+  CHECK(decoded->delta == 40);
+  CHECK(decoded->bravo == 2);
+
+  // An absent member with a default keeps it, between two that are present.
+  const auto defaulted = decode_text<Scattered>(R"({"bravo":2,"foxtrot":6,"hotel":8})");
+  REQUIRE(defaulted);
+  CHECK(defaulted->delta == 4);
+  CHECK(defaulted->foxtrot == 6);
+
+  // Undeclared members before, between, and after the declared ones, one of
+  // them the identifier that a name replaced: each is reported in key order,
+  // then the missing ones in declaration order, and the rest still decode.
+  const auto crowded = decode_text<Scattered>(
+      R"({"zulu":0,"golf":0,"echo":0,"charlie":0,"alpha":0,"delta":"x","bravo":2})");
+  REQUIRE_FALSE(crowded);
+  CHECK(crowded.error().model_message == "$ contains unknown member \"alpha\"\n"
+                                         "$ contains unknown member \"charlie\"\n"
+                                         "$ contains unknown member \"echo\"\n"
+                                         "$ contains unknown member \"golf\"\n"
+                                         "$ contains unknown member \"zulu\"\n"
+                                         "$.foxtrot is a required member\n"
+                                         "$.hotel is a required member\n"
+                                         "$.delta must be an integer");
+
+  // A key that only starts as a field's does, or that a field's starts, is
+  // neither that field nor in its way.
+  const auto prefixes = decode_text<Scattered>(
+      R"({"brav":0,"bravo":2,"bravos":0,"foxtrot":6,"hotel":8,"hotels":0})");
+  REQUIRE_FALSE(prefixes);
+  CHECK(prefixes.error().model_message == "$ contains unknown member \"brav\"\n"
+                                          "$ contains unknown member \"bravos\"\n"
+                                          "$ contains unknown member \"hotels\"");
+
+  // No members at all: every required field is missing, and nothing else.
+  const auto empty = decode_text<Scattered>("{}");
+  REQUIRE_FALSE(empty);
+  CHECK(empty.error().model_message == "$.foxtrot is a required member\n"
+                                       "$.hotel is a required member\n"
+                                       "$.bravo is a required member");
+}
+
+TEST_CASE("a variant alternative's members pair around its tag") {
+  // The tag sorts between "height" and "width", and is no unknown member; one
+  // on either side of it is.
+  const auto shape = decode_text<Shape>(R"({"width":3,"type":"rectangle","height":2})");
+  REQUIRE(shape);
+  CHECK(std::get<Rectangle>(*shape).height == 2.0);
+  CHECK(std::get<Rectangle>(*shape).width == 3.0);
+
+  const auto extra = decode_text<Shape>(
+      R"({"area":6,"height":2,"type":"rectangle","unit":"m","width":3})");
+  REQUIRE_FALSE(extra);
+  CHECK(extra.error().model_message == "$ contains unknown member \"area\"\n"
+                                       "$ contains unknown member \"unit\"");
+
+  // An alternative with no fields takes its tag alone.
+  CHECK(decode_text<Edge>(R"({"type":"empty"})"));
+  const auto crowded = decode_text<Edge>(R"({"a":1,"type":"empty","z":2})");
+  REQUIRE_FALSE(crowded);
+  CHECK(crowded.error().model_message == "$ contains unknown member \"a\"\n"
+                                         "$ contains unknown member \"z\"");
 }
 
 TEST_CASE("issues inside nested objects, optionals, and arrays carry full paths") {
