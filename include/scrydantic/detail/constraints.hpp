@@ -74,7 +74,7 @@ size_limits(const std::meta::info annotation) {
 // an optional member, whose constraints bound the engaged value, each seen
 // through any std::indirect, which the codec treats as the value it owns.
 consteval std::meta::info constrained_type(const std::meta::info member) {
-  const auto type = owned_type(std::meta::type_of(member));
+  const auto type = owned_type(value_type_of(member));
   return kind_of(type) == value_kind::optional ? owned_type(element_of(type)) : type;
 }
 
@@ -455,7 +455,7 @@ consteval std::string applicability_problem(const std::meta::info annotation,
 consteval std::string annotation_problem(const std::meta::info annotation,
                                          const std::meta::info member) {
   const auto type = constrained_type(member);
-  if (auto text = applicability_problem(annotation, std::meta::type_of(member), type);
+  if (auto text = applicability_problem(annotation, value_type_of(member), type);
       !text.empty()) {
     return text;
   }

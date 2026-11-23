@@ -29,8 +29,8 @@ namespace scrydantic {
 /// non-character integers, finite floats, strings, scoped enums, `Json`, one
 /// optional layer, vectors except `vector<bool>`, fixed arrays, `std::map` and
 /// `std::unordered_map` keyed by `std::string`, `std::indirect`, plain aggregates
-/// of supported members, and tagged variants of such aggregates, each alternative
-/// carrying a distinct scrydantic::tag. A `Json` is any JSON value: its schema is
+/// of supported members, and variants whose alternatives a JSON value's kind
+/// tells apart. A `Json` is any JSON value: its schema is
 /// the empty schema `{}`, which accepts every value, decoding captures the
 /// canonical text of whatever value sits at its position, `null` included, and
 /// encoding checks that text and splices it, so a document can carry an opaque
@@ -47,6 +47,21 @@ namespace scrydantic {
 /// annotations must apply to its type and admit a value, in this family and in
 /// the others. Reflected entry points report the member path and the reason a
 /// type falls outside this family.
+///
+/// A variant holds at most one alternative of each JSON kind: null
+/// (`std::monostate`), boolean, integer, number (`float`, `double`), string
+/// (`std::string` or a scoped enum), array, and object (an aggregate or a map).
+/// An integer and a floating-point alternative may stand together: a JSON
+/// integer within the integer alternative's range is that alternative, and any
+/// other number the floating-point one. Several aggregates may stand together
+/// when each carries a distinct scrydantic::tag, which their objects are told
+/// apart by; a variant of such aggregates alone is the tagged union. A variant's
+/// schema is the `anyOf` of its alternatives' schemas, in alternative order.
+/// Encoding writes the alternative held, and decoding reads the one that the
+/// value's kind selects, so the issues of a value are that alternative's own. A
+/// `Json`, a `std::optional`, a `std::indirect`, and another variant have no one
+/// kind and are no alternative, and a `std::optional` holds no variant with a
+/// `std::monostate`, since null would then be both.
 template <typename Type>
 concept SupportedValue =
     detail::value_problem(^^std::remove_cvref_t<Type>, detail::value_family::supported)
@@ -315,9 +330,11 @@ inline constexpr auto keys_v = detail::object_keys<std::remove_cvref_t<Type>>();
 /// `std::variant_alternative_t<index, Variant>`: the value that the encoded
 /// object carries under `"type"`, and that decoding selects the alternative by.
 /// A host that receives the tag apart from the object, such as the event name
-/// of a server-sent event, can match it here before it decodes. A type that is
-/// not an Encodable variant fails to compile with the reason.
-/// @tparam Variant std::variant from the Encodable family.
+/// of a server-sent event, can match it here before it decodes. The list pairs
+/// a tag with every alternative, so a variant with an alternative that carries
+/// none, which a JSON kind selects instead, has no `tags_v`. A type that is not
+/// an Encodable variant of tagged aggregates fails to compile with the reason.
+/// @tparam Variant std::variant of tagged aggregates from the Encodable family.
 template <typename Variant>
 inline constexpr auto tags_v = detail::variant_tags<std::remove_cvref_t<Variant>>();
 

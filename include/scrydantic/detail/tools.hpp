@@ -1,12 +1,17 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <meta>
+#include <optional>
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/detail/constraints.hpp>
+#include <scrydantic/detail/failure.hpp>
+#include <scrydantic/detail/json_text.hpp>
 #include <scrydantic/detail/keywords.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/model.hpp>
@@ -15,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 // The compile-time model of bound functions and reflected tools: how a parameter
@@ -180,6 +186,36 @@ consteval std::string synthesized_member_list(const std::meta::info function,
   return list;
 }
 
+// What one member of a synthesized argument object carries: the annotations of
+// its parameter, as the constants they are, in declaration order, and after
+// them a defaulted_argument_t when the parameter has a default argument. Every
+// annotation of the parameter is here, not Scrydantic's alone: a library that
+// reads an annotation of its own off a member finds it where it wrote it.
+template <auto... Annotations> struct member_annotations {};
+
+// The member_annotations of each member of a synthesized argument object, in
+// order. None for the other forms, whose generated code reads no parameter's
+// annotations and never leaves an argument to its default: a lone aggregate
+// parameter is the argument object, which every call is given.
+consteval std::vector<std::meta::info>
+synthesized_member_annotations(const std::meta::info function,
+                               const std::meta::info context) {
+  std::vector<std::meta::info> members{};
+  if (arguments_form_of(function, context) == arguments_form::synthesized) {
+    for (const auto parameter : value_parameters_of(function, context)) {
+      std::vector<std::meta::info> carried{};
+      for (const auto annotation : std::meta::annotations_of(parameter)) {
+        carried.push_back(std::meta::constant_of(annotation));
+      }
+      if (std::meta::has_default_argument(parameter)) {
+        carried.push_back(std::meta::reflect_constant(defaulted_argument_t{}));
+      }
+      members.push_back(std::meta::substitute(^^member_annotations, carried));
+    }
+  }
+  return members;
+}
+
 // The text of a reflect_constant_string array, without its terminator.
 template <std::meta::info Text>
 inline constexpr std::string_view constant_text_v{[:Text:], sizeof([:Text:]) - 1U};
@@ -187,27 +223,40 @@ inline constexpr std::string_view constant_text_v{[:Text:], sizeof([:Text:]) - 1
 // One function as a binding sees it: the type binding_of() reflects, and the
 // `Binding` that arguments_t and apply() carry.
 //
-// A function's parameter names come from the declarations of it that precede the
-// point of evaluation, so two translation units can see one function
-// differently. Each such fact is a template argument here, a constant string
-// that GCC mangles by its content, so units that see different facts
-// instantiate differently named code, which the linker cannot merge. The code
-// generated for a binding reads these facts from here and never from the
-// function's declarations, so what a specialization's name records is exactly
-// what its code contains. Everything else it reads from the function, such as
-// the parameter types, the return type, and the object parameter, is part of the
+// A function's parameter names, its parameters' annotations, and which of its
+// parameters have a default argument come from the declarations of it that
+// precede the point of evaluation, so two translation units can see one function
+// differently. Each such fact is a template argument here, a constant that GCC
+// mangles by its content, so units that see different facts instantiate
+// differently named code, which the linker cannot merge. The code generated for
+// a binding reads these facts from here and never from the function's
+// declarations, so what a specialization's name records is exactly what its
+// code contains. Everything else it reads from the function, such as the
+// parameter types, the return type, and the object parameter, is part of the
 // function's type and the same in every unit. `Context` is the binding's call
 // context, which decides whether the leading parameter is an argument.
 //
+// The value of a default argument is the one fact that cannot be recorded:
+// reflection does not read it. A call that leaves an argument out is compiled
+// with the default its own unit sees. So two units that each bind one function
+// that is not inline, and each declare it with a different default for one
+// parameter, which C++ allows, are not kept apart here; their bindings differ in
+// nothing that a name can record.
+//
 // Another fact of the parameter list that a later declaration can change is one
-// more template argument here, gathered by bound_function_of(). No entry point
-// spells the arguments: each carries the binding whole.
-template <std::meta::info Function, std::meta::info Context, std::meta::info Members>
+// more template argument here, gathered by bound_function_of(), before the
+// pack. No entry point spells the arguments: each carries the binding whole.
+template <std::meta::info Function, std::meta::info Context, std::meta::info Members,
+          typename... Annotations>
 struct bound_function {
   static constexpr std::meta::info function = Function;
   static constexpr std::meta::info context = Context;
   // The synthesized member names, as synthesized_member_list writes them.
   static constexpr std::string_view members = constant_text_v<Members>;
+  // What each synthesized member carries, as synthesized_member_annotations
+  // lists it: a member_annotations for each.
+  static constexpr std::array<std::meta::info, sizeof...(Annotations)> annotations{
+      ^^Annotations...};
 };
 
 // What binding_of() reflects for a function that cannot be bound: the reason,
@@ -239,12 +288,24 @@ struct bound_tool {
 // units see.
 template <typename... Tools> struct tool_set {};
 
-// The argument object synthesized from a parameter list: one required member per
-// value parameter, named as `Binding` records, of the parameter's type without
-// references or cv-qualifiers. The consteval block runs when the specialization
-// is instantiated, which C++26 permits because the aggregate it completes is a
-// member of that same specialization. The names are read one character at a
-// time, for the reason owned_text gives.
+// The argument object synthesized from a parameter list: one member per value
+// parameter, named and annotated as `Binding` records, of the parameter's type
+// without references or cv-qualifiers. A member that carries its parameter's
+// annotations is to the schemas and the codec a member that was written with
+// them, so a parameter's description, key, constraints, and checks mean what a
+// data member's do, by the same code.
+//
+// A member is required, but for one whose parameter has a default argument.
+// That one is a std::optional of the parameter's type marked defaulted_argument_t
+// (model.hpp), which the input may leave out and which is then disengaged, so
+// that the call can leave the argument out in turn (apply_function in
+// binding.hpp). A data_member_spec has no initializer to give the member
+// instead, and no initializer could hold a default that reflection cannot read.
+//
+// The consteval block runs when the specialization is instantiated, which C++26
+// permits because the aggregate it completes is a member of that same
+// specialization. The names are read one character at a time, for the reason
+// owned_text gives.
 template <typename Binding> struct synthesized_arguments {
   struct type;
 
@@ -260,8 +321,20 @@ template <typename Binding> struct synthesized_arguments {
       ++position;
       std::meta::data_member_options options{};
       options.name = name;
-      members.push_back(std::meta::data_member_spec(
-          plain_type(std::meta::type_of(parameter)), options));
+      options.annotations =
+          std::meta::template_arguments_of(Binding::annotations[members.size()]);
+      const bool defaulted = std::ranges::any_of(
+          options.annotations, [](const std::meta::info annotation) {
+            return plain_type(std::meta::type_of(annotation)) ==
+                   (^^defaulted_argument_t);
+          });
+      const auto type = plain_type(std::meta::type_of(parameter));
+      members.push_back(
+          std::meta::data_member_spec(defaulted ? std::meta::substitute(^^std::optional,
+                                                                        {
+                                                                            type})
+                                                : type,
+                                      options));
     }
     std::meta::define_aggregate(^^type, members);
   }
@@ -322,6 +395,20 @@ consteval std::string entity_name(const std::meta::info entity) {
   return own;
 }
 
+// The annotations that decide which keys an object has, on a function, which
+// has none: its arguments are named after its parameters, and an argument
+// aggregate carries these itself.
+consteval std::string key_annotation_problem(const std::meta::info function) {
+  if (has_annotation(function, ^^flatten_t)) {
+    return "carries scrydantic::flatten, which applies to data members";
+  }
+  if (has_annotation(function, ^^rename_all)) {
+    return "carries scrydantic::rename_all, which applies to classes and enums; a "
+           "tool's arguments keep the names of its parameters";
+  }
+  return {};
+}
+
 consteval std::string tool_annotation_problem(const std::meta::info function) {
   if (annotation_count(function, ^^tool) > 1) {
     return "has more than one scrydantic::tool annotation";
@@ -337,8 +424,8 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
            "ignore_unknown), which applies to data members or classes; a tool's "
            "description is its scrydantic::tool text";
   }
-  if (has_annotation(function, ^^flatten_t)) {
-    return "carries scrydantic::flatten, which applies to data members";
+  if (auto reason = key_annotation_problem(function); !reason.empty()) {
+    return reason;
   }
   for (const auto annotation : std::meta::annotations_of(function)) {
     if (is_constraint(annotation)) {
@@ -470,23 +557,60 @@ consteval std::string passing_problem(const std::meta::info function,
   return {};
 }
 
-// Rejects a Scrydantic annotation on a parameter the model supplies, which no
-// binding reads: an argument object is synthesized from the parameters' types
-// and names alone, the facts that bound_function keys, and annotations, which
-// accumulate across redeclarations, would be one more fact that two translation
-// units can see differently. Unread, a constraint or a check there would be
-// silently lost, so a constrained argument is a member of an argument aggregate.
+// The name of the first annotation of Scrydantic's own that a parameter
+// carries, or empty when it carries none.
+consteval std::string own_annotation_of(const std::meta::info parameter) {
+  for (const auto annotation : std::meta::annotations_of(parameter)) {
+    if (auto own = own_annotation_name(annotation); !own.empty()) {
+      return own;
+    }
+  }
+  return {};
+}
+
+// Rejects a Scrydantic annotation on a parameter that is no member of an
+// argument object, where nothing would read it: the explicit object parameter
+// and the call context, which are not arguments, and a lone aggregate parameter,
+// which is the whole argument object and whose members carry their own. A
+// parameter that becomes a synthesized member takes what a member takes, and
+// arguments_problem holds it to the member's rules.
 consteval std::string parameter_annotation_problem(const std::meta::info function,
                                                    const std::meta::info context) {
   const auto parameters = std::meta::parameters_of(function);
-  for (std::size_t index = first_value_index(function, context);
-       index < parameters.size(); ++index) {
-    for (const auto annotation : std::meta::annotations_of(parameters[index])) {
-      if (std::meta::parent_of(plain_type(std::meta::type_of(annotation))) ==
-          (^^::scrydantic)) {
-        return "has " + parameter_label(parameters[index], index) +
-               " carrying a Scrydantic annotation, which a parameter cannot hold; "
-               "take an argument aggregate and annotate its member";
+  const std::size_t first = first_value_index(function, context);
+  const bool whole = arguments_form_of(function, context) == arguments_form::aggregate;
+  for (std::size_t index = 0; index < (whole ? parameters.size() : first); ++index) {
+    const auto own = own_annotation_of(parameters[index]);
+    if (own.empty()) {
+      continue;
+    }
+    const auto carrying = "has " + parameter_label(parameters[index], index) +
+                          " carrying " + own + ", which applies to an argument; ";
+    if (index >= first) {
+      return carrying +
+             "this parameter is the whole argument object, so annotate "
+             "the members of " +
+             display(plain_type(std::meta::type_of(parameters[index])));
+    }
+    return carrying + (index < object_parameter_count(function)
+                           ? "an explicit object parameter is the object the function "
+                             "is called on"
+                           : "the call context is the host's to supply");
+  }
+  return {};
+}
+
+// Two parameters under one JSON key, which scrydantic::name can give them,
+// would be two members of the argument object with one key.
+consteval std::string parameter_keys_problem(const std::vector<std::meta::info>& values,
+                                             const std::size_t first) {
+  for (std::size_t left = 0; left < values.size(); ++left) {
+    for (std::size_t right = left + 1; right < values.size(); ++right) {
+      const auto key = json_key_of(values[left]);
+      if (key == json_key_of(values[right])) {
+        return "has " + parameter_label(values[left], first + left) + " and " +
+               parameter_label(values[right], first + right) +
+               ", which both map to the JSON key \"" + owned_text(key) + "\"";
       }
     }
   }
@@ -510,11 +634,35 @@ consteval std::string arguments_problem(const std::meta::info function,
       return "has the unnamed " + label +
              "; an argument synthesized from a parameter is named after it";
     }
-    const auto reason =
-        value_problem(std::meta::type_of(values[index]), value_family::supported);
+    // A parameter is one argument under one key. An argument aggregate can
+    // flatten a member of its own.
+    if (has_annotation(values[index], ^^flatten_t)) {
+      return "has " + label +
+             ": carries scrydantic::flatten, which applies to data members; a "
+             "parameter is one argument under one key";
+    }
+    // emit_null undoes a class's skip_null for one member. The argument object
+    // of a parameter list carries no skip_null, so it would undo nothing.
+    if (has_annotation(values[index], ^^emit_null_t)) {
+      return "has " + label +
+             ": carries scrydantic::emit_null, which undoes a class's skip_null for "
+             "one member; a parameter list has no skip_null to undo";
+    }
+    const auto reason = parameter_value_problem(values[index]);
     if (!reason.empty()) {
       return "has " + label + ": " + reason;
     }
+    // skip_null says that an argument left out is disengaged, and a default
+    // argument that it is the default, so the annotation would do nothing.
+    if (std::meta::has_default_argument(values[index]) &&
+        has_annotation(values[index], ^^skip_null_t)) {
+      return "has " + label +
+             ": carries scrydantic::skip_null and has a default argument; each says "
+             "what an argument left out is, so keep the default argument alone";
+    }
+  }
+  if (auto reason = parameter_keys_problem(values, first); !reason.empty()) {
+    return reason;
   }
   // Each parameter passed the check alone, as its own schema's root. In the
   // synthesized object a recursive parameter type is a definition instead, and
@@ -678,11 +826,11 @@ consteval std::meta::info constant_text(const std::string_view text) {
 // facts the declarations preceding this point give it.
 consteval std::meta::info bound_function_of(const std::meta::info function,
                                             const std::meta::info context) {
-  return std::meta::substitute(
-      ^^bound_function,
-      {
-          std::meta::reflect_constant(function), std::meta::reflect_constant(context),
-          constant_text(synthesized_member_list(function, context))});
+  std::vector arguments{std::meta::reflect_constant(function),
+                        std::meta::reflect_constant(context),
+                        constant_text(synthesized_member_list(function, context))};
+  arguments.append_range(synthesized_member_annotations(function, context));
+  return std::meta::substitute(^^bound_function, arguments);
 }
 
 // The bound_tool of a function that has passed tool_function_problem, with the
@@ -737,16 +885,86 @@ consteval std::string_view toolbox_diagnostic() {
   return unsatisfied(display(^^Type), "Toolbox", toolbox_problem(^^Type, ^^Context));
 }
 
-// The type-erased handler that ToolFunction<Context> names in bound_tool.hpp. A
-// trait rather than a conditional type, because a handler type that took a
-// `const void&` could not even be named. Its call operator is const, so a const
-// table of tools can be called, and it calls what it stores as const.
+// The type-erased handler that ToolFunction<Context> names in bound_tool.hpp.
+// `Leading` is what a call passes before the arguments: the `const Context&` of
+// a binding with a context, or nothing.
+//
+// A handler reads its arguments from a parsed view, and that is the form bind()
+// and bind_handler() store: a call with a view decodes the caller's document
+// where it lies, and a call with text parses the text first, which is where
+// text that is not JSON fails. A callable that takes its arguments as `Json`,
+// as a handler written by hand may, is stored as it is instead: text goes to it
+// untouched and unchecked, and a view is written out for it as its canonical
+// text, once per call. A handler holds one form or the other, never both, so
+// each call tests which. Both call operators are const, so a const table of
+// tools can be called, and they call what they store as const.
+template <typename... Leading> class tool_handler {
+  using view_function =
+      std::move_only_function<Result<Json>(Leading..., const JsonView&) const>;
+  using text_function = std::move_only_function<Result<Json>(Leading..., Json) const>;
+
+public:
+  tool_handler() noexcept = default;
+  tool_handler(std::nullptr_t) noexcept {}
+
+  // A callable that can be called either way is stored as one that reads a
+  // view. The handler itself is such a callable, so it is excluded: copying
+  // one is the deleted copy, not a handler wrapped in a handler.
+  template <typename Handler>
+    requires(!std::same_as<std::remove_cvref_t<Handler>, tool_handler> &&
+             std::constructible_from<view_function, Handler>)
+  tool_handler(Handler&& handler) : view_{std::forward<Handler>(handler)} {}
+
+  template <typename Handler>
+    requires(!std::same_as<std::remove_cvref_t<Handler>, tool_handler> &&
+             !std::constructible_from<view_function, Handler> &&
+             std::constructible_from<text_function, Handler>)
+  tool_handler(Handler&& handler) : text_{std::forward<Handler>(handler)} {}
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return static_cast<bool>(view_) || static_cast<bool>(text_);
+  }
+
+  [[nodiscard]] friend bool operator==(const tool_handler& handler,
+                                       std::nullptr_t) noexcept {
+    return !handler;
+  }
+
+  [[nodiscard]] Result<Json> operator()(Leading... leading,
+                                        const JsonView& arguments) const {
+    if (view_) {
+      return view_(leading..., arguments);
+    }
+    return text_(leading..., arguments.to_json());
+  }
+
+  // Text that is not JSON is read once more to describe it, which only a
+  // failure pays for.
+  [[nodiscard]] Result<Json> operator()(Leading... leading, Json arguments) const {
+    if (text_) {
+      return text_(leading..., std::move(arguments));
+    }
+    const auto view = JsonView::parse(std::string_view{arguments.text});
+    if (!view) {
+      return std::unexpected(invalid_json_error("tool arguments are not valid JSON",
+                                                describe_invalid_json(arguments.text)));
+    }
+    return view_(leading..., *view);
+  }
+
+private:
+  view_function view_{};
+  text_function text_{};
+};
+
+// Names the tool_handler of a context. A trait rather than a conditional type,
+// because a `const void&` could not even be named.
 template <typename Context> struct tool_function {
-  using type = std::move_only_function<Result<Json>(const Context&, Json) const>;
+  using type = tool_handler<const Context&>;
 };
 
 template <> struct tool_function<void> {
-  using type = std::move_only_function<Result<Json>(Json) const>;
+  using type = tool_handler<>;
 };
 
 } // namespace scrydantic::detail

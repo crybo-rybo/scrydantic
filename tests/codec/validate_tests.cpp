@@ -891,3 +891,33 @@ TEST_CASE("a type with no constraint and no validator is always valid") {
       Lines{
           "violated_constraint $.layers[0].label.text must have at least 1 character"});
 }
+
+namespace kind_union {
+
+struct Step {
+  [[= scrydantic::range{.min = 1, .max = 9}]] int size{1};
+};
+
+struct Plan {
+  std::variant<std::monostate, Step, std::vector<Step>, std::string> steps;
+};
+
+} // namespace kind_union
+
+TEST_CASE("validate walks whichever alternative a variant told apart by kind holds") {
+  using kind_union::Plan;
+  using kind_union::Step;
+
+  CHECK(scrydantic::validate(Plan{}));
+  CHECK(scrydantic::validate(Plan{.steps = std::string{"none"}}));
+  CHECK(scrydantic::validate(Plan{.steps = Step{.size = 9}}));
+
+  const auto one = scrydantic::validate(Plan{.steps = Step{.size = 10}});
+  REQUIRE_FALSE(one);
+  CHECK(one.error().message == "$.steps.size must be at most 9");
+
+  const auto many = scrydantic::validate(
+      Plan{.steps = std::vector{Step{.size = 2}, Step{.size = 0}}});
+  REQUIRE_FALSE(many);
+  CHECK(many.error().message == "$.steps[1].size must be at least 1");
+}
