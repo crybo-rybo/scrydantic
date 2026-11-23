@@ -161,11 +161,12 @@ TEST_CASE("a bound tool carries the schema of what it returns") {
   REQUIRE(tools.size() == 1);
   REQUIRE(tools[0].output_schema.has_value());
   CHECK(tools[0].output_schema->text == scrydantic::schema_v<weather::Reading>);
-  CHECK(tools[0].output_schema->text ==
-        R"({"additionalProperties":false,"properties":{"degrees":{"type":"number"},)"
-        R"("label":{"anyOf":[{"type":"string"},{"type":"null"}]},)"
-        R"("unit":{"default":"celsius","enum":["celsius","fahrenheit"],"type":"string"}},)"
-        R"("required":["degrees","label"],"type":"object"})");
+  CHECK(
+      tools[0].output_schema->text ==
+      R"({"additionalProperties":false,"properties":{"degrees":{"type":"number"},)"
+      R"("label":{"anyOf":[{"type":"string"},{"type":"null"}]},)"
+      R"("unit":{"default":"celsius","enum":["celsius","fahrenheit"],"type":"string"}},)"
+      R"("required":["degrees","label"],"type":"object"})");
 
   // The schema describes what a call answers with.
   const auto reading = tools[0].invoke(arguments(R"({"city":"Oslo","days":2})"));
