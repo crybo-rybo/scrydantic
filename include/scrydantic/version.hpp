@@ -6,8 +6,8 @@
 /// the version. The header is plain C++23 and declares no other names.
 
 #define SCRYDANTIC_VERSION_MAJOR 0
-#define SCRYDANTIC_VERSION_MINOR 3
-#define SCRYDANTIC_VERSION_PATCH 2
+#define SCRYDANTIC_VERSION_MINOR 4
+#define SCRYDANTIC_VERSION_PATCH 0
 
 /// The version as one integer: major * 10000 + minor * 100 + patch.
 #define SCRYDANTIC_VERSION                                                             \
@@ -17,7 +17,7 @@
 #define SCRYDANTIC_DETAIL_STRINGIFY_IMPL(x) #x
 #define SCRYDANTIC_DETAIL_STRINGIFY(x) SCRYDANTIC_DETAIL_STRINGIFY_IMPL(x)
 
-/// The version as a string literal, such as "0.3.2".
+/// The version as a string literal, such as "0.4.0".
 #define SCRYDANTIC_VERSION_STRING                                                      \
   SCRYDANTIC_DETAIL_STRINGIFY(SCRYDANTIC_VERSION_MAJOR)                                \
   "." SCRYDANTIC_DETAIL_STRINGIFY(                                                     \
