@@ -34,7 +34,13 @@ clang_tidy=("${TOOL[@]}")
 cpp23_sources=()
 while IFS= read -r source; do cpp23_sources+=("${source}"); done \
   < <(git ls-files --cached --others --exclude-standard -- 'src/json/*.cpp' 'tests/fuzz/*.cpp')
-"${clang_tidy[@]}" --quiet "${cpp23_sources[@]}" -- -std=c++23 -Iinclude -Isrc ||
+compiler_flags=(-std=c++23 -Iinclude -Isrc)
+# The clang-tidy from PyPI has no default sysroot on macOS, so it would not
+# find the standard headers without the SDK's.
+if [[ "$(uname -s)" == Darwin ]]; then
+  compiler_flags+=(-isysroot "$(xcrun --show-sdk-path)")
+fi
+"${clang_tidy[@]}" --quiet "${cpp23_sources[@]}" -- "${compiler_flags[@]}" ||
   fail "clang-tidy reported the findings above"
 
 # ---- Include boundaries -----------------------------------------------------
