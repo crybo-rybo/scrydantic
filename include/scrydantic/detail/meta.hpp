@@ -299,6 +299,13 @@ private:
     if (annotation_count(type, ^^rename_all) > 1) {
       return problem(path, type, "has more than one scrydantic::rename_all annotation");
     }
+    if (annotation_count(type, ^^description) > 1) {
+      return problem(path, type,
+                     "has more than one scrydantic::description annotation");
+    }
+    if (auto text = extra_keywords_problem(type); !text.empty()) {
+      return problem(path, type, text);
+    }
     const auto enumerators = std::meta::enumerators_of(type);
     if (enumerators.empty()) {
       return problem(path, type, "has no enumerators");
@@ -531,6 +538,10 @@ private:
     }
     if (annotation_count(type, ^^rename_all) > 1) {
       return problem(path, type, "has more than one scrydantic::rename_all annotation");
+    }
+    if (annotation_count(type, ^^description) > 1) {
+      return problem(path, type,
+                     "has more than one scrydantic::description annotation");
     }
     if (auto text = check_class_misplaced_annotations(type, path); !text.empty()) {
       return text;

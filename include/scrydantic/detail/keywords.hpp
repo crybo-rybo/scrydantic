@@ -301,6 +301,12 @@ consteval std::string_view extra_keyword_name(const std::meta::info annotation) 
   if (annotation_matches(annotation, ^^title)) {
     return "scrydantic::title";
   }
+  if (annotation_matches(annotation, ^^format)) {
+    return "scrydantic::format";
+  }
+  if (annotation_matches(annotation, ^^deprecated_t)) {
+    return "scrydantic::deprecated";
+  }
   if (annotation_matches(annotation, ^^keyword)) {
     return "scrydantic::keyword";
   }
@@ -314,6 +320,13 @@ consteval std::string_view extra_keyword_name(const std::meta::info annotation) 
 consteval bool is_custom_keyword(const std::meta::info annotation) {
   return annotation_matches(annotation, ^^keyword) ||
          annotation_matches(annotation, ^^keyword_string);
+}
+
+// A custom keyword, or a shorthand annotation (format, deprecated) that emits a
+// fixed JSON Schema keyword and participates in duplicate-key checking with it.
+consteval bool is_keyed_extra_annotation(const std::meta::info annotation) {
+  return is_custom_keyword(annotation) || annotation_matches(annotation, ^^format) ||
+         annotation_matches(annotation, ^^deprecated_t);
 }
 
 // The two texts of a custom keyword, read as annotation_text_v reads the one
@@ -380,33 +393,55 @@ inline constexpr std::array<std::string_view, 22> reserved_keywords{
     "type",
 };
 
-// Why the schema of `entity`, a data member or a class, cannot state what these
-// annotations of it say; empty when it can. The text follows the entity's name.
+consteval std::string_view extra_annotation_key(const std::meta::info annotation) {
+  if (annotation_matches(annotation, ^^format)) {
+    return "format";
+  }
+  if (annotation_matches(annotation, ^^deprecated_t)) {
+    return "deprecated";
+  }
+  return keyword_key(annotation);
+}
+
+consteval std::string custom_keyword_problem(const std::meta::info annotation,
+                                             const std::string_view key) {
+  const auto shown = "the key \"" + owned_text(key) + "\"";
+  if (key.empty()) {
+    return "carries a keyword annotation with an empty key";
+  }
+  if (!keyword_value(annotation)) {
+    return "carries a scrydantic::keyword with " + shown +
+           " whose value is not one JSON value";
+  }
+  if (std::ranges::contains(reserved_keywords, key)) {
+    return "carries a keyword annotation with " + shown +
+           ", which Scrydantic writes itself; an annotation cannot replace a "
+           "generated keyword";
+  }
+  return {};
+}
+
+// Why the schema of `entity`, a data member, class, or enum, cannot state what
+// these annotations of it say; empty when it can. The text follows the entity's
+// name.
 consteval std::string extra_keywords_problem(const std::meta::info entity) {
   if (annotation_count(entity, ^^title) > 1) {
     return "has more than one scrydantic::title annotation";
   }
   std::vector<std::string_view> keys{};
   for (const auto annotation : std::meta::annotations_of(entity)) {
-    if (!is_custom_keyword(annotation)) {
+    if (!is_keyed_extra_annotation(annotation)) {
       continue;
     }
-    const auto key = keyword_key(annotation);
-    const auto shown = "the key \"" + owned_text(key) + "\"";
-    if (key.empty()) {
-      return "carries a keyword annotation with an empty key";
-    }
-    if (!keyword_value(annotation)) {
-      return "carries a scrydantic::keyword with " + shown +
-             " whose value is not one JSON value";
-    }
-    if (std::ranges::contains(reserved_keywords, key)) {
-      return "carries a keyword annotation with " + shown +
-             ", which Scrydantic writes itself; an annotation cannot replace a "
-             "generated keyword";
+    const auto key = extra_annotation_key(annotation);
+    if (is_custom_keyword(annotation)) {
+      if (auto reason = custom_keyword_problem(annotation, key); !reason.empty()) {
+        return reason;
+      }
     }
     if (std::ranges::contains(keys, key)) {
-      return "has more than one keyword annotation with " + shown;
+      return "has more than one keyword annotation with the key \"" + owned_text(key) +
+             "\"";
     }
     keys.push_back(key);
   }
@@ -423,6 +458,12 @@ consteval std::vector<schema_keyword> extra_keywords(const std::meta::info entit
       std::string value{};
       append_json_string(value, annotation_text(annotation));
       keywords.push_back({.key = "title", .value = std::move(value)});
+    } else if (annotation_matches(annotation, ^^format)) {
+      std::string value{};
+      append_json_string(value, annotation_text(annotation));
+      keywords.push_back({.key = "format", .value = std::move(value)});
+    } else if (annotation_matches(annotation, ^^deprecated_t)) {
+      keywords.push_back({.key = "deprecated", .value = "true"});
     } else if (is_custom_keyword(annotation)) {
       keywords.push_back({.key = owned_text(keyword_key(annotation)),
                           .value = keyword_value(annotation).value()});
