@@ -889,15 +889,47 @@ consteval bool object_has_checks(const std::meta::info type) {
 }
 
 // Whether a value of `type` has a constraint that decoding checks or a validator
-// anywhere in it: in an object it is or, at any depth, holds. A value of a type
-// that has none meets its type whatever it holds, so nothing walks it to find
-// out.
+// anywhere in it: in an object or transparent wrapper it is or, at any depth,
+// holds. A value of a type that has none meets its type whatever it holds, so
+// nothing walks it to find out.
+consteval bool value_has_checks(const std::meta::info reflected,
+                                std::vector<std::meta::info>& visited) {
+  const auto type = plain_type(reflected);
+  switch (kind_of(type)) {
+  case value_kind::optional:
+  case value_kind::indirect:
+  case value_kind::vector:
+  case value_kind::array:
+    return value_has_checks(element_of(type), visited);
+  case value_kind::map:
+    return value_has_checks(mapped_of(type), visited);
+  case value_kind::variant:
+    return std::ranges::any_of(alternatives_of(type), [&](const std::meta::info alt) {
+      return alternative_kind_of(alt) != alternative_kind::null &&
+             value_has_checks(alt, visited);
+    });
+  case value_kind::transparent:
+  case value_kind::aggregate: {
+    if (std::ranges::contains(visited, type)) {
+      return false;
+    }
+    visited.push_back(type);
+    if (object_has_checks(type)) {
+      return true;
+    }
+    return std::ranges::any_of(
+        data_members_of(type), [&](const std::meta::info member) {
+          return value_has_checks(value_type_of(member), visited);
+        });
+  }
+  default:
+    return false;
+  }
+}
+
 consteval bool has_checks(const std::meta::info type) {
-  std::vector<schema_node> held{};
-  append_held_nodes(held, type);
-  return std::ranges::any_of(
-      reachable_from(std::move(held)),
-      [](const schema_node node) { return object_has_checks(node.type); });
+  std::vector<std::meta::info> visited{};
+  return value_has_checks(type, visited);
 }
 
 template <typename Type> inline constexpr bool has_checks_v = has_checks(^^Type);

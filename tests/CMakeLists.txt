@@ -155,6 +155,7 @@ add_executable(
   codec/schema_default_tests.cpp
   codec/schema_keyword_tests.cpp
   codec/tag_key_tests.cpp
+  codec/transparent_tests.cpp
   codec/validate_tests.cpp
   codec/validator_tests.cpp
   tools/default_argument_tests.cpp
@@ -748,6 +749,56 @@ scrydantic_add_compile_fail_test(
   deprecated-on-tool
   deprecated_on_tool.cpp
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::deprecated, which applies to data members and classes"
+)
+scrydantic_add_compile_fail_test(
+  transparent-zero-members
+  transparent_zero_members.cpp
+  "Empty carries scrydantic::transparent, so it must declare exactly one data member"
+)
+scrydantic_add_compile_fail_test(
+  transparent-two-members
+  transparent_two_members.cpp
+  "Pair carries scrydantic::transparent, so it must declare exactly one data member"
+)
+scrydantic_add_compile_fail_test(
+  transparent-with-tag
+  transparent_with_tag.cpp
+  "Port carries scrydantic::transparent together with an object annotation"
+)
+scrydantic_add_compile_fail_test(
+  transparent-named-member
+  transparent_named_member.cpp
+  "Port::value: is the sole member of a scrydantic::transparent wrapper and cannot carry scrydantic::name, flatten, skip_null, or emit_null"
+)
+scrydantic_add_compile_fail_test(
+  transparent-on-member
+  transparent_on_member.cpp
+  "Server::port: carries scrydantic::transparent, which applies to class types"
+)
+scrydantic_add_compile_fail_test(
+  transparent-on-tool
+  transparent_on_tool.cpp
+  "scrydantic::bind<^^port_tools>(): port_tools::open carries scrydantic::transparent, which applies to class types"
+)
+scrydantic_add_compile_fail_test(
+  transparent-tool-arguments
+  transparent_tool_arguments.cpp
+  "Port is a transparent wrapper, not a JSON object"
+)
+scrydantic_add_compile_fail_test(
+  transparent-keys
+  transparent_keys.cpp
+  "Port is a transparent wrapper, so it has no JSON object keys"
+)
+scrydantic_add_compile_fail_test(
+  transparent-recursive
+  transparent_recursive.cpp
+  "Loop is a recursive transparent wrapper; only plain aggregates can be recursive"
+)
+scrydantic_add_compile_fail_test(
+  transparent-variant-collision
+  transparent_variant_collision.cpp
+  "that share the JSON kind integer"
 )
 scrydantic_add_compile_fail_test(
   emit-null-parameter

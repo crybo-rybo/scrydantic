@@ -156,6 +156,9 @@ private:
   // finished. It finishes each once, so it visits every link once.
   std::vector<std::meta::info> constructing_{};
   std::vector<std::meta::info> constructed_{};
+  // Transparent wrappers currently open with no plain aggregate in between, to
+  // reject transparent-only recursion (which has no object node for $defs).
+  std::vector<std::meta::info> active_transparent_{};
 
   [[nodiscard]] consteval bool decodes() const {
     return family_ != value_family::encodable;
@@ -394,6 +397,9 @@ private:
     if (kind == value_kind::aggregate) {
       return check_aggregate(type, path);
     }
+    if (kind == value_kind::transparent) {
+      return check_transparent(type, path);
+    }
     if (decodes() && !is_storable(type)) {
       return problem(path, type, unstorable_reason);
     }
@@ -437,17 +443,91 @@ private:
   // std::monostate is null too: the schema would allow null twice, and decoding
   // could only ever read it as the empty optional.
   static consteval std::string_view null_problem(const std::meta::info element) {
-    if (kind_of(element) == value_kind::optional) {
+    const auto unwrapped = unwrap_transparent(element);
+    if (kind_of(unwrapped) == value_kind::optional) {
       return "nests std::optional directly; one optional layer is the only "
              "nullable form";
     }
-    const auto owned = owned_type(element);
+    const auto owned = owned_type(unwrapped);
     if (kind_of(owned) == value_kind::variant &&
         alternative_of_kind(owned, alternative_kind::null) != std::meta::info{}) {
       return "holds a variant with a std::monostate alternative, so null would be "
              "both the empty optional and that alternative; keep one of the two";
     }
     return {};
+  }
+
+  static consteval std::string check_transparent_annotations(const std::meta::info type,
+                                                             const std::string& path) {
+    if (annotation_count(type, ^^transparent_t) > 1) {
+      return problem(path, type,
+                     "has more than one scrydantic::transparent annotation");
+    }
+    if (has_class_annotation(type) || has_annotation(type, ^^rename_all) ||
+        has_annotation(type, ^^skip_null_t)) {
+      return problem(path, type,
+                     "carries scrydantic::transparent together with an object "
+                     "annotation (tag, tag_key, default_tag, ignore_unknown, "
+                     "rename_all, or skip_null)");
+    }
+    if (annotation_count(type, ^^description) > 1) {
+      return problem(path, type,
+                     "has more than one scrydantic::description annotation");
+    }
+    if (auto text = check_class_misplaced_annotations(type, path); !text.empty()) {
+      return text;
+    }
+    auto reason = extra_keywords_problem(type);
+    if (reason.empty()) {
+      reason = validators_problem(type, type);
+    }
+    if (reason.empty()) {
+      reason = member_validators_problem(type);
+    }
+    return reason.empty() ? reason : problem(path, type, reason);
+  }
+
+  consteval std::string check_transparent(const std::meta::info type,
+                                          const std::string& path) {
+    if (std::ranges::contains(active_transparent_, type)) {
+      return problem(path, type,
+                     "is a recursive transparent wrapper; only plain aggregates can be "
+                     "recursive");
+    }
+    if (std::ranges::contains(reached_, type, &reached_aggregate::type)) {
+      return {};
+    }
+    if (!std::meta::bases_of(type, std::meta::access_context::unchecked()).empty()) {
+      return problem(path, type, "has a base class");
+    }
+    if (auto text = check_transparent_annotations(type, path); !text.empty()) {
+      return text;
+    }
+    const auto members = data_members_of(type);
+    if (members.size() != 1U) {
+      return problem(path, type,
+                     "carries scrydantic::transparent, so it must declare exactly one "
+                     "data member");
+    }
+    const auto member = members.front();
+    if (has_annotation(member, ^^name) || has_annotation(member, ^^flatten_t) ||
+        has_annotation(member, ^^skip_null_t) ||
+        has_annotation(member, ^^emit_null_t)) {
+      const auto here =
+          std::meta::has_identifier(member) ? member_path(path, type, member) : path;
+      return at_path(here,
+                     "is the sole member of a scrydantic::transparent wrapper and "
+                     "cannot carry scrydantic::name, flatten, skip_null, or emit_null");
+    }
+    active_transparent_.push_back(type);
+    reached_.push_back({.type = type, .path = path});
+    auto text = check_member(type, member, path);
+    active_transparent_.pop_back();
+    if (!text.empty()) {
+      return text;
+    }
+    return decodes() && !is_storable(type) ? problem(path, type, unstorable_reason)
+                                           : std::string{};
   }
 
   consteval std::string check_aggregate(const std::meta::info type,
@@ -462,12 +542,15 @@ private:
     if (auto text = check_class_annotations(type, path); !text.empty()) {
       return text;
     }
+    const auto saved_transparent = std::exchange(active_transparent_, {});
     reached_.push_back({.type = type, .path = path});
     for (const auto member : data_members_of(type)) {
       if (auto text = check_member(type, member, path); !text.empty()) {
+        active_transparent_ = saved_transparent;
         return text;
       }
     }
+    active_transparent_ = saved_transparent;
     // After the members, so a const member is reported as such rather than as
     // the missing assignment it causes.
     if (decodes() && !is_storable(type)) {
@@ -624,6 +707,34 @@ private:
     return {};
   }
 
+  static consteval std::string
+  check_member_misplaced_annotations(const std::meta::info member,
+                                     const std::string& here) {
+    if (has_class_annotation(member)) {
+      return at_path(here, "carries scrydantic::tag, tag_key, default_tag, or "
+                           "ignore_unknown, which apply to class types");
+    }
+    if (has_annotation(member, ^^rename_all)) {
+      return at_path(here, "carries scrydantic::rename_all, which applies to "
+                           "classes and enums; scrydantic::name gives one "
+                           "member its key");
+    }
+    if (has_annotation(member, ^^tool)) {
+      return at_path(here, "carries scrydantic::tool, which applies to "
+                           "functions");
+    }
+    if (has_annotation(member, ^^validator_t)) {
+      return at_path(here,
+                     "carries scrydantic::validator, which applies to member functions "
+                     "of a class; use scrydantic::check<&fn> on a data member");
+    }
+    if (has_annotation(member, ^^transparent_t)) {
+      return at_path(here, "carries scrydantic::transparent, which applies to class "
+                           "types");
+    }
+    return {};
+  }
+
   static consteval std::string check_member_annotations(const std::meta::info member,
                                                         const std::string& here) {
     if (has_annotation(member, ^^flatten_t)) {
@@ -647,23 +758,8 @@ private:
     if (skip && emit) {
       return at_path(here, "carries both skip_null and emit_null");
     }
-    if (has_class_annotation(member)) {
-      return at_path(here, "carries scrydantic::tag, tag_key, default_tag, or "
-                           "ignore_unknown, which apply to class types");
-    }
-    if (has_annotation(member, ^^rename_all)) {
-      return at_path(here, "carries scrydantic::rename_all, which applies to "
-                           "classes and enums; scrydantic::name gives one "
-                           "member its key");
-    }
-    if (has_annotation(member, ^^tool)) {
-      return at_path(here, "carries scrydantic::tool, which applies to "
-                           "functions");
-    }
-    if (has_annotation(member, ^^validator_t)) {
-      return at_path(here,
-                     "carries scrydantic::validator, which applies to member functions "
-                     "of a class; use scrydantic::check<&fn> on a data member");
+    if (auto text = check_member_misplaced_annotations(member, here); !text.empty()) {
+      return text;
     }
     const auto reason = extra_keywords_problem(member);
     return reason.empty() ? reason : at_path(here, reason);
@@ -799,7 +895,7 @@ private:
     if (kind == alternative_kind::null) {
       return {};
     }
-    if (const auto reason = kindless_reason(kind_of(alternative));
+    if (const auto reason = kindless_reason(kind_of(unwrap_transparent(alternative)));
         kind == alternative_kind::none && !reason.empty()) {
       return problem(path, variant, shown + owned_text(reason));
     }
@@ -873,6 +969,7 @@ private:
                                      const std::string& path) {
     const auto type = plain_type(reflected);
     switch (kind_of(type)) {
+    case value_kind::transparent:
     case value_kind::aggregate:
       return check_construction(type, path);
     case value_kind::indirect:
@@ -925,6 +1022,11 @@ consteval std::string tool_arguments_problem(const std::meta::info type) {
     return display(type) + " is a map, whose keys are data; tool arguments are a "
                            "plain aggregate, whose members name the arguments";
   }
+  if (kind_of(type) == value_kind::transparent) {
+    return display(type) + " is a transparent wrapper, not a JSON object; tool "
+                           "arguments are a plain aggregate, whose members name the "
+                           "arguments";
+  }
   if (kind_of(type) != value_kind::aggregate) {
     return display(type) + " is not a plain aggregate; tool arguments decode from one "
                            "JSON object";
@@ -971,7 +1073,10 @@ template <typename Type> consteval std::string_view tool_arguments_diagnostic() 
 // checks the type as encode() does, so a type outside Encodable fails with the
 // same diagnostic, and then reads the names the codec itself writes.
 template <typename Type> consteval std::string_view keys_diagnostic() {
-  if constexpr (kind_of(^^Type) != value_kind::aggregate) {
+  if constexpr (kind_of(^^Type) == value_kind::transparent) {
+    return static_string(display(^^Type) +
+                         " is a transparent wrapper, so it has no JSON object keys");
+  } else if constexpr (kind_of(^^Type) != value_kind::aggregate) {
     return static_string(display(^^Type) +
                          " is not a plain aggregate, so it has no JSON object keys");
   } else {

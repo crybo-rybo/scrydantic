@@ -398,6 +398,40 @@ consteval void append_variant_schema(std::vector<char>& output,
   append_schema_object(output, std::move(keywords));
 }
 
+consteval void append_missing_keywords(schema_keywords& target,
+                                       schema_keywords source) {
+  for (auto& keyword : source) {
+    if (!std::ranges::contains(target, keyword.key, &schema_keyword::key)) {
+      target.push_back(std::move(keyword));
+    }
+  }
+}
+
+// Writes the schema of a transparent wrapper as its sole data member's schema,
+// merging outer member metadata, the wrapper class's own metadata, and the
+// inner member's constraints and metadata (outermost wins on duplicate keys).
+consteval void append_transparent_schema(std::vector<char>& output,
+                                         const std::meta::info type,
+                                         schema_keywords member, schema_keywords value,
+                                         const schema_references& references) {
+  const auto inner = transparent_member_of(type);
+  const auto add_description = [&](const std::meta::info entity) {
+    if (const auto text = annotated_text(entity, ^^description);
+        text &&
+        !std::ranges::contains(member, std::string_view{"description"},
+                               &schema_keyword::key) &&
+        !std::ranges::contains(value, std::string_view{"description"},
+                               &schema_keyword::key)) {
+      member.push_back({.key = "description", .value = string_value(*text)});
+    }
+  };
+  add_description(type);
+  add_description(inner);
+  append_missing_keywords(value, extra_keywords(type));
+  append_missing_keywords(value, value_keywords(inner));
+  append_schema(output, value_type_of(inner), member, value, references);
+}
+
 // `member` is what the schema states about a member whatever it holds, and
 // `value` what it states about the value held. Only an optional tells the two
 // apart, stating `member` beside its "anyOf" and `value` inside it. An indirect
@@ -435,6 +469,8 @@ consteval void append_schema(std::vector<char>& output, const std::meta::info re
     return append_map_schema(output, type, std::move(keywords), references);
   case value_kind::variant:
     return append_variant_schema(output, type, std::move(keywords), references);
+  case value_kind::transparent:
+    return append_transparent_schema(output, type, member, value, references);
   case value_kind::aggregate:
     return append_node(output, {.type = type, .tagged = false}, std::move(keywords),
                        references);

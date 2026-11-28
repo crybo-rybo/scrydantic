@@ -155,6 +155,26 @@ template <typename Map>
   return valid;
 }
 
+// Checks a single-member transparent wrapper: its sole member's value, its
+// member constraints and validators, and the wrapper class's own validators,
+// all at the wrapper's path.
+template <typename Type>
+[[nodiscard]] bool validate_transparent(const Type& value, const decode_cursor& here,
+                                        const std::size_t depth) {
+  constexpr std::meta::info member = transparent_member_of(^^Type);
+  const auto& inner = value.[:member:];
+  if (!validate_value(inner, here, depth)) {
+    return false;
+  }
+  if constexpr (!checked_constraints_v<member>.empty() ||
+                !validators_v<member>.empty()) {
+    if (!accepts_member<member>(inner, no_json{}, here)) {
+      return false;
+    }
+  }
+  return passes_checks<^^Type>(value, here);
+}
+
 template <typename Type>
 bool validate_value([[maybe_unused]] const Type& value,
                     [[maybe_unused]] const decode_cursor& here,
@@ -166,6 +186,8 @@ bool validate_value([[maybe_unused]] const Type& value,
     return !value.has_value() || validate_value(*value, here, depth);
   } else if constexpr (kind == value_kind::indirect) {
     return value.valueless_after_move() || validate_value(*value, here, depth);
+  } else if constexpr (kind == value_kind::transparent) {
+    return validate_transparent(value, here, depth);
   } else if (depth == max_json_depth) {
     // Every other type that has a check is an array or an object in JSON.
     return true;

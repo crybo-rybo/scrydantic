@@ -419,8 +419,8 @@ write_indirect(std::string& output, const Indirect& value, const std::size_t dep
 }
 
 template <typename Type, spelling Spelling>
-encode_result<void> write_value(std::string& output, const Type& value,
-                                const std::size_t depth) {
+[[nodiscard]] encode_result<void> write_leaf(std::string& output, const Type& value,
+                                             const std::size_t depth) {
   constexpr auto kind = kind_of(^^Type);
   if constexpr (kind == value_kind::boolean) {
     output.append(value ? "true" : "false");
@@ -431,8 +431,17 @@ encode_result<void> write_value(std::string& output, const Type& value,
     return write_string(output, value);
   } else if constexpr (kind == value_kind::json) {
     return write_json_value<Spelling>(output, value, depth);
-  } else if constexpr (kind == value_kind::enumeration) {
+  } else {
     return write_enum(output, value);
+  }
+}
+
+template <typename Type, spelling Spelling>
+encode_result<void> write_value(std::string& output, const Type& value,
+                                const std::size_t depth) {
+  constexpr auto kind = kind_of(^^Type);
+  if constexpr (kind <= value_kind::enumeration) {
+    return write_leaf<Type, Spelling>(output, value, depth);
   } else if constexpr (kind == value_kind::optional) {
     return write_optional<Spelling>(output, value, depth);
   } else if constexpr (kind == value_kind::indirect) {
@@ -443,6 +452,10 @@ encode_result<void> write_value(std::string& output, const Type& value,
     return write_map<Spelling>(output, value, depth);
   } else if constexpr (kind == value_kind::variant) {
     return write_variant<Spelling>(output, value, depth);
+  } else if constexpr (kind == value_kind::transparent) {
+    constexpr std::meta::info member = transparent_member_of(^^Type);
+    using Inner = std::remove_cvref_t<decltype(value.[:member:])>;
+    return write_value<Inner, Spelling>(output, value.[:member:], depth);
   } else {
     return write_object<Type, false, Spelling>(output, value, depth);
   }

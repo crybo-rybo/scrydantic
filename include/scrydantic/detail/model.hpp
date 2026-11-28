@@ -42,6 +42,7 @@ enum class value_kind : std::uint8_t {
   array,
   map,
   variant,
+  transparent,
   aggregate,
 };
 
@@ -85,6 +86,8 @@ consteval bool is_map_template(const std::meta::info type) {
          is_specialization_of(type, ^^std::unordered_map);
 }
 
+consteval bool has_annotation(std::meta::info entity, std::meta::info what);
+
 consteval value_kind template_kind_of(const std::meta::info type) {
   if (is_specialization_of(type, ^^std::optional)) {
     return value_kind::optional;
@@ -112,7 +115,8 @@ consteval value_kind template_kind_of(const std::meta::info type) {
   }
   if (std::meta::is_class_type(type) && is_complete_class(type) &&
       std::meta::is_aggregate_type(type)) {
-    return value_kind::aggregate;
+    return has_annotation(type, ^^transparent_t) ? value_kind::transparent
+                                                 : value_kind::aggregate;
   }
   return value_kind::unsupported;
 }
@@ -487,13 +491,35 @@ enum class alternative_kind : std::uint8_t {
   object,
 };
 
+// The sole data member of a transparent wrapper, or the null reflection when
+// the class does not declare exactly one.
+consteval std::meta::info transparent_member_of(const std::meta::info type) {
+  const auto members = data_members_of(plain_type(type));
+  return members.size() == 1U ? members.front() : std::meta::info{};
+}
+
+// Sees through any layers of scrydantic::transparent to the underlying type.
+// Stops on a malformed or cyclic wrapper so callers never loop infinitely.
+consteval std::meta::info unwrap_transparent(const std::meta::info reflected) {
+  auto type = plain_type(reflected);
+  for (std::size_t depth = 0; depth < 64 && kind_of(type) == value_kind::transparent;
+       ++depth) {
+    const auto member = transparent_member_of(type);
+    if (member == std::meta::info{}) {
+      break;
+    }
+    type = plain_type(std::meta::type_of(member));
+  }
+  return type;
+}
+
 // std::monostate is a variant's way to hold nothing, so as an alternative it is
 // null. Elsewhere it is the empty aggregate that kind_of() finds it to be.
 consteval alternative_kind alternative_kind_of(const std::meta::info alternative) {
-  const auto type = plain_type(alternative);
-  if (type == (^^std::monostate)) {
+  if (plain_type(alternative) == (^^std::monostate)) {
     return alternative_kind::null;
   }
+  const auto type = unwrap_transparent(alternative);
   switch (kind_of(type)) {
   case value_kind::boolean:
     return alternative_kind::boolean;
@@ -845,6 +871,11 @@ consteval void append_held_nodes(std::vector<schema_node>& nodes,
       } else if (alternative_kind_of(alternative) != alternative_kind::null) {
         append_held_nodes(nodes, alternative);
       }
+    }
+    return;
+  case value_kind::transparent:
+    if (const auto member = transparent_member_of(plain); member != std::meta::info{}) {
+      return append_held_nodes(nodes, std::meta::type_of(member));
     }
     return;
   case value_kind::aggregate:

@@ -256,6 +256,9 @@ consteval bool append_default(std::string& output, const Type& value,
     return append_default_sequence(output, value, depth);
   } else if constexpr (kind == value_kind::variant) {
     return append_default_variant(output, value, depth);
+  } else if constexpr (kind == value_kind::transparent) {
+    constexpr std::meta::info member = transparent_member_of(^^Type);
+    return append_default(output, value.[:member:], depth);
   } else if constexpr (kind == value_kind::aggregate) {
     return append_default_object<Type, false>(output, value, depth);
   } else {

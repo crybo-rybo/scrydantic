@@ -130,6 +130,7 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | `emit_null` | optional member | Writes `null` again for one member of a `skip_null` class. |
 | `ignore_unknown` | class | Decoding ignores members the class does not declare, instead of rejecting them. |
 | `flatten` | aggregate member | Makes the member's fields fields of the enclosing object. The member has no key of its own. |
+| `transparent` | single-member class | Serializes, decodes, validates, and generates schemas for a single-member struct as its sole member directly, with no enclosing JSON object. |
 | `tool{"..."}` | function | Makes the function a tool, with this description. |
 | `range`, `multiple_of`, `length`, `items`, `pattern` | member | Constraints. See [Constraints and validators](#constraints-and-validators). |
 | `check<&fn>` | member, class | Runs a validator after decoding, and in `validate`. |
@@ -404,6 +405,31 @@ The member must be an aggregate itself, not a `std::optional` or a
 `std::indirect` of one. It cannot carry `name`, `description`, or `check`,
 because it has no key or value of its own, and two fields of one object cannot
 share a key.
+
+**Transparent wrappers.** `transparent` turns a single-member struct into a
+reusable, type-safe domain type without wrapping its JSON in an object:
+
+```cpp
+struct [[= scrydantic::transparent, = scrydantic::description{"TCP port"}]] Port {
+  [[= scrydantic::range{.min = 1, .max = 65535}]] std::uint16_t value{};
+};
+
+struct Server {
+  std::string host;
+  Port port{.value = 8080};
+};
+
+scrydantic::encode(Server{.host = "localhost"})->text;
+// {"host":"localhost","port":8080}
+```
+
+Constraints and validators on the sole member, plus class-level `check<&fn>` or
+`[[= scrydantic::validator]]` member functions on the wrapper, run on decode
+and `validate()` at the wrapper's path (`$.port`, never `$.port.value`).
+Transparent wrappers work anywhere their underlying type does: as roots,
+members, container elements, variant alternatives, and tool parameters or
+results. Outer member schema metadata (`description`, `title`, `format`,
+`deprecated`, `keyword`) overrides the wrapper's own for the same keyword.
 
 ## Schemas
 
