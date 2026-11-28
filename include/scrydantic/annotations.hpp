@@ -662,4 +662,32 @@ template <auto Validator> struct check_t {};
 /// @tparam Validator Pointer to the validator function.
 template <auto Validator> inline constexpr check_t<Validator> check{};
 
+/// Type of the validator annotation.
+struct validator_t {};
+
+/// Marks a public member function of a reflected class as a class validator.
+///
+/// Use it inside a struct to validate invariants across members without forward
+/// declaring the struct and a free function for `scrydantic::check<&fn>`:
+///
+/// ```cpp
+/// struct Interval {
+///   std::int32_t low{};
+///   std::int32_t high{};
+///
+///   [[= scrydantic::validator]] scrydantic::Status ordered() const {
+///     return low <= high ? scrydantic::Status{}
+///                        : scrydantic::fail("must have low at most high");
+///   }
+/// };
+/// ```
+///
+/// The function must be public, non-deleted, and return `scrydantic::Status`,
+/// taking either no parameters on a `const` (non-`&&`) member function, one
+/// `this const Class&` explicit object parameter, or one `const Class&`
+/// parameter on a `static` member function. Several annotated member functions
+/// run in declaration order after any `scrydantic::check<&fn>` on the class,
+/// stopping at the first rejection, during both `decode()` and `validate()`.
+inline constexpr validator_t validator{};
+
 } // namespace scrydantic

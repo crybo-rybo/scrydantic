@@ -567,6 +567,10 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
     if (annotation_matches(annotation, ^^check_t)) {
       return "carries scrydantic::check, which applies to data members and classes";
     }
+    if (annotation_matches(annotation, ^^validator_t)) {
+      return "carries scrydantic::validator, which applies to validator member "
+             "functions of a reflected class";
+    }
     if (const auto name = extra_keyword_name(annotation); !name.empty()) {
       return "carries " + owned_text(name) +
              ", which applies to data members and classes";

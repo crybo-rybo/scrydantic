@@ -469,8 +469,8 @@ private:
     return check_keys(type, path);
   }
 
-  static consteval std::string check_class_annotations(const std::meta::info type,
-                                                       const std::string& path) {
+  static consteval std::string check_class_tag_annotations(const std::meta::info type,
+                                                           const std::string& path) {
     if (annotation_count(type, ^^tag) > 1) {
       return problem(path, type, "has more than one scrydantic::tag annotation");
     }
@@ -490,9 +490,12 @@ private:
                        "which it makes the tag of an object that has none");
       }
     }
-    if (annotation_count(type, ^^rename_all) > 1) {
-      return problem(path, type, "has more than one scrydantic::rename_all annotation");
-    }
+    return {};
+  }
+
+  static consteval std::string
+  check_class_misplaced_annotations(const std::meta::info type,
+                                    const std::string& path) {
     if (has_annotation(type, ^^name) || has_annotation(type, ^^emit_null_t)) {
       return problem(path, type,
                      "carries scrydantic::name or emit_null, which apply to "
@@ -506,6 +509,11 @@ private:
       return problem(path, type,
                      "carries scrydantic::tool, which applies to functions");
     }
+    if (has_annotation(type, ^^validator_t)) {
+      return problem(path, type,
+                     "carries scrydantic::validator, which applies to member functions "
+                     "of a class; use scrydantic::check<&fn> on the class itself");
+    }
     for (const auto annotation : std::meta::annotations_of(type)) {
       if (is_constraint(annotation)) {
         return problem(path, type,
@@ -513,9 +521,26 @@ private:
                            ", which applies to data members");
       }
     }
+    return {};
+  }
+
+  static consteval std::string check_class_annotations(const std::meta::info type,
+                                                       const std::string& path) {
+    if (auto text = check_class_tag_annotations(type, path); !text.empty()) {
+      return text;
+    }
+    if (annotation_count(type, ^^rename_all) > 1) {
+      return problem(path, type, "has more than one scrydantic::rename_all annotation");
+    }
+    if (auto text = check_class_misplaced_annotations(type, path); !text.empty()) {
+      return text;
+    }
     auto reason = extra_keywords_problem(type);
     if (reason.empty()) {
       reason = validators_problem(type, type);
+    }
+    if (reason.empty()) {
+      reason = member_validators_problem(type);
     }
     return reason.empty() ? reason : problem(path, type, reason);
   }
@@ -623,6 +648,11 @@ private:
     if (has_annotation(member, ^^tool)) {
       return at_path(here, "carries scrydantic::tool, which applies to "
                            "functions");
+    }
+    if (has_annotation(member, ^^validator_t)) {
+      return at_path(here,
+                     "carries scrydantic::validator, which applies to member functions "
+                     "of a class; use scrydantic::check<&fn> on a data member");
     }
     const auto reason = extra_keywords_problem(member);
     return reason.empty() ? reason : at_path(here, reason);

@@ -772,6 +772,102 @@ consteval std::string validators_problem(const std::meta::info entity,
   return {};
 }
 
+// Whether a class member carries scrydantic::validator. Catches the exception
+// annotations_of throws on templates and aliases inside a class.
+consteval bool is_annotated_validator(const std::meta::info member) {
+  try {
+    return has_annotation(member, ^^validator_t);
+  } catch (const std::meta::exception&) {
+    return false;
+  }
+}
+
+// The member functions of class `type` annotated with scrydantic::validator, in
+// declaration order.
+consteval std::vector<std::meta::info>
+member_validators_of(const std::meta::info type) {
+  std::vector<std::meta::info> validators{};
+  const auto target = plain_type(type);
+  if (!std::meta::is_class_type(target)) {
+    return validators;
+  }
+  for (const auto member :
+       std::meta::members_of(target, std::meta::access_context::unchecked())) {
+    if (std::meta::is_function(member) && is_annotated_validator(member)) {
+      validators.push_back(member);
+    }
+  }
+  return validators;
+}
+
+template <std::meta::info Type>
+inline constexpr auto member_validators_v =
+    std::define_static_array(member_validators_of(Type));
+
+consteval std::string member_validator_signature_problem(const std::meta::info fn,
+                                                         const std::meta::info type) {
+  const auto const_ref =
+      std::meta::add_lvalue_reference(std::meta::add_const(plain_type(type)));
+  if (std::meta::is_static_member(fn)) {
+    if (!is_validator_of(std::meta::dealias(std::meta::type_of(fn)),
+                         plain_type(type))) {
+      return "must take " + display(const_ref) + " and return scrydantic::Status";
+    }
+    return {};
+  }
+  if (std::meta::dealias(std::meta::return_type_of(fn)) !=
+      std::meta::dealias(^^Status)) {
+    return "must return scrydantic::Status";
+  }
+  const auto params = std::meta::parameters_of(fn);
+  if (!params.empty() && std::meta::is_explicit_object_parameter(params.front())) {
+    if (params.size() != 1 ||
+        std::meta::dealias(std::meta::type_of(params.front())) != const_ref) {
+      return "must take only `this " + display(const_ref) + "`";
+    }
+    return {};
+  }
+  if (!std::meta::is_const(fn)) {
+    return "must be const-qualified";
+  }
+  if (std::meta::is_rvalue_reference_qualified(fn)) {
+    return "must not be &&-qualified";
+  }
+  if (!params.empty()) {
+    return "must take no parameters";
+  }
+  return {};
+}
+
+consteval std::string member_validator_problem(const std::meta::info fn,
+                                               const std::meta::info type) {
+  if (annotation_count(fn, ^^validator_t) > 1) {
+    return "has more than one scrydantic::validator annotation";
+  }
+  if (!std::meta::is_public(fn)) {
+    return "is not public";
+  }
+  if (std::meta::is_deleted(fn)) {
+    return "is deleted";
+  }
+  if (std::meta::is_constructor(fn) || std::meta::is_destructor(fn)) {
+    return "is a constructor or destructor";
+  }
+  return member_validator_signature_problem(fn, type);
+}
+
+consteval std::string member_validators_problem(const std::meta::info type) {
+  for (const auto fn : member_validators_of(type)) {
+    if (auto reason = member_validator_problem(fn, type); !reason.empty()) {
+      const auto name = std::meta::has_identifier(fn)
+                            ? owned_text(std::meta::identifier_of(fn))
+                            : display(fn);
+      return "has validator member function " + name + ", which " + reason;
+    }
+  }
+  return {};
+}
+
 // ---- Checked types -----------------------------------------------------------
 
 // Whether an object of class `type` has a constraint that decoding checks or a
@@ -779,7 +875,7 @@ consteval std::string validators_problem(const std::meta::info entity,
 // flattened into it, whose members are the object's and whose validators run on
 // the part of the object it is.
 consteval bool object_has_checks(const std::meta::info type) {
-  if (!validators_of(type).empty()) {
+  if (!validators_of(type).empty() || !member_validators_of(type).empty()) {
     return true;
   }
   for (const auto member : data_members_of(type)) {

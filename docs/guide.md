@@ -131,6 +131,7 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 | `tool{"..."}` | function | Makes the function a tool, with this description. |
 | `range`, `multiple_of`, `length`, `items`, `pattern` | member | Constraints. See [Constraints and validators](#constraints-and-validators). |
 | `check<&fn>` | member, class | Runs a validator after decoding, and in `validate`. |
+| `validator` | member function | Marks a public `const` (or `static` / `this const Class&`) member function as a class validator, with no forward declaration needed. |
 
 Where the table says member, a parameter of a tool counts too, when the
 parameter becomes a member of the tool's argument object. See
@@ -713,8 +714,11 @@ unsigned member, `range{.max = 0.1}` on a `float` (write `0.1f`), or
 A validator is a function that takes `const T&` and returns a `Status`.
 `check<&fn>` runs it on a member after the member decodes and meets its
 constraints. On a class, it runs on the whole object after every member has
-decoded. Return `rejection(model_text, host_text)` to reject a value. It is the
-same function as `tool_error()`, the name a tool uses to refuse a call. The model
+decoded. Inside a class, annotate a public `const` member function (or a
+`static` / `this const Class&` member function) with `validator` to avoid
+forward-declaring the class and a free function. Return
+`fail(model_text, host_text)` (or `std::unexpected(rejection(...))`) to reject
+a value; `fail` converts implicitly to `Status` and any `Result<T>`. The model
 sees only `model_text`, and your logs get `host_text`:
 
 ```cpp
@@ -722,14 +726,23 @@ inline scrydantic::Status known_city(const std::string& city) {
   if (city == "Oslo" || city == "Lima") {
     return {};
   }
-  return std::unexpected(
-      scrydantic::rejection("must be a known city", "has no row in cities"));
+  return scrydantic::fail("must be a known city", "has no row in cities");
 }
 
 struct Booking {
   [[= scrydantic::check<&known_city>]] std::string city;
   [[= scrydantic::range{.min = 1, .max = 8}]] std::int32_t guests;
   [[= scrydantic::length{.max = 200}]] std::string note{};
+};
+
+struct Interval {
+  std::int32_t low{};
+  std::int32_t high{};
+
+  [[= scrydantic::validator]] scrydantic::Status ordered() const {
+    return low <= high ? scrydantic::Status{}
+                       : scrydantic::fail("must have low at most high");
+  }
 };
 ```
 
