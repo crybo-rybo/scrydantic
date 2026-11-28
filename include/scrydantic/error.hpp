@@ -165,6 +165,21 @@ struct Error {
   return rejection(std::move(model_message), std::move(host_message));
 }
 
+/// Builds a failed expected value carrying rejection(model_message, host_message).
+///
+/// Converts implicitly to Status and to any Result<T>, so a validator, a tool
+/// handler, or a supplier can write `return scrydantic::fail("...");` without
+/// wrapping rejection() or tool_error() in `std::unexpected(...)`.
+/// @param model_message Text meant for the model.
+/// @param host_message Host-side diagnostic kept in Error::message; empty copies
+/// model_message.
+/// @return A `std::unexpected<Error>` carrying both texts.
+[[nodiscard]] inline std::unexpected<Error> fail(std::string model_message,
+                                                 std::string host_message = {}) {
+  return std::unexpected<Error>{
+      rejection(std::move(model_message), std::move(host_message))};
+}
+
 /// Builds the error that tells a model it called an unknown tool, and which tools
 /// there are.
 ///

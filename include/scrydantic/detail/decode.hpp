@@ -431,15 +431,35 @@ template <std::meta::info Constraint, typename Value, typename Source>
   }
 }
 
+// Calls one member-function validator on `value`, whether static or non-static.
+template <std::meta::info Validator, typename Value>
+[[nodiscard]] Status call_member_validator(const Value& value) {
+  if constexpr (std::meta::is_static_member(Validator)) {
+    return [:Validator:](value);
+  } else {
+    return value.[:Validator:]();
+  }
+}
+
 // Runs the validators of `Entity`, a member or a class, on `value` in
 // declaration order, and reports the first rejection, after which none runs: a
-// validator may rely on the ones before it.
+// validator may rely on the ones before it. For a class, `check<&fn>`
+// annotations run first, followed by `[[= scrydantic::validator]]` member
+// functions in declaration order.
 template <std::meta::info Entity, typename Value>
 [[nodiscard]] bool passes_checks(const Value& value, const decode_cursor& here) {
   template for (constexpr std::meta::info validator : validators_v<Entity>) {
     if (const Status status = [:validator:](value); !status) {
       here.reject(status.error());
       return false;
+    }
+  }
+  if constexpr (std::meta::is_type(Entity)) {
+    template for (constexpr std::meta::info fn : member_validators_v<Entity>) {
+      if (const Status status = call_member_validator<fn>(value); !status) {
+        here.reject(status.error());
+        return false;
+      }
     }
   }
   return true;

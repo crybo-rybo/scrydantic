@@ -148,6 +148,7 @@ add_executable(
   codec/json_schema_tests.cpp
   codec/kind_variant_tests.cpp
   codec/map_tests.cpp
+  codec/member_validator_tests.cpp
   codec/number_spelling_tests.cpp
   codec/rename_all_tests.cpp
   codec/schema_default_tests.cpp
@@ -631,6 +632,46 @@ scrydantic_add_compile_fail_test(
   checked-tool
   checked_tool.cpp
   "scrydantic::bind<^^order_tools>(): order_tools::order carries scrydantic::check, which applies to data members and classes"
+)
+scrydantic_add_compile_fail_test(
+  validator-non-const
+  validator_non_const.cpp
+  "Range has validator member function ordered, which must be const-qualified"
+)
+scrydantic_add_compile_fail_test(
+  validator-wrong-return
+  validator_wrong_return.cpp
+  "Range has validator member function ordered, which must return scrydantic::Status"
+)
+scrydantic_add_compile_fail_test(
+  validator-takes-args
+  validator_takes_args.cpp
+  "Range has validator member function ordered, which must take no parameters"
+)
+scrydantic_add_compile_fail_test(
+  validator-rvalue-ref
+  validator_rvalue_ref.cpp
+  "Range has validator member function ordered, which must not be &&-qualified"
+)
+scrydantic_add_compile_fail_test(
+  validator-private
+  validator_private.cpp
+  "Range has validator member function ordered, which is not public"
+)
+scrydantic_add_compile_fail_test(
+  validator-on-member
+  validator_on_member.cpp
+  "Order::quantity: carries scrydantic::validator, which applies to member functions of a class; use scrydantic::check<&fn> on a data member"
+)
+scrydantic_add_compile_fail_test(
+  validator-on-class
+  validator_on_class.cpp
+  "Order carries scrydantic::validator, which applies to member functions of a class; use scrydantic::check<&fn> on the class itself"
+)
+scrydantic_add_compile_fail_test(
+  validator-on-tool
+  validator_on_tool.cpp
+  "scrydantic::bind<^^order_tools>(): order_tools::order carries scrydantic::validator, which applies to validator member functions of a reflected class"
 )
 scrydantic_add_compile_fail_test(
   duplicate-title
