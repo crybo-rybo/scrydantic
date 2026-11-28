@@ -284,7 +284,7 @@ scrydantic_add_compile_fail_test(
 scrydantic_add_compile_fail_test(
   variant-two-integers
   variant_two_integers.cpp
-  "does not satisfy scrydantic::Encodable: Counter::value: std::variant<int, long int> has alternatives int and long int that share the JSON kind integer"
+  "does not satisfy scrydantic::Encodable: Counter::value: std::variant<short int, int> has alternatives short int and int that share the JSON kind integer"
 )
 scrydantic_add_compile_fail_test(
   variant-map-and-aggregate

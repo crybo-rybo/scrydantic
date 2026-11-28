@@ -325,8 +325,8 @@ static_assert(
                  std::variant<bool, std::vector<std::int32_t>, std::array<bool, 2>>>(),
              " that share the JSON kind array"));
 static_assert(mentions(
-    scrydantic::encodable_diagnostic<std::variant<std::int32_t, std::int64_t>>(),
-    "has alternatives int and long int that share the JSON kind integer"));
+    scrydantic::encodable_diagnostic<std::variant<std::int16_t, std::int32_t>>(),
+    "has alternatives short int and int that share the JSON kind integer"));
 static_assert(mentions(scrydantic::decodable_diagnostic<std::variant<float, double>>(),
                        "has alternatives float and double that share the JSON kind "
                        "number"));
