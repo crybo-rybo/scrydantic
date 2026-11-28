@@ -116,9 +116,11 @@ and its name: `struct [[= scrydantic::skip_null]] Profile { ... };`.
 
 | Annotation | Goes on | What it does |
 |---|---|---|
-| `description{"..."}` | member | Sets the member's `description` in the schema. |
-| `title{"..."}` | member, class | Sets the `title` of the member's or the class's schema. It is written to the schema only. |
-| `keyword{"key", "json"}`, `keyword_string{"key", "text"}` | member, class | Adds a keyword of your choosing, such as `format` or `examples`, to the member's or the class's schema. It is written to the schema only. Decoding does not check it. |
+| `description{"..."}` | member, class, enum | Sets `description` in the schema. A member's own description overrides its type's. |
+| `title{"..."}` | member, class, enum | Sets the `title` of the member's, class's, or enum's schema. It is written to the schema only. |
+| `format{"..."}` | member, class, enum | Sets `format` (e.g. `"date-time"`, `"email"`, `"uri"`) in the schema. Written to the schema only. |
+| `deprecated` | member, class, enum | Marks the schema `"deprecated":true`. Written to the schema only. |
+| `keyword{"key", "json"}`, `keyword_string{"key", "text"}` | member, class, enum | Adds a keyword of your choosing, such as `examples`, to the schema. It is written to the schema only. Decoding does not check it. |
 | `name{"..."}` | member, enumerator, tool | Replaces the member's JSON key, the enumerator's JSON string, or the tool's name. |
 | `rename_all{rule}` | class, enum | Derives the JSON key of every member, or the JSON string of every enumerator, from its identifier, by `camel_case`, `pascal_case`, `kebab_case`, or `screaming_snake_case`. A `name` still wins. |
 | `tag{"..."}` | class | The class's tag when it is a variant alternative: the value its object carries under `"type"`. |

@@ -151,6 +151,7 @@ add_executable(
   codec/member_validator_tests.cpp
   codec/number_spelling_tests.cpp
   codec/rename_all_tests.cpp
+  codec/schema_annotation_tests.cpp
   codec/schema_default_tests.cpp
   codec/schema_keyword_tests.cpp
   codec/tag_key_tests.cpp
@@ -717,6 +718,36 @@ scrydantic_add_compile_fail_test(
   keyword-on-tool
   keyword_on_tool.cpp
   "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::keyword, which applies to data members and classes"
+)
+scrydantic_add_compile_fail_test(
+  empty-format
+  empty_format.cpp
+  "scrydantic::format must not be empty"
+)
+scrydantic_add_compile_fail_test(
+  duplicate-format
+  duplicate_format.cpp
+  "Event::when: has more than one keyword annotation with the key \"format\""
+)
+scrydantic_add_compile_fail_test(
+  duplicate-deprecated
+  duplicate_deprecated.cpp
+  "Event::when: has more than one keyword annotation with the key \"deprecated\""
+)
+scrydantic_add_compile_fail_test(
+  duplicate-class-description
+  duplicate_class_description.cpp
+  "Address has more than one scrydantic::description annotation"
+)
+scrydantic_add_compile_fail_test(
+  format-on-tool
+  format_on_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::format, which applies to data members and classes"
+)
+scrydantic_add_compile_fail_test(
+  deprecated-on-tool
+  deprecated_on_tool.cpp
+  "scrydantic::bind<^^volume_tools>(): volume_tools::set_volume carries scrydantic::deprecated, which applies to data members and classes"
 )
 scrydantic_add_compile_fail_test(
   emit-null-parameter

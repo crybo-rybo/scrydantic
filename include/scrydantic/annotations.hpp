@@ -127,9 +127,12 @@ template <std::size_t Size> struct description;
 /// @return Annotation equal to the one the literal form would build.
 template <const std::string_view& View> [[nodiscard]] consteval auto description_of();
 
-/// Fixed-string payload for Scrydantic's P3394 parameter-description annotation.
+/// Fixed-string payload for Scrydantic's P3394 description annotation.
 ///
-/// Applies to data members; the text becomes the member schema's `description`.
+/// Applies to data members, tool parameters, classes, and scoped enums; the
+/// text becomes the schema's `description`. On a class or enum it appears on
+/// the type's schema wherever it is written, unless a member of that type sets
+/// a description of its own.
 /// @tparam Size Character-array extent including the null terminator.
 template <std::size_t Size> struct description : detail::fixed_text<Size> {
   using detail::fixed_text<Size>::fixed_text;
@@ -262,6 +265,36 @@ template <std::size_t KeySize, std::size_t ValueSize> struct keyword_string {
 template <std::size_t KeySize, std::size_t ValueSize>
 keyword_string(const char (&key)[KeySize], const char (&value)[ValueSize])
     -> keyword_string<KeySize, ValueSize>;
+
+/// Gives a schema a JSON Schema `format`, such as `"date-time"`, `"email"`, or
+/// `"uri"`.
+///
+/// **It is written to the schema only.** Encoding and decoding neither read nor
+/// check it; check the value in a `scrydantic::check` validator if the host
+/// relies on it. Equivalent to `keyword_string{"format", "..."}`, and collides
+/// with one on the same entity. Applies to data members, tool parameters,
+/// classes, and scoped enums.
+/// @tparam Size Character-array extent including the null terminator.
+template <std::size_t Size> struct format : detail::fixed_text<Size> {
+  static_assert(Size > 1, "scrydantic::format must not be empty");
+
+  using detail::fixed_text<Size>::fixed_text;
+};
+
+/// Deduces a format extent from a string literal.
+/// @param value Format text whose extent is deduced.
+template <std::size_t Size> format(const char (&value)[Size]) -> format<Size>;
+
+/// Type of the deprecated annotation.
+struct deprecated_t {};
+
+/// Marks a member, tool parameter, class, or scoped enum as `"deprecated":true`
+/// in its generated JSON Schema.
+///
+/// **It is written to the schema only.** Encoding and decoding still accept and
+/// write the value. Equivalent to `keyword{"deprecated", "true"}`, and collides
+/// with one on the same entity.
+inline constexpr deprecated_t deprecated{};
 
 /// Overrides the JSON key of one data member, the JSON string of one enumerator,
 /// or the name of one tool function.

@@ -136,8 +136,26 @@ consteval void append_enumerator_names(std::vector<char>& output,
   output.push_back(']');
 }
 
+// Merges a class or enum's own description, title, format, deprecated, and
+// custom keywords into `keywords`, letting any key that `keywords` (from a
+// member) already states win.
+consteval void append_type_keywords(schema_keywords& keywords,
+                                    const std::meta::info type) {
+  if (const auto text = annotated_text(type, ^^description);
+      text && !std::ranges::contains(keywords, std::string_view{"description"},
+                                     &schema_keyword::key)) {
+    keywords.push_back({.key = "description", .value = string_value(*text)});
+  }
+  for (auto& keyword : extra_keywords(type)) {
+    if (!std::ranges::contains(keywords, keyword.key, &schema_keyword::key)) {
+      keywords.push_back(std::move(keyword));
+    }
+  }
+}
+
 consteval void append_enum_schema(std::vector<char>& output, const std::meta::info type,
                                   schema_keywords keywords) {
+  append_type_keywords(keywords, type);
   keywords.push_back(written_keyword("enum", [type](std::vector<char>& names) {
     append_enumerator_names(names, type);
   }));
@@ -278,11 +296,7 @@ consteval void append_object_keys(std::vector<char>& output, const schema_node n
 consteval void append_object_schema(std::vector<char>& output, const schema_node node,
                                     schema_keywords keywords,
                                     const schema_references& references) {
-  for (auto& keyword : extra_keywords(node.type)) {
-    if (!std::ranges::contains(keywords, keyword.key, &schema_keyword::key)) {
-      keywords.push_back(std::move(keyword));
-    }
-  }
+  append_type_keywords(keywords, node.type);
   keywords.push_back({.key = "additionalProperties", .value = "false"});
   keywords.push_back(written_keyword("properties", [&](std::vector<char>& properties) {
     properties.push_back('{');
