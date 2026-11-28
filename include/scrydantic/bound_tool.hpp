@@ -27,20 +27,22 @@ namespace scrydantic {
 /// changes state it points to, needs its own synchronization for them.
 ///
 /// A call passes the JSON argument object, preceded by a `const Context&` when
-/// `Context` is not void, in one of two forms:
+/// `Context` is not void, in one of three forms:
 ///
 ///     handler(arguments);                 // a JsonView
-///     handler(Json{.text = R"({...})"});  // text
+///     handler(R"({...})");                // text, as std::string_view
+///     handler(Json{.text = R"({...})"});  // text, as Json
 ///
 /// A view is for a host that has parsed a larger message with the arguments
 /// somewhere inside it. The handler decodes that part of the host's document
-/// where it lies: nothing is written out and nothing is parsed again. Text is
-/// parsed first, and text that is not JSON fails with one issue and the message
-/// `tool arguments are not valid JSON: ` followed by the reason and position
-/// JsonView::parse() gives. A view is JSON already, so that failure is the text
-/// call's alone. Otherwise the two calls answer alike: a view of something that
-/// is not an object fails as text that spells it does, when the argument object
-/// decodes.
+/// where it lies: nothing is written out and nothing is parsed again. Text,
+/// passed as a `std::string_view` (including string literals and `std::string`)
+/// or as a `Json`, is parsed first, and text that is not JSON fails with one
+/// issue and the message `tool arguments are not valid JSON: ` followed by the
+/// reason and position JsonView::parse() gives. A view is JSON already, so that
+/// failure is a text call's alone. Otherwise all forms answer alike: a view of
+/// something that is not an object fails as text that spells it does, when the
+/// argument object decodes.
 ///
 /// Either call returns the JSON result, encoded as
 /// encode_verbatim() encodes it: valid JSON with keys in canonical order, and
