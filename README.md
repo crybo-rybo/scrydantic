@@ -46,7 +46,7 @@ int add(int a, int b) { return a + b; }
 auto bound = scrydantic::bind<^^tools>();
 bound[0].name;                    // "add"
 bound[0].input_schema.text;       // {"additionalProperties":false,"properties":{"a":...
-bound[0].invoke(scrydantic::Json{.text = R"({"a":2,"b":3})"})->text;  // "5"
+bound[0].invoke(R"({"a":2,"b":3})")->text;  // "5"
 ```
 
 **[Read the guide](docs/guide.md)** for the supported types, the annotations,

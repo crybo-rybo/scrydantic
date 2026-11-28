@@ -164,6 +164,7 @@ add_executable(
   tools/supplied_parameter_tests.cpp
   tools/throwing_tool_tests.cpp
   tools/tool_binding_tests.cpp
+  tools/tool_invoke_ergonomics_tests.cpp
   tools/tool_set_tests.cpp
   tools/view_call_tests.cpp
 )

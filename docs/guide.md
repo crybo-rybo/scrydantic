@@ -787,8 +787,9 @@ std::vector<scrydantic::BoundTool<>> tools = scrydantic::bind<^^weather>();
 
 Each `BoundTool` has a `name`, a `description`, an `input_schema`, an
 `output_schema`, and an `invoke` handler. The handler takes the arguments as
-`Json` text, or as a `JsonView` that is already parsed (see **Parsed
-arguments**), and returns a `Result<Json>`:
+JSON text (a `std::string_view`, string literal, `std::string`, or `Json`), or
+as a `JsonView` that is already parsed (see **Parsed arguments**), and returns
+a `Result<Json>`:
 
 ```cpp
 tools[0].input_schema.text;
@@ -798,8 +799,18 @@ tools[0].input_schema.text;
 //  "required":["city","days"],"type":"object"}
 tools[0].output_schema->text; // the same text as scrydantic::schema_v<Reading>
 
-auto result = tools[0].invoke(scrydantic::Json{.text = R"({"city":"Oslo"})"});
+auto result = tools[0].invoke(R"({"city":"Oslo"})");
 result.error().model_message; // $.days is a required member
+```
+
+`bind`, `bind(toolbox)`, and `bind_handler` accept an optional `DecodeOptions`
+when a caller sends stringified scalars or nested JSON strings (see **Decoding
+text-only sources**); the published schemas stay unchanged:
+
+```cpp
+auto lenient = scrydantic::bind<^^weather>(
+    scrydantic::DecodeOptions{.coerce_scalars = true});
+lenient[0].invoke(R"({"city":"Oslo","days":"2"})"); // decodes days as 2
 ```
 
 **Parameters.** A tool can take no parameters, any list of named parameters,

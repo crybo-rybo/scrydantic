@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <expected>
 #include <functional>
@@ -15,6 +16,7 @@
 #include <scrydantic/annotations.hpp>
 #include <scrydantic/bound_tool.hpp>
 #include <scrydantic/codec.hpp>
+#include <scrydantic/decode_options.hpp>
 #include <scrydantic/detail/binding.hpp>
 #include <scrydantic/detail/meta.hpp>
 #include <scrydantic/detail/tools.hpp>
@@ -457,9 +459,12 @@ consteval std::meta::info toolbox_tools_of(const std::meta::info type,
 /// @tparam Handler Move-constructible callable, invocable when const, satisfying
 /// ToolHandlerFor<Handler, Args, Context>.
 /// @param handler Callable invoked as const with Args moved by value.
+/// @param options What argument decoding accepts beyond strict rules; strict by
+/// default.
 /// @return The type-erased handler.
 template <typename Args, typename Context = void, typename Handler>
-[[nodiscard]] ToolFunction<Context> bind_handler(Handler&& handler) {
+[[nodiscard]] ToolFunction<Context> bind_handler(Handler&& handler,
+                                                 const DecodeOptions& options = {}) {
   constexpr std::string_view arguments_problem =
       detail::tool_arguments_diagnostic<Args>();
   static_assert(arguments_problem.empty(), arguments_problem);
@@ -472,7 +477,8 @@ template <typename Args, typename Context = void, typename Handler>
     if constexpr (!handler_problem.empty()) {
       return {};
     } else {
-      return detail::make_tool_handler<Args, Context>(std::forward<Handler>(handler));
+      return detail::make_tool_handler<Args, Context>(std::forward<Handler>(handler),
+                                                      options);
     }
   }
 }
@@ -500,17 +506,19 @@ template <typename Args, typename Context = void, typename Handler>
 /// @tparam Context Call context the tools may take first, or void for none.
 /// @tparam Tools Leave defaulted: the tools `Entity` holds at the call site, each
 /// with the name, description, and parameters seen there.
+/// @param options What argument decoding accepts beyond strict rules; strict by
+/// default.
 /// @return The bound tools, in declaration order.
 template <std::meta::info Entity, typename Context = void,
           typename Tools = typename[:tools_of(Entity, ^^Context):]>
-[[nodiscard]] std::vector<BoundTool<Context>> bind() {
+[[nodiscard]] std::vector<BoundTool<Context>> bind(const DecodeOptions& options = {}) {
   constexpr std::string_view problem =
       detail::entity_tools_diagnostic<Entity, Context>("scrydantic::bind");
   static_assert(problem.empty(), problem);
   if constexpr (!problem.empty()) {
     return {};
   } else {
-    return detail::bound_tools<Context>(Tools{}, std::shared_ptr<void>{});
+    return detail::bound_tools<Context>(Tools{}, std::shared_ptr<void>{}, options);
   }
 }
 
@@ -528,10 +536,13 @@ template <std::meta::info Entity, typename Context = void,
 /// call site sees them, since an out-of-class definition can annotate a member
 /// in some translation units only.
 /// @param toolbox Toolbox to share. A null pointer binds no tools.
+/// @param options What argument decoding accepts beyond strict rules; strict by
+/// default.
 /// @return The bound tools, in declaration order, or none for a null toolbox.
 template <typename Context = void, typename Toolbox,
           typename Tools = typename[:toolbox_tools_of(^^Toolbox, ^^Context):]>
-[[nodiscard]] std::vector<BoundTool<Context>> bind(std::shared_ptr<Toolbox> toolbox) {
+[[nodiscard]] std::vector<BoundTool<Context>> bind(std::shared_ptr<Toolbox> toolbox,
+                                                   const DecodeOptions& options = {}) {
   constexpr std::string_view problem = detail::toolbox_diagnostic<Toolbox, Context>();
   static_assert(problem.empty(), problem);
   if constexpr (!problem.empty()) {
@@ -540,7 +551,7 @@ template <typename Context = void, typename Toolbox,
     if (toolbox == nullptr) {
       return {};
     }
-    return detail::bound_tools<Context>(Tools{}, toolbox);
+    return detail::bound_tools<Context>(Tools{}, toolbox, options);
   }
 }
 
@@ -651,6 +662,24 @@ public:
     return &tools_[*found];
   }
 
+  /// Calls the tool named `name` with `arguments` as JSON text.
+  ///
+  /// A string literal, `std::string`, or `std::string_view` can be passed as it
+  /// is. A name the set does not hold fails with unknown_tool_error(), which
+  /// tells the model the names it does, in set order. Any other result, failure
+  /// included, is the tool's own.
+  /// @tparam Text Any type convertible to `std::string_view`.
+  /// @param name Tool name the model called.
+  /// @param arguments JSON argument object text the model supplied.
+  /// @return What the tool returned, or the unknown-tool error.
+  template <std::convertible_to<std::string_view> Text>
+  [[nodiscard]] Result<Json> invoke(const std::string_view name,
+                                    const Text& arguments) const
+    requires std::is_void_v<Context>
+  {
+    return call(name, std::string_view{arguments});
+  }
+
   /// Calls the tool named `name` with `arguments`.
   ///
   /// A name the set does not hold fails with unknown_tool_error(), which tells the
@@ -679,6 +708,24 @@ public:
     requires std::is_void_v<Context>
   {
     return call(name, arguments);
+  }
+
+  /// Calls the tool named `name` with the call context and `arguments` as JSON text.
+  ///
+  /// It answers an unknown name as invoke(name, arguments) does for a set
+  /// without a context.
+  /// @tparam Text Any type convertible to `std::string_view`.
+  /// @param name Tool name the model called.
+  /// @param context Call context passed through to the tool.
+  /// @param arguments JSON argument object text the model supplied.
+  /// @return What the tool returned, or the unknown-tool error.
+  template <std::convertible_to<std::string_view> Text>
+  [[nodiscard]] Result<Json> invoke(const std::string_view name,
+                                    const detail::context_argument_t<Context>& context,
+                                    const Text& arguments) const
+    requires(!std::is_void_v<Context>)
+  {
+    return call(name, context, std::string_view{arguments});
   }
 
   /// Calls the tool named `name` with the call context and `arguments`.

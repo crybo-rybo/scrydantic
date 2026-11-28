@@ -112,7 +112,7 @@ struct Reply {
                          const std::string_view arguments) {
   scrydantic::Result<scrydantic::Json> result;
   try {
-    result = tools.invoke(name, scrydantic::Json{.text = std::string{arguments}});
+    result = tools.invoke(name, arguments);
   } catch (const std::exception& thrown) {
     // A handler does not catch. The exception's text is for the log, and the
     // model gets a fixed message.

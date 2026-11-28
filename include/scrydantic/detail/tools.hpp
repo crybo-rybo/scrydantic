@@ -1213,20 +1213,36 @@ public:
   }
 
   // Text that is not JSON is read once more to describe it, which only a
-  // failure pays for.
+  // failure pays for. Templated on Text so a braced initializer `{R"(...)"}`
+  // keeps selecting the Json overload unambiguously.
+  template <std::convertible_to<std::string_view> Text>
+  [[nodiscard]] Result<Json> operator()(Leading... leading,
+                                        const Text& arguments) const {
+    const std::string_view text{arguments};
+    if (text_) {
+      return text_(leading..., Json{.text = std::string{text}});
+    }
+    return call_text_on_view(leading..., text);
+  }
+
   [[nodiscard]] Result<Json> operator()(Leading... leading, Json arguments) const {
     if (text_) {
       return text_(leading..., std::move(arguments));
     }
-    const auto view = JsonView::parse(std::string_view{arguments.text});
+    return call_text_on_view(leading..., std::string_view{arguments.text});
+  }
+
+private:
+  [[nodiscard]] Result<Json> call_text_on_view(Leading... leading,
+                                               const std::string_view arguments) const {
+    const auto view = JsonView::parse(arguments);
     if (!view) {
       return std::unexpected(invalid_json_error("tool arguments are not valid JSON",
-                                                describe_invalid_json(arguments.text)));
+                                                describe_invalid_json(arguments)));
     }
     return view_(leading..., *view);
   }
 
-private:
   view_function view_{};
   text_function text_{};
 };

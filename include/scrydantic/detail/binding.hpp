@@ -10,6 +10,7 @@
 #include <optional>
 #include <scrydantic/bound_tool.hpp>
 #include <scrydantic/codec.hpp>
+#include <scrydantic/decode_options.hpp>
 #include <scrydantic/detail/constraints.hpp>
 #include <scrydantic/detail/decode.hpp>
 #include <scrydantic/detail/encode.hpp>
@@ -135,13 +136,14 @@ template <typename Context, typename Body>
 // again here. The lambda's call operator is const, as a ToolFunction's is, so the
 // stored callable is invoked as const, which is the call ToolHandlerFor checked.
 template <typename Args, typename Context, typename Handler>
-[[nodiscard]] ToolFunction<Context> make_tool_handler(Handler&& handler) {
+[[nodiscard]] ToolFunction<Context>
+make_tool_handler(Handler&& handler, const DecodeOptions& options = {}) {
   using Callable = std::decay_t<Handler>;
   return tool_function_of<Context>(
-      [callable = Callable{std::forward<Handler>(handler)}](
-          [[maybe_unused]] const context_argument_t<Context>& context,
-          const JsonView& input) -> Result<Json> {
-        auto arguments = detail::decode<Args>(input);
+      [callable = Callable{std::forward<Handler>(handler)},
+       options]([[maybe_unused]] const context_argument_t<Context>& context,
+                const JsonView& input) -> Result<Json> {
+        auto arguments = detail::decode<Args>(input, options);
         if (!arguments) {
           return std::unexpected(std::move(arguments.error()));
         }
@@ -442,13 +444,14 @@ auto try_apply_binding(Object* object, const Context& context, Args& arguments) 
 // something or ask something of its user.
 template <typename Tool, typename Context, typename Object>
 [[nodiscard]] ToolFunction<Context>
-make_function_handler(std::shared_ptr<Object> object) {
+make_function_handler(std::shared_ptr<Object> object,
+                      const DecodeOptions& options = {}) {
   using Binding = typename Tool::binding;
   using Args = function_arguments_t<Binding>;
   return tool_function_of<Context>(
-      [object = std::move(object)](const context_argument_t<Context>& context,
-                                   const JsonView& input) -> Result<Json> {
-        auto arguments = detail::decode<Args>(input);
+      [object = std::move(object), options](const context_argument_t<Context>& context,
+                                            const JsonView& input) -> Result<Json> {
+        auto arguments = detail::decode<Args>(input, options);
         if (!arguments) {
           return std::unexpected(std::move(arguments.error()));
         }
@@ -489,7 +492,8 @@ template <typename Tool> [[nodiscard]] constexpr ToolDescriptor tool_descriptor(
 }
 
 template <typename Tool, typename Context, typename Object>
-[[nodiscard]] BoundTool<Context> make_bound_tool(std::shared_ptr<Object> object) {
+[[nodiscard]] BoundTool<Context> make_bound_tool(std::shared_ptr<Object> object,
+                                                 const DecodeOptions& options = {}) {
   static constexpr ToolDescriptor descriptor = tool_descriptor<Tool>();
   // No schema is empty text, so an empty view can only mean that there is none.
   return BoundTool<Context>{
@@ -500,7 +504,7 @@ template <typename Tool, typename Context, typename Object>
           descriptor.output_schema.empty()
               ? std::nullopt
               : std::optional{Json{.text = std::string{descriptor.output_schema}}},
-      .invoke = make_function_handler<Tool, Context>(std::move(object)),
+      .invoke = make_function_handler<Tool, Context>(std::move(object), options),
   };
 }
 
@@ -510,10 +514,11 @@ template <typename Tool, typename Context, typename Object>
 // that sees the same tools instantiates the same code.
 template <typename Context, typename... Tools, typename Object>
 [[nodiscard]] std::vector<BoundTool<Context>>
-bound_tools(tool_set<Tools...>, const std::shared_ptr<Object>& object) {
+bound_tools(tool_set<Tools...>, const std::shared_ptr<Object>& object,
+            const DecodeOptions& options = {}) {
   std::vector<BoundTool<Context>> tools{};
   tools.reserve(sizeof...(Tools));
-  (tools.push_back(make_bound_tool<Tools, Context>(object)), ...);
+  (tools.push_back(make_bound_tool<Tools, Context>(object, options)), ...);
   return tools;
 }
 
