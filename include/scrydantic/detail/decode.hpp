@@ -733,6 +733,32 @@ template <typename Type, bool Tagged>
   return valid && passes_checks<^^Type>(object, here);
 }
 
+// Reads a single-member transparent wrapper as its sole member, running that
+// member's constraints and validators and then the wrapper class's own
+// validators at the wrapper's path.
+template <typename Type>
+[[nodiscard]] decode_result<Type> read_transparent(const json_node view,
+                                                   const decode_cursor& here) {
+  constexpr std::meta::info member = transparent_member_of(^^Type);
+  using Inner = std::remove_cv_t<typename[:value_type_of(member):]>;
+  auto decoded = read_value<Inner>(view, here);
+  if (!decoded) {
+    return decode_failed<Type>();
+  }
+  if constexpr (!checked_constraints_v<member>.empty() ||
+                !validators_v<member>.empty()) {
+    if (!accepts_member<member>(*decoded, view, here)) {
+      return decode_failed<Type>();
+    }
+  }
+  Type value = Type();
+  value.[:member:] = std::move(*decoded);
+  if (!passes_checks<^^Type>(value, here)) {
+    return decode_failed<Type>();
+  }
+  return value;
+}
+
 // An aggregate is read in place, so this is the one place that builds its
 // result. The value is value-initialized, as is_storable checks: `Type value{}`
 // would copy-initialize a member without an initializer from `{}`, which
@@ -851,7 +877,9 @@ template <typename Variant>
                                                        const decode_cursor& here) {
   using enum alternative_kind;
   if constexpr (has_kind_v<Variant, integer> && has_kind_v<Variant, number>) {
-    if (!holds_integer<typename[:kind_alternative_v<Variant, integer>:]>(view)) {
+    using Integer =
+        typename[:unwrap_transparent(kind_alternative_v<Variant, integer>):];
+    if (!holds_integer<Integer>(view)) {
       return read_kind<Variant, number>(view, here);
     }
   }
@@ -1081,6 +1109,8 @@ decode_result<Type> read_value(const json_node view, const decode_cursor& here) 
     return read_map<Type>(view, here);
   } else if constexpr (kind == value_kind::variant) {
     return read_variant<Type>(view, here);
+  } else if constexpr (kind == value_kind::transparent) {
+    return read_transparent<Type>(view, here);
   } else if constexpr (kind == value_kind::aggregate) {
     return read_in_place<Type, false>(view, here);
   } else {

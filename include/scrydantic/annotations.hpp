@@ -541,6 +541,36 @@ struct flatten_t {};
 /// value, which it does not have.
 inline constexpr flatten_t flatten{};
 
+/// Type of the transparent annotation.
+struct transparent_t {};
+
+/// Makes a single-member aggregate represent its sole data member directly in
+/// JSON and JSON Schema, with no enclosing object.
+///
+/// Use it to define reusable constrained or validated domain types once and use
+/// them across models and tool parameters with strong C++ type safety:
+///
+/// ```cpp
+/// struct [[= scrydantic::transparent]] Port {
+///   [[= scrydantic::range{.min = 1, .max = 65535}]] std::uint16_t value{};
+/// };
+///
+/// struct Server {
+///   std::string host;
+///   Port port{.value = 8080};
+/// };
+/// // Encodes as {"host":"localhost","port":8080}
+/// // Schema of port: {"default":8080,"maximum":65535,"minimum":1,"type":"integer"}
+/// ```
+///
+/// The class must be a plain aggregate with no base classes and exactly one
+/// public data member. Constraints and validators on that member, as well as
+/// class-level `check<&fn>` and `[[= scrydantic::validator]]` member functions
+/// on the wrapper, run on decode and `validate()` at the wrapper's path. Schema
+/// metadata (`description`, `title`, `format`, `deprecated`, `keyword`) on an
+/// outer member overrides the wrapper's own for the same keyword.
+inline constexpr transparent_t transparent{};
+
 /// Bounds an integer or floating-point data member, as JSON Schema's `minimum`,
 /// `exclusiveMinimum`, `maximum`, and `exclusiveMaximum` do.
 ///

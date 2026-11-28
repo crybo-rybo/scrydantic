@@ -542,6 +542,31 @@ consteval std::string key_annotation_problem(const std::meta::info function) {
   return {};
 }
 
+consteval std::string
+tool_misplaced_annotation_problem(const std::meta::info function) {
+  for (const auto annotation : std::meta::annotations_of(function)) {
+    if (is_constraint(annotation)) {
+      return "carries " + owned_text(constraint_name(annotation)) +
+             ", which applies to data members";
+    }
+    if (annotation_matches(annotation, ^^check_t)) {
+      return "carries scrydantic::check, which applies to data members and classes";
+    }
+    if (annotation_matches(annotation, ^^validator_t)) {
+      return "carries scrydantic::validator, which applies to validator member "
+             "functions of a reflected class";
+    }
+    if (annotation_matches(annotation, ^^transparent_t)) {
+      return "carries scrydantic::transparent, which applies to class types";
+    }
+    if (const auto name = extra_keyword_name(annotation); !name.empty()) {
+      return "carries " + owned_text(name) +
+             ", which applies to data members and classes";
+    }
+  }
+  return {};
+}
+
 consteval std::string tool_annotation_problem(const std::meta::info function) {
   if (annotation_count(function, ^^tool) > 1) {
     return "has more than one scrydantic::tool annotation";
@@ -559,22 +584,8 @@ consteval std::string tool_annotation_problem(const std::meta::info function) {
   if (auto reason = key_annotation_problem(function); !reason.empty()) {
     return reason;
   }
-  for (const auto annotation : std::meta::annotations_of(function)) {
-    if (is_constraint(annotation)) {
-      return "carries " + owned_text(constraint_name(annotation)) +
-             ", which applies to data members";
-    }
-    if (annotation_matches(annotation, ^^check_t)) {
-      return "carries scrydantic::check, which applies to data members and classes";
-    }
-    if (annotation_matches(annotation, ^^validator_t)) {
-      return "carries scrydantic::validator, which applies to validator member "
-             "functions of a reflected class";
-    }
-    if (const auto name = extra_keyword_name(annotation); !name.empty()) {
-      return "carries " + owned_text(name) +
-             ", which applies to data members and classes";
-    }
+  if (auto reason = tool_misplaced_annotation_problem(function); !reason.empty()) {
+    return reason;
   }
   if (!has_annotation(function, ^^name) && !std::meta::has_identifier(function)) {
     return "has no identifier to name the tool after; give it a "
